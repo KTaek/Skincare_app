@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "피부 케어",
+    "slug": "skin-care-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#EDF0F4"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#EDF0F4"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "병변 사진을 촬영하기 위해 카메라 접근 권한이 필요합니다."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "갤러리에서 병변 사진을 불러오기 위해 사진 접근 권한이 필요합니다."
+        }
+      ],
+      [
+        "react-native-fast-tflite",
+        {
+          "enableCoreMLDelegate": false,
+          "enableAndroidGpuLibraries": false
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "866c58cb-e5b5-47de-87e3-ac030bd0497b"
+      }
+    }
+  }
+}
