@@ -19,7 +19,8 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "package": "com.taeeek2.skincareapp"
     },
     "plugins": [
       "@react-native-community/datetimepicker",
@@ -41,7 +42,8 @@
           "enableCoreMLDelegate": false,
           "enableAndroidGpuLibraries": false
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "eas": {

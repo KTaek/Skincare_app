@@ -9,6 +9,7 @@ import { AppColors } from '../theme';
 import { detectBboxLocal, analyzeLocal, LesionBox, LocalAnalysisResult } from '../ai/analyzeLocal';
 import { preloadModels } from '../ai/tfliteService';
 import { SIGN_NAMES_KO, GRADE_NAMES_KO } from '../ai/labels';
+import { TOTAL_MODEL_SIZE_MB } from '../ai/modelInfo';
 import { BodyRegion } from '../models';
 import { useRecords } from '../context/RecordsContext';
 import { useLeaveGuard } from '../context/LeaveGuardContext';
@@ -494,7 +495,7 @@ function ResultScreen({
 }) {
   const sev = itchSeverity(itchLevel ?? 0);
   const presentSigns = result.signs.filter((s) => s.grade > 0);
-  const inferenceSeconds = (result.inferenceTimeMs / 1000).toFixed(1);
+  const inferenceInfoText = `추론 ${Math.round(result.inferenceTimeMs)}ms · 모델 ${TOTAL_MODEL_SIZE_MB.toFixed(1)}MB`;
 
   return (
     <View style={styles.resultRoot}>
@@ -506,7 +507,7 @@ function ResultScreen({
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.resultScrollContent}>
         <View style={styles.resultKickerRow}>
           <Text style={styles.resultKicker}>AI 분석 결과 (관찰된 소견)</Text>
-          <Text style={styles.inferenceTimeText}>추론 시간 {inferenceSeconds}초</Text>
+          <Text style={styles.inferenceTimeText}>{inferenceInfoText}</Text>
         </View>
         <View style={{ height: 14 }} />
         {presentSigns.length > 0 ? (
