@@ -1,0 +1,51 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+
+# 모델 가중치 / 변환 산출물 (용량이 커서 저장소엔 안 올림 — conv/README.md 참고해 로컬에서 준비)
+*.pth
+*.onnx
+*.tflite
+conv/out/
+conv/*.npy
+
+# 이 샌드박스 세션의 실행 중 잠금 파일(세션 ID·PID) — 커밋할 내용 아님
+.claude/scheduled_tasks.lock

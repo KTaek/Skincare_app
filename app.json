@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "SkinScanApp",
+    "slug": "SkinScanApp",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.mjmjkk00.skinscanapp",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "react-native-fast-tflite",
+        {
+          "enableAndroidGpuLibraries": true
+        }
+      ],
+      "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "피부 상태를 촬영하기 위해 카메라 접근 권한이 필요합니다.",
+          "photosPermission": "촬영한 사진을 불러오기 위해 사진 보관함 접근 권한이 필요합니다."
+        }
+      ]
+    ]
+  }
+}

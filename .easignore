@@ -1,0 +1,10 @@
+# EAS 빌드 업로드에서 제외 (앱 실행에 불필요한 것)
+node_modules/
+.expo/
+conv/out/
+conv/*.onnx
+*.zip
+best_model_v2.pth
+emcad_pvtv2b0_352.pth
+emcad/pretrained_pth/
+__pycache__/
