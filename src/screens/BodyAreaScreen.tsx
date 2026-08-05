@@ -9,10 +9,13 @@ export default function BodyAreaScreen({
   onBack,
   onChooseCamera,
   onChooseGallery,
+  onSwitchToMonitoring,
 }: {
   onBack: () => void;
   onChooseCamera: (region: BodyRegion) => void;
   onChooseGallery: (region: BodyRegion) => void;
+  /** 같은 자리를 반복 촬영하는 모니터링 흐름으로 전환 */
+  onSwitchToMonitoring?: () => void;
 }) {
   const [region, setRegion] = useState<BodyRegion | null>(null);
   const [sheetVisible, setSheetVisible] = useState(false);
@@ -33,6 +36,17 @@ export default function BodyAreaScreen({
         </Pressable>
         <Text style={styles.headerTitle}>신체 영역</Text>
       </View>
+
+      {onSwitchToMonitoring && (
+        <View style={styles.modeRow}>
+          <View style={[styles.modeBtn, styles.modeBtnActive]}>
+            <Text style={[styles.modeBtnText, styles.modeBtnTextActive]}>일반 촬영</Text>
+          </View>
+          <Pressable style={styles.modeBtn} onPress={onSwitchToMonitoring}>
+            <Text style={styles.modeBtnText}>모니터링 촬영</Text>
+          </Pressable>
+        </View>
+      )}
 
       <View style={styles.viewerArea}>
         <Body2DView onMarked={setRegion} />
@@ -95,6 +109,18 @@ const styles = StyleSheet.create({
   backBtn: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '700', color: AppColors.ink, marginRight: 38 },
   viewerArea: { flex: 1 },
+  modeRow: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginTop: 8,
+    padding: 3,
+    borderRadius: 12,
+    backgroundColor: '#F1F3F6',
+  },
+  modeBtn: { flex: 1, paddingVertical: 9, borderRadius: 10, alignItems: 'center' },
+  modeBtnActive: { backgroundColor: '#FFFFFF' },
+  modeBtnText: { fontSize: 13, fontWeight: '700', color: AppColors.sub },
+  modeBtnTextActive: { color: AppColors.ink },
   footer: { paddingHorizontal: 24, paddingBottom: 24, paddingTop: 8 },
   caption: { fontSize: 14, fontWeight: '600', color: AppColors.ink, textAlign: 'center' },
   nextBtn: { backgroundColor: AppColors.greenTop, borderRadius: 16, paddingVertical: 15, alignItems: 'center' },

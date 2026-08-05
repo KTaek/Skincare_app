@@ -5,6 +5,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { RoutineProvider } from './src/context/RoutineContext';
 import { RecordsProvider } from './src/context/RecordsContext';
 import { LeaveGuardProvider } from './src/context/LeaveGuardContext';
+import { MonitoringProvider } from './src/context/MonitoringContext';
 import RootNavigator from './src/navigation/RootNavigator';
 
 export default function App() {
@@ -12,12 +13,14 @@ export default function App() {
     <SafeAreaProvider>
       <RoutineProvider>
         <RecordsProvider>
-          <LeaveGuardProvider>
-            <NavigationContainer>
-              <StatusBar style="dark" />
-              <RootNavigator />
-            </NavigationContainer>
-          </LeaveGuardProvider>
+          <MonitoringProvider>
+            <LeaveGuardProvider>
+              <NavigationContainer>
+                <StatusBar style="dark" />
+                <RootNavigator />
+              </NavigationContainer>
+            </LeaveGuardProvider>
+          </MonitoringProvider>
         </RecordsProvider>
       </RoutineProvider>
     </SafeAreaProvider>

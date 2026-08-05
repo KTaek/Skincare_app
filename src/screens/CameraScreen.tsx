@@ -15,11 +15,24 @@ import { useRecords } from '../context/RecordsContext';
 import { useLeaveGuard } from '../context/LeaveGuardContext';
 import { SevBadge } from '../components/widgets';
 import BodyAreaScreen from './BodyAreaScreen';
+import MonitoringFlow from './MonitoringFlow';
+import { PART_TO_REGION } from '../monitoring/bodyParts';
+import { SessionConfidence } from '../monitoring/types';
 
 type CamState = 'bodyArea' | 'ready' | 'rating' | 'analyzing' | 'result' | 'error';
+/** 일반 1회 촬영 vs 같은 자리를 반복 촬영하는 모니터링 */
+type CamMode = 'single' | 'monitor';
+
+/** 모니터링으로 찍은 사진에 딸려오는 정보 — 결과 화면과 기록에 함께 남긴다 */
+interface MonitorMeta {
+  siteLabel: string;
+  confidence: SessionConfidence;
+}
 
 export default function CameraScreen({ navigation }: { navigation: any }) {
   const [state, setState] = useState<CamState>('bodyArea');
+  const [mode, setMode] = useState<CamMode>('single');
+  const [monitorMeta, setMonitorMeta] = useState<MonitorMeta | null>(null);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [facing, setFacing] = useState<CameraType>('back');
   const [lesionBox, setLesionBox] = useState<LesionBox | null>(null);
@@ -42,6 +55,8 @@ export default function CameraScreen({ navigation }: { navigation: any }) {
   useFocusEffect(
     useCallback(() => {
       setState('bodyArea');
+      setMode('single');
+      setMonitorMeta(null);
       setPhotoUri(null);
       setFacing('back');
       setBodyRegion(null);
@@ -145,16 +160,34 @@ export default function CameraScreen({ navigation }: { navigation: any }) {
         itch: `${itchLevel ?? '-'} / 10`,
         region: bodyRegion ?? undefined,
         photoUri: photoUri ?? undefined,
+        siteLabel: monitorMeta?.siteLabel,
+        confidence: monitorMeta?.confidence.score,
       });
     }
     setGuarded(false);
     navigation.navigate('Records');
   };
 
+  if (state === 'bodyArea' && mode === 'monitor') {
+    return (
+      <MonitoringFlow
+        onExit={() => setMode('single')}
+        onCaptured={(processedUri, target, session) => {
+          // 후처리까지 끝난 사진을 기존 분석 흐름(설문 → AI 분석 → 결과 저장)에 그대로 태운다
+          setBodyRegion(PART_TO_REGION[target.part]);
+          setMonitorMeta({ siteLabel: target.label, confidence: session.confidence });
+          setPhotoUri(processedUri);
+          setState('rating');
+        }}
+      />
+    );
+  }
+
   if (state === 'bodyArea') {
     return (
       <BodyAreaScreen
         onBack={goHome}
+        onSwitchToMonitoring={() => setMode('monitor')}
         onChooseCamera={async (region) => {
           setBodyRegion(region);
           if (!permission?.granted) {
@@ -190,7 +223,10 @@ export default function CameraScreen({ navigation }: { navigation: any }) {
 
   if (state === 'rating' && photoUri) {
     return (
-      <RatingScreen onCancel={() => setState('ready')} onConfirm={(level) => analyze(photoUri, level)} />
+      <RatingScreen
+        onCancel={() => setState(mode === 'monitor' ? 'bodyArea' : 'ready')}
+        onConfirm={(level) => analyze(photoUri, level)}
+      />
     );
   }
 
@@ -200,6 +236,7 @@ export default function CameraScreen({ navigation }: { navigation: any }) {
         photoUri={photoUri}
         result={result}
         itchLevel={itchLevel}
+        monitorMeta={monitorMeta}
         onSave={saveAndGoToRecords}
         onClose={() => guardedAction(goHome)}
       />
@@ -484,12 +521,14 @@ function ResultScreen({
   photoUri,
   result,
   itchLevel,
+  monitorMeta,
   onSave,
   onClose,
 }: {
   photoUri: string;
   result: LocalAnalysisResult;
   itchLevel: number | null;
+  monitorMeta: MonitorMeta | null;
   onSave: () => void;
   onClose: () => void;
 }) {
@@ -505,6 +544,34 @@ function ResultScreen({
       </Pressable>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.resultScrollContent}>
+        {monitorMeta && (
+          <>
+            <View style={styles.monitorRow}>
+              <Text style={styles.monitorSite}>{monitorMeta.siteLabel} 모니터링</Text>
+              <View
+                style={[
+                  styles.monitorBadge,
+                  {
+                    backgroundColor:
+                      monitorMeta.confidence.tier === 'high'
+                        ? AppColors.sev1
+                        : monitorMeta.confidence.tier === 'medium'
+                          ? AppColors.sev2
+                          : AppColors.sev3,
+                  },
+                ]}
+              >
+                <Text style={styles.monitorBadgeText}>신뢰도 {monitorMeta.confidence.score}</Text>
+              </View>
+            </View>
+            {!monitorMeta.confidence.usable && (
+              <Text style={styles.monitorWarn}>
+                촬영 품질이 낮아 이 기록은 추세 계산에서 가중치를 낮게 잡는 것이 좋아요
+              </Text>
+            )}
+            <View style={{ height: 14 }} />
+          </>
+        )}
         <View style={styles.resultKickerRow}>
           <Text style={styles.resultKicker}>AI 분석 결과 (관찰된 소견)</Text>
           <Text style={styles.inferenceTimeText}>{inferenceInfoText}</Text>
@@ -688,6 +755,11 @@ const styles = StyleSheet.create({
   signGradeBadge: { borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
   signGradeBadgeText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
   ringText: { position: 'absolute', fontSize: 13, fontWeight: '700', color: AppColors.ink },
+  monitorRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  monitorSite: { fontSize: 15, fontWeight: '800', color: AppColors.ink },
+  monitorBadge: { borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5 },
+  monitorBadgeText: { fontSize: 12, fontWeight: '700', color: '#FFFFFF' },
+  monitorWarn: { marginTop: 8, fontSize: 12, color: AppColors.sev3, fontWeight: '600', lineHeight: 18 },
   resultFooter: { padding: 20, paddingTop: 0 },
   resultBtn: { backgroundColor: AppColors.greenTop, borderRadius: 14, padding: 15 },
   resultBtnText: { textAlign: 'center', fontSize: 15, fontWeight: '700', color: '#16320A' },

@@ -30,6 +30,10 @@ export interface SkinRecord {
   itch: string;
   region?: BodyRegion;
   photoUri?: string;
+  /** 모니터링 촬영으로 저장된 기록일 때만 채워진다 */
+  siteLabel?: string;
+  /** 촬영·후처리 신뢰도 (0~100). 낮은 기록은 추세에서 가중치를 낮춰야 한다 */
+  confidence?: number;
 }
 
 /** 주변 병원 */
