@@ -121,9 +121,10 @@ export default function MonitoringDetailScreen({ navigation, route }) {
   const record = folder.records.find((r) => r.id === recordId) || folder.records[folder.records.length - 1];
 
   // "경과 비교"는 지금 보고 있는 이 기록(record)을 고정된 도착점으로 두고, 비교 시작점(기준
-  // 날짜)은 이 기록을 뺀 나머지 기록 중에서 사용자가 직접 고를 수 있다 — 기본값(아직 아무것도
+  // 날짜)은 이 기록보다 과거인 기록 중에서만 사용자가 직접 고를 수 있다 — "경과"는 과거 -> 현재
+  // 방향으로만 의미가 있으므로 이 기록 이후(미래) 날짜는 후보에서 제외한다. 기본값(아직 아무것도
   // 고르지 않았을 때)은 그중 가장 이른 기록(예전의 "최초 기록")이다.
-  const compareCandidates = folder.records.filter((r) => r.id !== record.id);
+  const compareCandidates = folder.records.filter((r) => r.dayOffset < record.dayOffset);
   const baseline = compareCandidates.find((r) => r.id === baselineId) || compareCandidates[0] || null;
   const hasCompare = !!baseline;
 
