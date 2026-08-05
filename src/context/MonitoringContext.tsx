@@ -1,14 +1,14 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { BodySpot } from '../monitoring/bodyParts';
 import { BodyModelId } from '../three/humanModel';
-import { Baseline, MonitorSession, MonitorTarget } from '../monitoring/types';
+import { Baseline, MonitorDiagnosis, MonitorSession, MonitorTarget } from '../monitoring/types';
 import { newId } from '../monitoring/postProcess';
 
 interface MonitoringContextValue {
   targets: MonitorTarget[];
   sessions: MonitorSession[];
   /** 같은 자리를 다시 고르면 기존 대상을 돌려준다 (기준 세션이 이어져야 비교가 된다) */
-  ensureTarget: (modelId: BodyModelId, spot: BodySpot) => MonitorTarget;
+  ensureTarget: (modelId: BodyModelId, spot: BodySpot, diagnosis?: MonitorDiagnosis) => MonitorTarget;
   findTarget: (id: string) => MonitorTarget | undefined;
   addSession: (session: MonitorSession, baseline?: Baseline) => void;
   sessionsOf: (targetId: string) => MonitorSession[];
@@ -26,9 +26,16 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
   const [sessions, setSessions] = useState<MonitorSession[]>([]);
 
   const ensureTarget = useCallback(
-    (modelId: BodyModelId, spot: BodySpot) => {
+    (modelId: BodyModelId, spot: BodySpot, diagnosis?: MonitorDiagnosis) => {
       const existing = targets.find((t) => t.spotId === spot.id && t.modelId === modelId);
-      if (existing) return existing;
+      if (existing) {
+        // 같은 자리를 다시 등록하면서 문진을 새로 했으면 질환 정보만 갱신한다
+        if (diagnosis) {
+          setTargets((prev) => prev.map((t) => (t.id === existing.id ? { ...t, diagnosis } : t)));
+          return { ...existing, diagnosis };
+        }
+        return existing;
+      }
       const created: MonitorTarget = {
         id: newId('tgt'),
         modelId,
@@ -36,6 +43,7 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
         part: spot.part,
         facing: spot.facing,
         label: spot.label,
+        diagnosis,
         createdAt: new Date(),
         sessionCount: 0,
       };

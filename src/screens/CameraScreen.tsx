@@ -29,7 +29,7 @@ interface MonitorMeta {
   confidence: SessionConfidence;
 }
 
-export default function CameraScreen({ navigation }: { navigation: any }) {
+export default function CameraScreen({ navigation, route }: { navigation: any; route?: any }) {
   const [state, setState] = useState<CamState>('bodyArea');
   const [mode, setMode] = useState<CamMode>('single');
   const [monitorMeta, setMonitorMeta] = useState<MonitorMeta | null>(null);
@@ -51,11 +51,18 @@ export default function CameraScreen({ navigation }: { navigation: any }) {
     preloadModels();
   }, []);
 
+  // 라우트 파라미터는 ref로 읽는다 — 의존성에 넣으면 아래 초기화 효과가 다시 돌면서 모드가 되돌아간다
+  const routeRef = useRef(route);
+  routeRef.current = route;
+
   // 카메라 탭이 다시 열릴 때마다 초기화 (Flutter의 reset() 대응)
   useFocusEffect(
     useCallback(() => {
+      // 기록 탭의 "신규 모니터링 등록하기"로 들어오면 바로 모니터링 흐름으로 시작한다
+      const startMonitor = routeRef.current?.params?.mode === 'monitor';
+      if (startMonitor) navigation.setParams({ mode: undefined });
       setState('bodyArea');
-      setMode('single');
+      setMode(startMonitor ? 'monitor' : 'single');
       setMonitorMeta(null);
       setPhotoUri(null);
       setFacing('back');
@@ -64,7 +71,7 @@ export default function CameraScreen({ navigation }: { navigation: any }) {
       setResult(null);
       setError(null);
       setGuarded(false);
-    }, [setGuarded]),
+    }, [setGuarded, navigation]),
   );
 
   // 저장하지 않은 분석 결과가 떠 있는 동안에는 다른 탭으로 못 빠져나가게 보호

@@ -19,6 +19,18 @@ export interface Baseline {
   brightness: number;
 }
 
+/** 등록 전 문진에서 받은 질환 정보 */
+export interface MonitorDiagnosis {
+  /** 피부과 전문의 진단 이력 여부 */
+  diagnosed: boolean;
+  disease: string;
+  /** 사용자가 고른 것인지, 분류 모델이 추정한 것인지 */
+  source: 'self' | 'model';
+  /** 모델 추정일 때의 확률 (0~1) */
+  score?: number;
+  photoUri?: string;
+}
+
 /** 사용자가 3D 모델에서 고른 "계속 지켜볼 자리" */
 export interface MonitorTarget {
   id: string;
@@ -28,6 +40,8 @@ export interface MonitorTarget {
   part: BodyPartId;
   facing: PartFacing;
   label: string;
+  /** 등록 시 문진 결과 */
+  diagnosis?: MonitorDiagnosis;
   createdAt: Date;
   baseline?: Baseline;
   sessionCount: number;
