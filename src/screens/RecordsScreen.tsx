@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
+import { useTracking } from '../TrackingModalContext';
 import { BODY_REGIONS, BODY_REGION_LABELS, BodyRegion, SkinRecord, parseItch, sevOf } from '../models';
 import { useRecords } from '../context/RecordsContext';
 import { SevBadge } from '../components/widgets';
@@ -20,6 +21,7 @@ const REGION_ICONS: Record<BodyRegion, React.ComponentProps<typeof MaterialIcons
 
 export default function RecordsScreen() {
   const { records } = useRecords();
+  const { open: openTracking } = useTracking();
   const [view, setView] = useState(() => new Date());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<BodyRegion | null>(null);
@@ -37,6 +39,13 @@ export default function RecordsScreen() {
       <Text style={styles.title}>기록</Text>
       <View style={{ height: 4 }} />
       <Text style={styles.subtitle}>그동안의 검사 기록을 달력으로 확인하세요</Text>
+      <View style={{ height: 16 }} />
+
+      <Pressable style={styles.trackEntry} onPress={() => openTracking()}>
+        <MaterialIcons name="straighten" size={20} color="#2E4A14" />
+        <Text style={styles.trackEntryText}>병변 면적 추적</Text>
+        <MaterialIcons name="chevron-right" size={20} color="#2E4A14" />
+      </Pressable>
       <View style={{ height: 16 }} />
 
       <CalendarCard
@@ -327,6 +336,11 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   title: { fontSize: 22, fontWeight: '800', color: AppColors.ink },
+  trackEntry: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#E4F2D6', borderRadius: 16, paddingVertical: 15, paddingHorizontal: 16,
+  },
+  trackEntryText: { flex: 1, fontSize: 15, fontWeight: '800', color: '#2E4A14' },
   subtitle: { fontSize: 13.5, color: AppColors.sub },
   sectionTitle: { fontSize: 17, fontWeight: '800', color: AppColors.ink },
   regionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },

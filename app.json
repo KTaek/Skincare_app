@@ -43,7 +43,8 @@
           "enableAndroidGpuLibraries": false
         }
       ],
-      "expo-font"
+      "expo-font",
+      "./plugins/withLargeHeap.js"
     ],
     "extra": {
       "eas": {

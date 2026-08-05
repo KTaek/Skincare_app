@@ -36,6 +36,43 @@ export function distToSegment(px: number, py: number, ax: number, ay: number, bx
   return Math.hypot(px - cx, py - cy);
 }
 
+/** 세그먼트 위 투영 파라미터 t(0~1) */
+export function segParam(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const abx = bx - ax, aby = by - ay;
+  const l = abx * abx + aby * aby;
+  const t = l > 0 ? ((px - ax) * abx + (py - ay) * aby) / l : 0;
+  return Math.max(0, Math.min(1, t));
+}
+
+export interface GranularPart { part: string; ref: string | null; }
+
+/** 탭 위치(x,y) → 관절 기준 세부 부위. 팔=상완/전완/손, 다리=허벅지/종아리/발,
+ *  몸통=가슴라인 기준 가슴(유두)/배(배꼽), 머리/목 분리. 신체 밖이면 null */
+export function classifyBodyPartGranular(x: number, y: number): GranularPart | null {
+  if (Math.hypot(x - HEAD.cx, y - HEAD.cy) <= HEAD.r) return { part: '머리', ref: null };
+  if (x >= NECK.x1 - 3 && x <= NECK.x2 + 3 && y >= NECK.y1 - 2 && y <= NECK.y2 + 4) return { part: '목', ref: null };
+  if (x >= TORSO.x1 && x <= TORSO.x2 && y >= TORSO.y1 && y <= TORSO.y2) {
+    const mid = (TORSO.y1 + TORSO.y2) / 2;   // 가슴라인
+    return y < mid ? { part: '가슴(가슴 위)', ref: '유두' } : { part: '배(가슴 아래)', ref: '배꼽' };
+  }
+  const aR = ARM_RADIUS + 4, lR = LEG_RADIUS + 4;
+  // 팔 (상완 세그 / 전완+손 세그)
+  if (distToSegment(x, y, ...ARMS[0]) <= aR) return { part: '왼쪽 상완', ref: null };
+  if (distToSegment(x, y, ...ARMS[1]) <= aR)
+    return { part: segParam(x, y, ...ARMS[1]) > 0.75 ? '왼손' : '왼쪽 전완', ref: null };
+  if (distToSegment(x, y, ...ARMS[2]) <= aR) return { part: '오른쪽 상완', ref: null };
+  if (distToSegment(x, y, ...ARMS[3]) <= aR)
+    return { part: segParam(x, y, ...ARMS[3]) > 0.75 ? '오른손' : '오른쪽 전완', ref: null };
+  // 다리 (허벅지 세그 / 종아리+발 세그)
+  if (distToSegment(x, y, ...LEGS[0]) <= lR) return { part: '왼쪽 허벅지', ref: null };
+  if (distToSegment(x, y, ...LEGS[1]) <= lR)
+    return { part: segParam(x, y, ...LEGS[1]) > 0.82 ? '왼발' : '왼쪽 종아리', ref: null };
+  if (distToSegment(x, y, ...LEGS[2]) <= lR) return { part: '오른쪽 허벅지', ref: null };
+  if (distToSegment(x, y, ...LEGS[3]) <= lR)
+    return { part: segParam(x, y, ...LEGS[3]) > 0.82 ? '오른발' : '오른쪽 종아리', ref: null };
+  return null;
+}
+
 /** viewBox 좌표 (x, y)가 어떤 신체 부위 위에 있는지 판정. 신체 밖이면 null */
 export function classifyBodyRegion(x: number, y: number): BodyRegion | null {
   if (Math.hypot(x - HEAD.cx, y - HEAD.cy) <= HEAD.r) return 'head';
