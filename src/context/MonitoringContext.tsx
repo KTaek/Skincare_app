@@ -3,6 +3,7 @@ import { BodySpot } from '../monitoring/bodyParts';
 import { BodyModelId } from '../three/humanModel';
 import { Baseline, MonitorDiagnosis, MonitorSession, MonitorTarget } from '../monitoring/types';
 import { newId } from '../monitoring/postProcess';
+import { DEMO_TARGETS } from '../folders/targets';
 
 interface MonitoringContextValue {
   targets: MonitorTarget[];
@@ -22,7 +23,9 @@ const MonitoringContext = createContext<MonitoringContextValue | null>(null);
  * 재설치·재시작 후에도 기준 세션(baseline)이 유지된다.
  */
 export function MonitoringProvider({ children }: { children: React.ReactNode }) {
-  const [targets, setTargets] = useState<MonitorTarget[]>([]);
+  // 데모 모니터링 폴더 2개(folders/store.js의 프리셋)가 참조하는 대상을 미리 넣어 둔다 —
+  // 그래야 그 폴더에서도 "오늘의 피부 상태 기록"이 실제 가이드 촬영을 띄울 수 있다.
+  const [targets, setTargets] = useState<MonitorTarget[]>(DEMO_TARGETS);
   const [sessions, setSessions] = useState<MonitorSession[]>([]);
 
   const ensureTarget = useCallback(

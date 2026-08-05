@@ -1,14 +1,18 @@
 /**
  * 모니터링 폴더 저장소 (세션 메모리 + 구독).
  *
- * 부위별로 폴더를 만들고, 폴더 안에 촬영 날짜별 기록(수면 점수 · 가려움 VAS · 피부 종합 상태 IGA)을 쌓는다.
- * 아직 실제 스캔 파이프라인과 연결되지 않아 프리셋 폴더 2개 + 새로 만드는 폴더 모두
- * dump(가짜) 시계열 데이터로 채워서 UI 흐름을 시연한다.
+ * 폴더 하나 = 모니터링 대상(MonitorTarget) 하나. 폴더 안에는 촬영 날짜별 기록
+ * (수면 점수 · 가려움 VAS · 피부 종합 상태 IGA)이 쌓인다.
+ *
+ * 폴더는 사용자가 직접 만들지 않는다 — 기록 탭의 "신규 모니터링 등록하기" 흐름
+ * (문진 → 부위 선택 → 가이드 촬영)을 끝내면 ensureFolderForTarget이 "{부위} {질환}" 이름으로
+ * 자동 생성한다. 프리셋 폴더 2개는 UI 흐름 시연용 dump 시계열이다.
  *
  * ⚠️ 세션 메모리에만 유지된다(앱 재시작 시 초기화).
  */
 import { useSyncExternalStore } from 'react';
-import { ATOPIC_PHOTOS, CHEEK_PHOTOS, GENERAL_PHOTOS } from './dumpPhotos';
+import { ATOPIC_PHOTOS, CHEEK_PHOTOS } from './dumpPhotos';
+import { DEMO_TARGETS, folderNameOf } from './targets';
 
 const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -119,11 +123,12 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
   });
 }
 
-function makeFolder({ id, name, spanDaysAgoStart, spanDays, captureCount, from, to, photos = GENERAL_PHOTOS }) {
+function makeFolder({ id, targetId, name, spanDaysAgoStart, spanDays, captureCount, from, to, photos }) {
   const startDate = addDaysKey(todayKey(), -spanDaysAgoStart);
   const seedBase = hashStr(id + name);
   return {
     id,
+    targetId,
     name,
     startDate,
     createdTs: Date.now(),
@@ -131,11 +136,15 @@ function makeFolder({ id, name, spanDaysAgoStart, spanDays, captureCount, from, 
   };
 }
 
+/** 데모 폴더도 실제 등록으로 만들어진 폴더와 똑같이 "{부위} {질환}" 이름을 쓴다 */
+const demoName = (t) => folderNameOf(t.label, t.diagnosis?.disease);
+
 // ── 프리셋 폴더 2개 (dump) ───────────────────────────────────────────────
 let folders = [
   makeFolder({
     id: 'f1',
-    name: '오른팔 아토피 피부염 모니터링',
+    targetId: DEMO_TARGETS[0].id, // 오른쪽 상완 앞 아토피피부염
+    name: demoName(DEMO_TARGETS[0]),
     spanDaysAgoStart: 53,
     spanDays: 53,
     captureCount: 14,
@@ -145,7 +154,8 @@ let folders = [
   }),
   makeFolder({
     id: 'f2',
-    name: '왼쪽 뺨 홍반 모니터링',
+    targetId: DEMO_TARGETS[1].id, // 얼굴 주사
+    name: demoName(DEMO_TARGETS[1]),
     spanDaysAgoStart: 21,
     spanDays: 21,
     captureCount: 7,
@@ -171,29 +181,35 @@ export function dayCount(folder) {
   return Math.max(0, daysBetween(folder.startDate, todayKey()));
 }
 
+/** 한 모니터링 대상(MonitorTarget)에 딸린 폴더 */
+export function getFolderByTarget(targetId) {
+  return folders.find((f) => f.targetId === targetId) || null;
+}
+
 /**
- * 새 모니터링 폴더 생성. 아직 실제 촬영 연동 전이라 데모용 dump 시계열을 함께 채워 넣는다
- * (70% 확률로 호전 추세, 30% 확률로 악화 추세 — 다양한 케이스를 보여주기 위함).
- * 호전 = 수면 점수↑ · 가려움 VAS↓ · 피부 종합 상태(IGA)↓.
+ * "신규 모니터링 등록하기" 흐름이 가이드 촬영까지 끝냈을 때 호출한다.
+ *
+ * 그 대상의 폴더가 없으면 "{부위} {질환}" 이름으로 새로 만들고(이름은 호출부에서 folderNameOf로
+ * 지어 넘긴다), 방금 찍은 사진을 첫 기록으로 넣는다. 같은 자리를 다시 등록한 경우엔
+ * (ensureTarget이 기존 대상을 그대로 돌려주므로) 이미 있는 폴더에 오늘 기록만 덧붙는다 —
+ * 같은 자리의 추이가 폴더 하나에 계속 이어져야 비교가 의미 있기 때문이다.
+ *
+ * @param {{ targetId: string, name: string, photo: { uri: string } }} args
  */
-export function addFolder(name) {
-  const id = `f_${Date.now()}`;
-  const rng = makeRng(hashStr(id + name));
-  const spanDays = 10 + Math.round(rng() * 50);
-  const captureCount = Math.max(3, Math.round(spanDays / 4));
-  const improving = rng() < 0.7;
-
-  // iga는 정수로 딱 떨어뜨리지 않고 round1(소수 첫째 자리)로 남겨서, 첫/마지막 기록도
-  // 기댓값 출력다운 소수(예: 1.7)로 나올 수 있게 한다.
-  const from = { sleep: Math.round(55 + rng() * 20), itch: Math.round(4 + rng() * 5), iga: round1(1 + rng() * 3) };
-  const to = improving
-    ? { sleep: clamp(Math.round(from.sleep + (20 + rng() * 20)), 0, 100), itch: clamp(Math.round(from.itch * (0.1 + rng() * 0.3)), 0, 10), iga: clamp(round1(from.iga * (0.1 + rng() * 0.3)), 0, 4) }
-    : { sleep: clamp(Math.round(from.sleep - (10 + rng() * 20)), 0, 100), itch: clamp(Math.round(from.itch + (2 + rng() * 3)), 0, 10), iga: clamp(round1(from.iga + (1 + rng())), 0, 4) };
-
-  const folder = makeFolder({ id, name, spanDaysAgoStart: spanDays, spanDays, captureCount, from, to });
-  folders = [folder, ...folders];
-  emit();
-  return folder;
+export function ensureFolderForTarget({ targetId, name, photo }) {
+  const existing = getFolderByTarget(targetId);
+  if (!existing) {
+    folders = [
+      { id: `f_${targetId}`, targetId, name, startDate: todayKey(), createdTs: Date.now(), records: [] },
+      ...folders,
+    ];
+  } else if (existing.name !== name) {
+    // 같은 자리를 다시 등록하면서 문진에서 질환명을 바꿨으면 폴더 이름도 따라간다
+    folders = folders.map((f) => (f.id === existing.id ? { ...f, name } : f));
+  }
+  // 여기서는 emit하지 않는다 — 기록이 0개인 순간이 구독자에게 보이면 폴더 화면이 빈 배열을
+  // 그리게 된다. 바로 아래 addRecord가 첫 기록까지 채운 뒤 한 번만 알린다.
+  return addRecord(existing ? existing.id : `f_${targetId}`, photo);
 }
 
 export function deleteFolder(id) {
@@ -204,7 +220,7 @@ export function deleteFolder(id) {
 /**
  * "오늘의 피부 상태 기록" 버튼으로 방금 촬영한 사진을 폴더에 새 기록으로 추가한다.
  * 아직 실제 분석 파이프라인이 없어(온디바이스 모델 연동 전) 마지막 기록 값을 기준으로 살짝
- * 흔들어 오늘치 dump 수치를 만든다 — addFolder의 시계열 생성과 같은 잡음 스타일이다.
+ * 흔들어 오늘치 dump 수치를 만든다 — 프리셋 폴더의 시계열 생성과 같은 잡음 스타일이다.
  * 같은 날 이미 기록이 있으면(하루 여러 번 촬영) 새로 덮어쓴다.
  *
  * @param {string} folderId

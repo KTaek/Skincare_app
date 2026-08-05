@@ -1,9 +1,10 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as ImagePicker from 'expo-image-picker';
 import { monitoringColors as mc, monitoringCard, sleepBand, itchBand, skinConditionInfo, DISPLAY_SCALE } from '../theme';
 import { useFolder, dayCount, addRecord } from '../store';
+import { useMonitoring } from '../../context/MonitoringContext';
+import MonitorCaptureScreen from '../../screens/MonitorCaptureScreen';
 import TrendChart, {
   TrendChartLegend, TrendChartYAxis, chartContentWidth, POINT_W, Y_AXIS_W,
 } from '../components/TrendChart';
@@ -74,7 +75,9 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   const folder = useFolder(folderId);
   const [zoomRecord, setZoomRecord] = useState(null);
   const [zoomPage, setZoomPage] = useState(0);
+  // true면 이 화면 대신 가이드 촬영 화면(MonitorCaptureScreen)을 전체 화면으로 띄운다
   const [capturing, setCapturing] = useState(false);
+  const { findTarget } = useMonitoring();
   // 날짜 칸 줄과 그래프가 같은 가로 스크롤 하나를 공유한다(아래 참고) — 처음 열렸을 때(또는 새로
   // 촬영해 기록이 늘었을 때) 오른쪽 끝(오늘)으로 자동 스크롤하기 위한 참조.
   const scrollRef = useRef(null);
@@ -89,7 +92,9 @@ export default function MonitoringFolderScreen({ navigation, route }) {
     return recs && recs.length ? recs[recs.length - 1].id : null;
   });
 
-  if (!folder) {
+  // 기록이 하나도 없는 폴더는 만들어지지 않지만(폴더 생성과 첫 기록이 한 번에 일어난다),
+  // 아래 계산이 전부 "기록이 최소 하나"를 전제하므로 방어적으로 함께 막는다.
+  if (!folder || folder.records.length === 0) {
     return (
       <SafeAreaView style={styles.container}>
         <Text style={{ padding: 20, color: mc.sub }}>폴더를 찾을 수 없습니다.</Text>
@@ -119,30 +124,31 @@ export default function MonitoringFolderScreen({ navigation, route }) {
 
   const openZoom = (page) => { setZoomPage(page); setZoomRecord(selectedRecord); };
 
-  /** "오늘의 피부 상태 기록" 버튼 — 카메라를 열어 사진을 찍고, 오늘 날짜 기록으로 폴더에 추가한다 */
-  const captureToday = async () => {
-    if (capturing) return;
-    setCapturing(true);
-    try {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('카메라 권한이 필요해요', '설정에서 카메라 접근을 허용해주세요.');
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({ quality: 0.7, allowsEditing: false });
-      if (result.canceled || !result.assets?.[0]) return;
+  /**
+   * "오늘의 피부 상태 기록"은 신규 등록 때와 똑같은 가이드 촬영을 쓴다 — 같은 자리를 계속
+   * 비교하려면 매번 같은 구도·같은 색 기준으로 찍혀야 하므로, 일반 카메라가 아니라 기준 사진에
+   * 맞춰 자동 셔터·정합·색보정까지 하는 MonitorCaptureScreen을 그대로 띄운다.
+   * 그 화면은 대상(MonitorTarget)을 요구하므로 폴더에 적힌 targetId로 찾아 넘긴다.
+   */
+  const target = folder.targetId ? findTarget(folder.targetId) : undefined;
 
-      const record = addRecord(folderId, { uri: result.assets[0].uri });
-      if (record) {
-        setSelectedId(record.id);
-        scrollRef.current?.scrollToEnd({ animated: true });
-      }
-    } catch (e) {
-      Alert.alert('촬영 실패', '카메라를 여는 중 문제가 발생했어요.');
-    } finally {
-      setCapturing(false);
-    }
-  };
+  if (capturing && target) {
+    return (
+      <MonitorCaptureScreen
+        target={target}
+        onCancel={() => setCapturing(false)}
+        onComplete={(processedUri) => {
+          // 후처리까지 끝난 사진을 오늘 기록으로 폴더에 넣는다 (기준 사진 갱신은 MonitorCaptureScreen이 한다)
+          const record = addRecord(folderId, { uri: processedUri });
+          setCapturing(false);
+          if (record) {
+            setSelectedId(record.id);
+            scrollRef.current?.scrollToEnd({ animated: true });
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -246,8 +252,15 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           </View>
         </View>
 
-        <TouchableOpacity style={styles.recordBtn} activeOpacity={0.85} onPress={captureToday} disabled={capturing}>
-          <Text style={styles.recordBtnText}>{capturing ? '여는 중…' : '📷 오늘의 피부 상태 기록'}</Text>
+        <TouchableOpacity
+          style={[styles.recordBtn, !target && styles.recordBtnDisabled]}
+          activeOpacity={0.85}
+          onPress={() => setCapturing(true)}
+          disabled={!target}
+        >
+          <Text style={[styles.recordBtnText, !target && styles.recordBtnTextDisabled]}>
+            {target ? '📷 오늘의 피부 상태 기록' : '등록된 촬영 자리가 없어요'}
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -311,4 +324,6 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   recordBtnText: { fontSize: 15, fontWeight: '800', color: mc.greenDeep },
+  recordBtnDisabled: { backgroundColor: mc.line },
+  recordBtnTextDisabled: { color: mc.sub },
 });

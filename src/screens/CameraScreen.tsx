@@ -18,6 +18,8 @@ import BodyAreaScreen from './BodyAreaScreen';
 import MonitoringFlow from './MonitoringFlow';
 import { PART_TO_REGION } from '../monitoring/bodyParts';
 import { SessionConfidence } from '../monitoring/types';
+import { ensureFolderForTarget } from '../folders/store';
+import { folderNameOf } from '../folders/targets';
 
 type CamState = 'bodyArea' | 'ready' | 'rating' | 'analyzing' | 'result' | 'error';
 /** 일반 1회 촬영 vs 같은 자리를 반복 촬영하는 모니터링 */
@@ -180,6 +182,13 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
       <MonitoringFlow
         onExit={() => setMode('single')}
         onCaptured={(processedUri, target, session) => {
+          // 등록이 촬영까지 끝났으므로 이 자리의 모니터링 폴더를 "{부위} {질환}" 이름으로
+          // 만들고(이미 있으면 그대로 쓰고) 방금 찍은 사진을 오늘 기록으로 넣는다.
+          ensureFolderForTarget({
+            targetId: target.id,
+            name: folderNameOf(target.label, target.diagnosis?.disease),
+            photo: { uri: processedUri },
+          });
           // 후처리까지 끝난 사진을 기존 분석 흐름(설문 → AI 분석 → 결과 저장)에 그대로 태운다
           setBodyRegion(PART_TO_REGION[target.part]);
           setMonitorMeta({ siteLabel: target.label, confidence: session.confidence });

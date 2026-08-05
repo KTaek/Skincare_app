@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput } from 'react-native';
+import React from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { monitoringColors as mc, monitoringCard } from '../theme';
-import { useFolders, addFolder, dayCount } from '../store';
+import { useFolders, dayCount } from '../store';
 import LesionThumb from '../components/LesionThumb';
 
 /** 폴더 요약 카드에는 세 지표를 다 나열하기엔 좁으니, "피부 종합 상태"(IGA) 하나로 추세를 요약한다 */
@@ -23,16 +23,6 @@ function trendSummary(folder) {
 
 export default function MonitoringScreen({ navigation }) {
   const folders = useFolders();
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState('');
-
-  const submit = () => {
-    if (!name.trim()) return;
-    const folder = addFolder(name.trim());
-    setName('');
-    setAdding(false);
-    navigation.navigate('MonitoringFolder', { folderId: folder.id });
-  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -50,42 +40,15 @@ export default function MonitoringScreen({ navigation }) {
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: 24 }}>
 
-        {/* 새 폴더 만들기 */}
-        <View style={[monitoringCard(), styles.card]}>
-          {adding ? (
-            <View style={{ gap: 10 }}>
-              <Text style={styles.cardLabel}>폴더명 지정</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="예: 오른팔 아토피 피부염 모니터링"
-                placeholderTextColor={mc.sub}
-                value={name}
-                onChangeText={setName}
-                onSubmitEditing={submit}
-                autoFocus
-              />
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => { setAdding(false); setName(''); }}>
-                  <Text style={styles.cancelBtnText}>취소</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.addBtn} onPress={submit}>
-                  <Text style={styles.addBtnText}>폴더 만들기</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : (
-            <TouchableOpacity style={styles.newFolderRow} onPress={() => setAdding(true)}>
-              <Text style={styles.newFolderIcon}>＋</Text>
-              <Text style={styles.newFolderText}>새 모니터링 폴더 만들기</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* 폴더 목록 */}
+        {/* 폴더는 직접 만들지 않는다 — 기록 탭의 "신규 모니터링 등록하기"를 끝내면
+            "{부위} {질환}" 이름으로 자동 생성된다 */}
         {folders.length === 0 ? (
           <View style={[monitoringCard(), styles.emptyCard]}>
             <Text style={{ fontSize: 28, marginBottom: 6 }}>📁</Text>
-            <Text style={{ fontSize: 13, color: mc.sub }}>아직 모니터링 폴더가 없습니다</Text>
+            <Text style={styles.emptyTitle}>아직 모니터링 폴더가 없습니다</Text>
+            <Text style={styles.emptyHint}>
+              기록 탭의 “신규 모니터링 등록하기”로 자리를 등록하면{'\n'}폴더가 자동으로 만들어집니다
+            </Text>
           </View>
         ) : (
           folders.map((folder) => {
@@ -131,27 +94,9 @@ const styles = StyleSheet.create({
     backgroundColor: mc.card, borderBottomWidth: 1, borderBottomColor: mc.line,
   },
   topBarTitle: { fontSize: 17, fontWeight: '800', color: mc.ink },
-  card: { padding: 16 },
-  cardLabel: { fontSize: 13, color: mc.sub },
-  input: {
-    height: 44, borderWidth: 1, borderColor: mc.line,
-    borderRadius: 10, paddingHorizontal: 14, fontSize: 14, color: mc.ink,
-    backgroundColor: mc.bg,
-  },
-  cancelBtn: {
-    flex: 1, height: 44, borderRadius: 10, borderWidth: 1, borderColor: mc.line,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  cancelBtnText: { fontSize: 14, color: mc.sub, fontWeight: '600' },
-  addBtn: {
-    flex: 2, height: 44, borderRadius: 10, backgroundColor: mc.greenTop,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  addBtnText: { fontSize: 14, color: mc.greenDeep, fontWeight: '800' },
-  newFolderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
-  newFolderIcon: { fontSize: 20, color: mc.greenMuted, fontWeight: '700' },
-  newFolderText: { fontSize: 14, color: mc.ink, fontWeight: '700' },
   emptyCard: { padding: 24, alignItems: 'center' },
+  emptyTitle: { fontSize: 13, color: mc.sub, fontWeight: '700' },
+  emptyHint: { fontSize: 12, color: mc.sub, textAlign: 'center', lineHeight: 18, marginTop: 6 },
   folderCard: { flexDirection: 'row', alignItems: 'center', padding: 14 },
   folderName: { fontSize: 15, fontWeight: '800', color: mc.ink },
   folderMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
