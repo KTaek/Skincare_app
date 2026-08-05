@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { CameraType, CameraView, useCameraPermissions } from 'expo-camera';
 import { AppColors } from '../theme';
 import { useMonitoring } from '../context/MonitoringContext';
 import { detectLesionShape, LesionDetection } from '../monitoring/lesionShape';
@@ -44,7 +44,8 @@ export default function MonitorCaptureScreen({
   const [permission, requestPermission] = useCameraPermissions();
   const [phase, setPhase] = useState<Phase>('preview');
   const [live, setLive] = useState<FrameEvaluation | null>(null);
-  const [autoEnabled, setAutoEnabled] = useState(true);
+  /** 등·목 뒤처럼 혼자 찍기 어려운 자리는 전면 카메라로 거울처럼 보며 찍는다 */
+  const [facing, setFacing] = useState<CameraType>('back');
   const [result, setResult] = useState<PostProcessResult | null>(null);
   const [session, setSession] = useState<MonitorSession | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +99,9 @@ export default function MonitorCaptureScreen({
   useEffect(() => {
     if (phase !== 'preview' || !permission?.granted) return;
     cancelled.current = false;
+    // 카메라를 바꾸면 이전 카메라로 모아 둔 후보는 버린다
+    candidates.current = [];
+    windowStart.current = null;
 
     const tick = async () => {
       if (busy.current || cancelled.current) return;
@@ -117,8 +121,6 @@ export default function MonitorCaptureScreen({
         const evaluation = evaluateFrame(metrics, detection.shape, baseline);
         if (cancelled.current) return;
         setLive(evaluation);
-
-        if (!autoEnabled) return;
 
         if (evaluation.hardPass && evaluation.softScore >= GATE.autoShutterSoftScore) {
           if (windowStart.current == null) windowStart.current = Date.now();
@@ -147,27 +149,7 @@ export default function MonitorCaptureScreen({
       cancelled.current = true;
       clearInterval(id);
     };
-  }, [phase, permission?.granted, autoEnabled, baseline, finalize]);
-
-  /** 수동 셔터 — 필수 조건을 못 넘겨도 찍을 수 있게 열어둔다 (순응도 우선). 대신 신뢰도에 반영된다 */
-  const manualCapture = async () => {
-    if (busy.current) return;
-    busy.current = true;
-    cancelled.current = true;
-    try {
-      const photo = await cameraRef.current?.takePictureAsync({ quality: 0.9, skipProcessing: false });
-      if (!photo) return;
-      const detection = await detectLesionShape(photo.uri);
-      const metrics = measureImageQuality(detection.image);
-      const evaluation = evaluateFrame(metrics, detection.shape, baseline);
-      await finalize({ uri: photo.uri, detection, evaluation });
-    } catch (e: any) {
-      setError(e?.message ?? '촬영에 실패했어요');
-      setPhase('review');
-    } finally {
-      busy.current = false;
-    }
-  };
+  }, [phase, permission?.granted, facing, baseline, finalize]);
 
   const retake = () => {
     candidates.current = [];
@@ -236,7 +218,7 @@ export default function MonitorCaptureScreen({
   return (
     <View style={styles.root}>
       <View style={{ flex: 1 }} onLayout={(e) => setPreviewSize(e.nativeEvent.layout)}>
-        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing={facing} />
 
         {/* 이전 기준 사진을 반투명하게 겹쳐 같은 구도로 유도 */}
         {baseline && (
@@ -278,11 +260,16 @@ export default function MonitorCaptureScreen({
       </View>
 
       <View style={styles.bottomBar}>
-        <Pressable style={styles.smallBtn} onPress={() => setAutoEnabled((v) => !v)}>
-          <MaterialIcons name={autoEnabled ? 'motion-photos-auto' : 'photo-camera'} size={20} color="#FFFFFF" />
-          <Text style={styles.smallBtnText}>{autoEnabled ? '자동' : '수동'}</Text>
+        <Pressable style={styles.smallBtn} onPress={() => setFacing((f) => (f === 'back' ? 'front' : 'back'))}>
+          <MaterialIcons name="flip-camera-android" size={22} color="#FFFFFF" />
+          <Text style={styles.smallBtnText}>{facing === 'back' ? '후면' : '전면'}</Text>
         </Pressable>
-        <Pressable style={[styles.shutter, armed && styles.shutterArmed]} onPress={manualCapture} />
+        {/* 셔터는 조건이 맞으면 앱이 알아서 누른다 — 여기는 상태 표시만 한다 */}
+        <View style={[styles.shutter, armed && styles.shutterArmed]}>
+          <Text style={[styles.shutterText, armed && styles.shutterTextArmed]}>
+            {armed ? '촬영 중' : '대기'}
+          </Text>
+        </View>
         <View style={styles.smallBtn}>
           <Text style={styles.scoreText}>{live ? `${Math.round(live.softScore * 100)}%` : '--'}</Text>
         </View>
@@ -485,11 +472,15 @@ const styles = StyleSheet.create({
     width: 74,
     height: 74,
     borderRadius: 37,
-    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
     borderWidth: 5,
-    borderColor: 'rgba(255,255,255,0.15)',
+    borderColor: 'rgba(255,255,255,0.35)',
   },
-  shutterArmed: { borderColor: AppColors.greenTop },
+  shutterArmed: { borderColor: AppColors.greenTop, backgroundColor: 'rgba(147,210,88,0.25)' },
+  shutterText: { fontSize: 12, fontWeight: '800', color: 'rgba(255,255,255,0.75)' },
+  shutterTextArmed: { color: '#FFFFFF' },
 
   reviewRoot: { flex: 1, backgroundColor: AppColors.bg, padding: 20, paddingTop: 28 },
   reviewTitle: { fontSize: 20, fontWeight: '800', color: AppColors.ink, textAlign: 'center' },

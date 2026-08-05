@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LayoutChangeEvent, PanResponder, StyleSheet, View } from 'react-native';
-import { Canvas, Path, Skia, type SkPath } from '@shopify/react-native-skia';
+import { Canvas, Path, PathVerb, Skia, type SkPath } from '@shopify/react-native-skia';
 import { BodyPartId, PartFacing } from '../monitoring/bodyParts';
 import { Camera, Mesh, meshBounds, pickPart, projectVertices, rotationMatrix, Vec3 } from '../three/geom3d';
 import { BodyModelId, buildBodyMesh, getPreset } from '../three/humanModel';
@@ -20,24 +20,21 @@ const LIGHT = { x: -0.35, y: -0.45, z: 0.82 };
 
 const SKIN_BASE = { r: 0xc6, g: 0xcb, b: 0xd3 };
 const SELECTED_BASE = { r: 0xe2, g: 0x4b, b: 0x3f };
-const MONITORED_BASE = { r: 0x93, g: 0xd2, b: 0x58 };
 /** 위치를 알려주려고 곁들인 인접 부위 — 주인공보다 흐리게 */
 const CONTEXT_BASE = { r: 0xe4, g: 0xe7, b: 0xec };
 
-type Group = 'base' | 'selected' | 'monitored' | 'context';
+type Group = 'base' | 'selected' | 'context';
 
 const GROUP_BASE: Record<Group, { r: number; g: number; b: number }> = {
   base: SKIN_BASE,
   selected: SELECTED_BASE,
-  monitored: MONITORED_BASE,
   context: CONTEXT_BASE,
 };
 
-/** 그룹×명암 단계별 색을 미리 만들어 둔다 (프레임마다 문자열을 만들지 않도록) */
+/** 그룹×명암 단계별 색을 미리 만들어 둔다 (프레임마다 색 문자열을 만들지 않도록) */
 const PALETTE: Record<Group, string[]> = {
   base: [],
   selected: [],
-  monitored: [],
   context: [],
 };
 (Object.keys(GROUP_BASE) as Group[]).forEach((g) => {
@@ -63,7 +60,6 @@ export default function Body3DView({
   contextParts,
   highlightParts,
   faceHighlight,
-  monitoredParts,
   marker: markerPoint,
   view,
   onPick,
@@ -82,8 +78,6 @@ export default function Body3DView({
   highlightParts?: BodyPartId[];
   /** 특정 부위에서 그 방향을 향한 면만 빨갛게 칠한다 (앞/뒤 중 어느 쪽을 고른 건지 보여줄 때) */
   faceHighlight?: { parts: BodyPartId[]; direction: Vec3 };
-  /** 이미 모니터링 중인 부위 — 초록으로 표시 */
-  monitoredParts?: BodyPartId[];
   /** 모델 좌표계 위의 점 하나에 마커를 찍는다 */
   marker?: Vec3 | null;
   /** 밖에서 시점을 지정한다. 값이 바뀔 때마다 그 각도로 회전한다 (이후 드래그는 자유) */
@@ -134,7 +128,6 @@ export default function Body3DView({
     };
   }, [size, bounds, framePadding]);
 
-  const monitoredSet = useMemo(() => new Set(monitoredParts ?? []), [monitoredParts]);
   const highlightSet = useMemo(() => new Set(highlightParts ?? []), [highlightParts]);
   const contextSet = useMemo(() => new Set(contextParts ?? []), [contextParts]);
   const faceSet = useMemo(() => new Set(faceHighlight?.parts ?? []), [faceHighlight]);
@@ -216,7 +209,7 @@ export default function Body3DView({
     // 부위 단위로 앞뒤를 정렬한다. 부위 안쪽은 뒷면 컬링으로 충분하고,
     // 부위끼리의 가림(예: 옆에서 볼 때 팔이 몸통을 가림)은 이 정렬이 처리한다.
     const partDepth = new Map<BodyPartId, { sum: number; n: number }>();
-    const partTris = new Map<BodyPartId, { level: number; d: string; face: boolean }[]>();
+    const partTris = new Map<BodyPartId, { level: number; tri: number[]; face: boolean }[]>();
 
     // 면 강조 방향도 같은 행렬로 돌려 두면, 회전 좌표계 법선과 그대로 내적할 수 있다
     // (회전은 내적을 보존하므로 모델 좌표계에서 비교한 것과 같다).
@@ -272,10 +265,10 @@ export default function Body3DView({
       // 선택한 면(예: "하완 앞")을 향한 삼각형만 강조 — 옆면까지 번지지 않도록 여유는 좁게
       const face = faceSet.has(t.part) && nx * hx + ny * hy + nz * hz > 0.35;
 
-      const d = `M${ax.toFixed(1)} ${ay.toFixed(1)}L${bx.toFixed(1)} ${by.toFixed(1)}L${cxp.toFixed(1)} ${cyp.toFixed(1)}Z`;
+      const tri = [ax, ay, bx, by, cxp, cyp];
       const list = partTris.get(t.part);
-      if (list) list.push({ level, d, face });
-      else partTris.set(t.part, [{ level, d, face }]);
+      if (list) list.push({ level, tri, face });
+      else partTris.set(t.part, [{ level, tri, face }]);
     }
 
     const orderedParts = [...partDepth.entries()]
@@ -284,28 +277,26 @@ export default function Body3DView({
 
     const out: Bucket[] = [];
     orderedParts.forEach((part) => {
-      const base: Group = highlightSet.has(part)
-        ? 'selected'
-        : monitoredSet.has(part)
-          ? 'monitored'
-          : contextSet.has(part)
-            ? 'context'
-            : 'base';
+      const base: Group = highlightSet.has(part) ? 'selected' : contextSet.has(part) ? 'context' : 'base';
       // 같은 부위 안에서도 강조된 면과 나머지가 색이 다르므로 (그룹, 명암) 조합별로 모은다
-      const byKey = new Map<string, string>();
-      partTris.get(part)?.forEach(({ level, d, face }) => {
+      const byKey = new Map<string, number[][]>();
+      partTris.get(part)?.forEach(({ level, tri, face }) => {
         const key = `${face ? 'selected' : base}-${level}`;
-        byKey.set(key, (byKey.get(key) ?? '') + d);
+        const cmds = byKey.get(key);
+        const next = cmds ?? [];
+        // [이동, 선, 선, 닫기] — 문자열 경로보다 좌표 변환 비용이 없다
+        next.push([PathVerb.Move, tri[0], tri[1]], [PathVerb.Line, tri[2], tri[3]], [PathVerb.Line, tri[4], tri[5]], [PathVerb.Close]);
+        if (!cmds) byKey.set(key, next);
       });
-      byKey.forEach((d, key) => {
+      byKey.forEach((cmds, key) => {
         const [group, lv] = key.split('-') as [Group, string];
-        const path = Skia.Path.MakeFromSVGString(d);
+        const path = Skia.Path.MakeFromCmds(cmds);
         if (!path) return;
         out.push({ key: `${part}-${key}`, path, color: PALETTE[group][Number(lv)] });
       });
     });
     return out;
-  }, [mesh, bounds, camera, rot, highlightSet, monitoredSet, contextSet, faceSet, faceHighlight]);
+  }, [mesh, bounds, camera, rot, highlightSet, contextSet, faceSet, faceHighlight]);
 
   // 선택 지점을 화면 좌표로 옮겨 마커를 찍는다 (뒤로 돌아가면 숨긴다)
   const marker = useMemo(() => {

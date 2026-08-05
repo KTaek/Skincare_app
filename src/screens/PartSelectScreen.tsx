@@ -7,7 +7,6 @@ import Body3DView from '../components/Body3DView';
 import { BodyModelId } from '../three/humanModel';
 import { Vec3 } from '../three/geom3d';
 import { GROUP_LABELS, GROUP_OF_PART, GROUP_PARTS, PartGroupId, spotFromNormal } from '../monitoring/bodyParts';
-import { useMonitoring } from '../context/MonitoringContext';
 
 /** 1단계 — 3D 모델을 돌려가며 탭해서 관찰할 부위(큰 덩어리)를 고른다 */
 export default function PartSelectScreen({
@@ -21,10 +20,8 @@ export default function PartSelectScreen({
   onNext: (group: PartGroupId, spotId: string) => void;
 }) {
   const [pick, setPick] = useState<{ group: PartGroupId; point: Vec3; spotId: string } | null>(null);
-  const { targets } = useMonitoring();
   const insets = useSafeAreaInsets();
 
-  const monitoredParts = useMemo(() => targets.map((t) => t.part), [targets]);
   const highlightParts = useMemo(() => (pick ? GROUP_PARTS[pick.group] : []), [pick]);
 
   return (
@@ -41,11 +38,10 @@ export default function PartSelectScreen({
         <Body3DView
           modelId={modelId}
           highlightParts={highlightParts}
-          monitoredParts={monitoredParts}
           marker={pick?.point ?? null}
           onPick={(hit) => {
             const group = GROUP_OF_PART[hit.part];
-            setPick({ group, point: hit.point, spotId: spotFromNormal(group, hit.normal).id });
+            setPick({ group, point: hit.point, spotId: spotFromNormal(group, hit.normal, hit.part).id });
           }}
         />
       </View>
@@ -54,9 +50,6 @@ export default function PartSelectScreen({
         <Text style={styles.selectionText}>
           {pick ? GROUP_LABELS[pick.group] : '부위를 선택해주세요'}
         </Text>
-        {pick && monitoredParts.some((p) => GROUP_OF_PART[p] === pick.group) && (
-          <Text style={styles.repeatNote}>이미 모니터링 중인 부위예요 — 이어서 촬영하면 이전 기준에 맞춰 정렬돼요</Text>
-        )}
         <View style={{ height: 12 }} />
         <Pressable
           style={[styles.nextBtn, !pick && styles.nextBtnDisabled]}
@@ -79,7 +72,6 @@ const styles = StyleSheet.create({
   viewer: { flex: 1, minHeight: 320 },
   footer: { paddingHorizontal: 24, paddingBottom: 24, paddingTop: 4 },
   selectionText: { textAlign: 'center', fontSize: 15, fontWeight: '700', color: AppColors.ink },
-  repeatNote: { textAlign: 'center', fontSize: 11, color: AppColors.greenMuted, marginTop: 6 },
   nextBtn: { backgroundColor: AppColors.greenTop, borderRadius: 16, paddingVertical: 15, alignItems: 'center' },
   nextBtnDisabled: { backgroundColor: '#E7E9EC' },
   nextBtnText: { fontSize: 16, fontWeight: '700', color: '#16320A' },

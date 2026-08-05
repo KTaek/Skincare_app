@@ -13,11 +13,11 @@ import {
   GROUP_PARTS,
   PartGroupId,
   spotFromNormal,
+  spotRows,
   SPOTS_OF_GROUP,
   viewDirection,
   viewName,
 } from '../monitoring/bodyParts';
-import { useMonitoring } from '../context/MonitoringContext';
 
 /**
  * 2단계 — 고른 부위를 따로 떼어 3D로 보여주고, 그 안에서 실제로 촬영할 면을 고른다.
@@ -38,10 +38,10 @@ export default function SpotSelectScreen({
   onNext: (spot: BodySpot) => void;
 }) {
   const spots = SPOTS_OF_GROUP[group];
+  const rows = useMemo(() => spotRows(group), [group]);
   const [spotId, setSpotId] = useState<string>(
     initialSpotId && spots.some((s) => s.id === initialSpotId) ? initialSpotId : spots[0].id,
   );
-  const { targets } = useMonitoring();
   const insets = useSafeAreaInsets();
   const { height: screenH } = useWindowDimensions();
   const [side, setSide] = useState('앞');
@@ -53,7 +53,7 @@ export default function SpotSelectScreen({
   const onPick = useCallback(
     (hit: BodyPick) => {
       if (GROUP_OF_PART[hit.part] !== group) return;
-      setSpotId(spotFromNormal(group, hit.normal).id);
+      setSpotId(spotFromNormal(group, hit.normal, hit.part).id);
     },
     [group],
   );
@@ -68,7 +68,6 @@ export default function SpotSelectScreen({
     () => ({ parts: spot.highlight, direction: viewDirection(spot.view) }),
     [spot],
   );
-  const monitoredSpotIds = useMemo(() => new Set(targets.map((t) => t.spotId)), [targets]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -99,26 +98,32 @@ export default function SpotSelectScreen({
       </View>
 
       <View style={styles.boxes}>
-        {spots.map((s) => {
-          const active = s.id === spot.id;
-          return (
-            <Pressable
-              key={s.id}
-              style={[styles.box, active && styles.boxActive, spots.length === 1 && styles.boxWide]}
-              onPress={() => setSpotId(s.id)}
-            >
-              <Text style={[styles.boxText, active && styles.boxTextActive]}>{s.label}</Text>
-              {monitoredSpotIds.has(s.id) && <Text style={styles.boxNote}>기록 있음</Text>}
-            </Pressable>
-          );
-        })}
+        {rows.map((row, i) => (
+          <View key={i} style={styles.boxRow}>
+            {row.map((s) => {
+              const active = s.id === spot.id;
+              return (
+                <Pressable
+                  key={s.id}
+                  style={[styles.box, active && styles.boxActive]}
+                  onPress={() => setSpotId(s.id)}
+                >
+                  <Text
+                    style={[styles.boxText, active && styles.boxTextActive]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {s.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
       </View>
 
       <View style={styles.footer}>
         <Text style={styles.selectionText}>{spot.label}</Text>
-        {monitoredSpotIds.has(spot.id) && (
-          <Text style={styles.repeatNote}>이미 모니터링 중인 자리예요 — 이어서 촬영하면 이전 기준에 맞춰 정렬돼요</Text>
-        )}
         <View style={{ height: 12 }} />
         <Pressable style={styles.nextBtn} onPress={() => onNext(spot)}>
           <Text style={styles.nextBtnText}>이 부위로 촬영</Text>
@@ -150,26 +155,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: AppColors.sub,
   },
-  boxes: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 18, paddingTop: 10 },
+  boxes: { paddingHorizontal: 18, paddingTop: 10 },
+  boxRow: { flexDirection: 'row' },
   box: {
-    width: '47%',
-    marginHorizontal: '1.5%',
+    flex: 1, // 한 줄 안에서 균등 분할 — 줄마다 상자 수가 달라도 폭이 맞는다
+    marginHorizontal: 5,
     marginVertical: 5,
     paddingVertical: 14,
+    paddingHorizontal: 6,
     borderRadius: 14,
     borderWidth: 1.5,
     borderColor: '#E7E9EC',
     backgroundColor: '#F7F8FA',
     alignItems: 'center',
   },
-  boxWide: { width: '95%' },
   boxActive: { borderColor: AppColors.greenTop, backgroundColor: AppColors.greenTop },
   boxText: { fontSize: 15, fontWeight: '700', color: AppColors.ink },
   boxTextActive: { color: '#16320A' },
-  boxNote: { fontSize: 11, color: AppColors.sub, marginTop: 3 },
   footer: { paddingHorizontal: 24, paddingBottom: 24, paddingTop: 8 },
   selectionText: { textAlign: 'center', fontSize: 15, fontWeight: '700', color: AppColors.ink },
-  repeatNote: { textAlign: 'center', fontSize: 11, color: AppColors.greenMuted, marginTop: 6 },
   nextBtn: { backgroundColor: AppColors.greenTop, borderRadius: 16, paddingVertical: 15, alignItems: 'center' },
   nextBtnText: { fontSize: 16, fontWeight: '700', color: '#16320A' },
 });

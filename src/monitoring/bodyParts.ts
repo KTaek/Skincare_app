@@ -110,7 +110,7 @@ export const GROUP_OF_PART: Record<BodyPartId, PartGroupId> = {
 export const GROUP_LABELS: Record<PartGroupId, string> = {
   head: '얼굴',
   neck: '목',
-  torso: '가슴/복부/허리/등',
+  torso: '가슴/복부/등/허리/엉덩이',
   leftUpperArm: '왼쪽 상완',
   leftElbow: '왼쪽 팔꿈치/팔오금',
   leftForearm: '왼쪽 하완',
@@ -165,6 +165,8 @@ export interface BodySpot {
   view: SpotView;
   /** 3D에서 이 지점으로 강조할 부위 — 보통 그룹 전체지만 허리처럼 일부만 가리키는 경우가 있다 */
   highlight: BodyPartId[];
+  /** 선택 화면에서 상자를 놓을 줄 번호 (0부터) */
+  row: number;
 }
 
 type SpotDef = {
@@ -174,12 +176,13 @@ type SpotDef = {
   facing: PartFacing;
   view: SpotView;
   highlight?: BodyPartId[];
+  row?: number;
 };
 
 export const SPOTS_OF_GROUP: Record<PartGroupId, BodySpot[]> = {} as Record<PartGroupId, BodySpot[]>;
 
 const define = (group: PartGroupId, defs: SpotDef[]) => {
-  SPOTS_OF_GROUP[group] = defs.map((d) => ({
+  SPOTS_OF_GROUP[group] = defs.map((d, i) => ({
     id: `${group}:${d.key}`,
     label: d.label,
     group,
@@ -187,8 +190,18 @@ const define = (group: PartGroupId, defs: SpotDef[]) => {
     facing: d.facing,
     view: d.view,
     highlight: d.highlight ?? GROUP_PARTS[group],
+    row: d.row ?? Math.floor(i / 2), // 따로 지정하지 않으면 한 줄에 두 개씩
   }));
 };
+
+/** 선택 화면에서 상자를 줄 단위로 묶어 준다 */
+export function spotRows(group: PartGroupId): BodySpot[][] {
+  const rows: BodySpot[][] = [];
+  SPOTS_OF_GROUP[group].forEach((s) => {
+    (rows[s.row] ??= []).push(s);
+  });
+  return rows.filter(Boolean);
+}
 
 define('head', [{ key: 'face', label: '얼굴', part: 'head', facing: 'front', view: FRONT }]);
 define('neck', [
@@ -196,10 +209,12 @@ define('neck', [
   { key: 'back', label: '목 뒤', part: 'neck', facing: 'back', view: BACK },
 ]);
 define('torso', [
-  { key: 'front', label: '가슴/복부', part: 'chest', facing: 'front', view: FRONT },
-  { key: 'leftWaist', label: '왼쪽 허리', part: 'abdomen', facing: 'front', view: LEFT, highlight: ['abdomen'] },
-  { key: 'rightWaist', label: '오른쪽 허리', part: 'abdomen', facing: 'front', view: RIGHT, highlight: ['abdomen'] },
-  { key: 'back', label: '등', part: 'chest', facing: 'back', view: BACK },
+  { key: 'front', label: '가슴/복부', part: 'chest', facing: 'front', view: FRONT, row: 0 },
+  // 등은 가슴 부위(어깨~허리)의 뒷면, 엉덩이는 배 부위(허리~가랑이)의 뒷면을 맡는다
+  { key: 'back', label: '등', part: 'chest', facing: 'back', view: BACK, highlight: ['chest'], row: 0 },
+  { key: 'leftWaist', label: '왼쪽 허리', part: 'abdomen', facing: 'front', view: LEFT, highlight: ['abdomen'], row: 1 },
+  { key: 'rightWaist', label: '오른쪽 허리', part: 'abdomen', facing: 'front', view: RIGHT, highlight: ['abdomen'], row: 1 },
+  { key: 'buttocks', label: '엉덩이', part: 'abdomen', facing: 'back', view: BACK, highlight: ['abdomen'], row: 1 },
 ]);
 
 const SIDE_KO = { left: '왼쪽', right: '오른쪽' } as const;
@@ -220,9 +235,10 @@ const SIDE_KO = { left: '왼쪽', right: '오른쪽' } as const;
     { key: 'front', label: `${S} 하완 앞`, part: p('Forearm'), facing: 'front', view: FRONT },
     { key: 'back', label: `${S} 하완 뒤`, part: p('Forearm'), facing: 'back', view: BACK },
   ]);
+  // 팔을 내린 자세에서는 손등이 바깥쪽, 손바닥이 몸 안쪽을 향한다 (앞/뒤가 아니라 좌우로 봐야 한다)
   define(p('Hand') as PartGroupId, [
-    { key: 'dorsum', label: `${S} 손등`, part: p('Hand'), facing: 'back', view: BACK },
-    { key: 'palm', label: `${S} 손바닥`, part: p('Hand'), facing: 'front', view: FRONT },
+    { key: 'dorsum', label: `${S} 손등`, part: p('Hand'), facing: 'back', view: side === 'left' ? LEFT : RIGHT },
+    { key: 'palm', label: `${S} 손바닥`, part: p('Hand'), facing: 'front', view: side === 'left' ? RIGHT : LEFT },
   ]);
   define(p('Thigh') as PartGroupId, [
     { key: 'front', label: `${S} 허벅지 앞`, part: p('Thigh'), facing: 'front', view: FRONT },
@@ -292,9 +308,12 @@ export const viewDirection = (view: SpotView): Vec3 => {
  * 3D에서 탭한 면의 법선으로 그룹 안의 지점을 고른다.
  * 앞/뒤 판정(normal.z 부호)만으로는 발바닥처럼 위아래를 보는 면을 가릴 수 없어서,
  * 각 지점의 카메라 방향과 가장 잘 맞는 쪽을 고른다.
+ * 탭한 부위를 함께 주면 등/엉덩이처럼 보는 방향이 같은 지점도 구분된다.
  */
-export function spotFromNormal(group: PartGroupId, normal: Vec3): BodySpot {
-  const spots = SPOTS_OF_GROUP[group];
+export function spotFromNormal(group: PartGroupId, normal: Vec3, part?: BodyPartId): BodySpot {
+  const all = SPOTS_OF_GROUP[group];
+  const onPart = part ? all.filter((s) => s.highlight.includes(part)) : [];
+  const spots = onPart.length ? onPart : all;
   let best = spots[0];
   let bestDot = -Infinity;
   spots.forEach((s) => {
