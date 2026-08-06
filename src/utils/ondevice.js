@@ -51,10 +51,10 @@ async function loadOne(mod, label, onProgress) {
     throw new Error(`${label} 로드 실패\nurl=${url}\n:: ${e?.message}`);
   }
 }
-// 세그: EffB0-UNet++ @384 (모바일 최적, 12MB, NCHW). 중증도: PVTv2-B0 @512 (6.8MB, NCHW)
+// 세그: EffB0-UNet++ @512 (NCHW). 중증도: PVTv2-B0 @384 (병변 크롭 1입력, 일반 헤드, NCHW)
 const ENABLE_SEG = true;
 const SEG_SIZE = 512;   // EffB0-UNet++ 입력 (512)
-const SEV_SIZE = 512;   // PVTv2-B0 입력 (512)
+const SEV_SIZE = 384;   // PVTv2-B0 입력 (384)
 async function getSegModel(onProgress) {   // 병변 세그(EffB0-UNet++ @512)
   if (_seg) return _seg;
   _seg = await loadOne(require('../../assets/models/seg_effb0_unetpp_512_fp16.tflite'), '병변검출', onProgress);
@@ -63,7 +63,7 @@ async function getSegModel(onProgress) {   // 병변 세그(EffB0-UNet++ @512)
 async function getModels(onProgress) {
   if (_sev && (_seg || !ENABLE_SEG)) return { sev: _sev, seg: _seg };
   if (ENABLE_SEG) await getSegModel(onProgress);
-  if (!_sev) _sev = await loadOne(require('../../assets/models/sev_pvt_v2_b0_corn_crop_area_512_fp16.tflite'), '중증도', onProgress);
+  if (!_sev) _sev = await loadOne(require('../../assets/models/sev_pvt_v2_b0_384_fp16.tflite'), '중증도', onProgress);
   return { sev: _sev, seg: _seg };
 }
 
@@ -141,14 +141,11 @@ function sevOutOrder(model) {
   return order;
 }
 
-// CORN 서수 디코딩
-function cornLevel(logits) {
-  let cum = 1, level = 0;
-  for (let i = 0; i < logits.length; i++) {
-    cum *= 1 / (1 + Math.exp(-logits[i]));
-    if (cum > 0.5) level++; else break;
-  }
-  return level;
+// 일반 분류 헤드 디코딩 — argmax = 등급 레벨(0..k-1)
+function argmaxLevel(logits) {
+  let best = 0;
+  for (let i = 1; i < logits.length; i++) if (logits[i] > logits[best]) best = i;
+  return best;
 }
 
 // 라이브 정렬 체크용 — 피부 세그만 돌려 프레임 내 피부 점유율%만 빠르게 반환.
@@ -442,14 +439,13 @@ export async function diagnoseOnDevice(imageUri, useSegmentation = false, onProg
   if (!imgSev) imgSev = await imageToRGBA(imageUri, SEV_SIZE);   // 폴백
   mark('중증도·크롭+이미지 준비');
   const sevIn = toNCHW(imgSev.data, SEV_SIZE);
-  const areaIn = new Float32Array([areaFrac]);                   // 면적 스칼라 (0~1)
   mark('중증도·전처리');
-  const sevOut = await sev.run([sevIn.buffer, areaIn.buffer]);   // 2입력: [이미지, 면적]
+  const sevOut = await sev.run([sevIn.buffer]);                  // 1입력: [이미지] (일반 헤드)
   mark('중증도·추론');
   const sevMs = prof[prof.length - 1].ms;
   const ord = sevOutOrder(sev);
   const severity = SEV_HEADS.map((h, i) => {
-    const lvl = cornLevel(new Float32Array(sevOut[ord[i]]));
+    const lvl = argmaxLevel(new Float32Array(sevOut[ord[i]]));
     const grade = h.classes[lvl];
     return { key: h.key, name: h.name, grade,
              grade_ko: GRADE_KO[grade] || grade, level: lvl, max_level: h.classes.length - 1 };

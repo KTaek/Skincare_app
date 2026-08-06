@@ -5,8 +5,17 @@ import TrackingBodyScreen from './screens/TrackingBodyScreen';
 import TrackingSitesScreen from './screens/TrackingSitesScreen';
 import TrackingSiteDetailScreen from './screens/TrackingSiteDetailScreen';
 import TrackingFlowScreen from './screens/TrackingFlowScreen';
+// 새 진입 흐름: 신규 모니터링 등록과 동일한 사전문진 → minji의 3D 인체모형(8부위) → 자리표시.
+import AreaIntakeScreen from './screens/AreaIntakeScreen';
+import AreaBodySelectScreen from './screens/AreaBodySelectScreen';
+import AreaPlaceholderScreen from './screens/AreaPlaceholderScreen';
 
 const SCREENS = {
+  // 새 진입 흐름
+  AreaIntake: AreaIntakeScreen,
+  AreaBody3D: AreaBodySelectScreen,
+  AreaPlaceholder: AreaPlaceholderScreen,
+  // 기존 SkinAI2 화면 (SkinAI2 기능 연결 시 재사용)
   TrackingBody: TrackingBodyScreen,
   TrackingSites: TrackingSitesScreen,
   TrackingSiteDetail: TrackingSiteDetailScreen,
@@ -14,7 +23,7 @@ const SCREENS = {
 };
 
 export default function TrackingRoot({ onExit }) {
-  const [stack, setStack] = useState([{ name: 'TrackingBody', params: {} }]);
+  const [stack, setStack] = useState([{ name: 'AreaIntake', params: {} }]);
   const stackRef = useRef(stack);
   stackRef.current = stack;
 

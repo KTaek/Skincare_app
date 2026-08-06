@@ -100,49 +100,7 @@ export default function TrackingSiteDetailScreen({ route, navigation }) {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16 }}>
-        {/* 면적/중증도 추이 — 앱 공용 LineChart로 통일 */}
-        <View style={[cardDecoration(), styles.card]}>
-          <View style={styles.trendHeader}>
-            <Text style={styles.trendTitle}>면적 변화 추이</Text>
-            {sessions.length > 0 && <Text style={styles.trendCount}>총 {sessions.length}건</Text>}
-          </View>
-
-          {latest && (
-            <View style={styles.summaryRow}>
-              <View>
-                <Text style={styles.sumBig}>{Math.round(latest.v)}{areaUnit}</Text>
-                <Text style={styles.sumCap}>최근 병변 면적</Text>
-              </View>
-              {band && (
-                <View style={styles.bandInfo}>
-                  {withinBand ? (
-                    <Text style={styles.withinTxt}>변화 범위 내</Text>
-                  ) : (
-                    <Text style={styles.deltaTxt}>
-                      기준 {Math.round(baseVal)}{areaUnit} 대비 {latest.v - baseVal >= 0 ? '+' : ''}{Math.round(latest.v - baseVal)}{areaUnit} 기록
-                    </Text>
-                  )}
-                  <Text style={styles.bandCap}>기준 {Math.round(baseVal)}{areaUnit} · 변동 ±{Math.round(std)}{areaUnit}</Text>
-                </View>
-              )}
-            </View>
-          )}
-
-          <View style={{ height: 16 }} />
-          <Text style={styles.chartLabel}>{areaLabel}</Text>
-          <View style={{ height: 8 }} />
-          <LineChart data={areaData} maxValue={areaMax} color={AppColors.greenTop}
-            emptyText="아직 측정된 기록이 없어요." />
-
-          <View style={{ height: 20 }} />
-          <Text style={styles.chartLabel}>중증도 (IGA 0~4)</Text>
-          <View style={{ height: 8 }} />
-          <LineChart data={igaData} maxValue={4} color="#2D7DD2"
-            emptyText="중증도 기록이 없어요." />
-
-          <View style={{ height: 12 }} />
-          <Text style={styles.hintSmall}>측정 기록이며 판정이 아닙니다</Text>
-        </View>
+        {/* 면적 추이 그래프는 제거됨 — 실측 면적%는 홈·기록·모니터링 상세에 표시된다 */}
 
         {/* 타임랩스 */}
         <Text style={styles.sectionTitle}>사진 기록 (타임랩스)</Text>

@@ -1,0 +1,8 @@
+node_modules/
+.git/
+.expo/
+dist/
+*.log
+npm-debug.*
+.DS_Store
+*.orig.*

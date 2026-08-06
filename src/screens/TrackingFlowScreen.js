@@ -15,6 +15,8 @@ import {
 } from '../utils/tracking';
 import { AppColors, cardShadow } from '../appTheme';
 import LandmarkPicker from '../components/LandmarkPicker';
+import { recordAreaMeasurement } from '../folders/store';
+import { folderNameOf } from '../folders/targets';
 
 // 추적 부위 목록 — 좌/우·앞/뒤를 구분해 저장(합산 금지). 필요시 확장.
 const PARTS = ['얼굴', '목', '가슴', '배', '등', '팔(안쪽)', '팔(바깥)', '팔꿈치', '손', '허벅지', '무릎', '종아리', '발'];
@@ -74,6 +76,7 @@ function BoxSlider({ value, onChange }) {
 
 export default function TrackingFlowScreen({ navigation, route }) {
   const preset = route?.params?.body_site || null;   // 인체도에서 넘어온 부위(있으면 부위선택 건너뜀)
+  const intake = route?.params?.intake || null;      // 사전문진 결과(질환명) — 모니터링 폴더 이름에 사용
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
 
@@ -92,6 +95,7 @@ export default function TrackingFlowScreen({ navigation, route }) {
       baselineOccRef.current = b?.skin_occupancy ?? null;
       baselineLesionRef.current = b?.lesion_pixels ?? null;
       if (b?.overview_photo_path) imageSignature(b.overview_photo_path, 32).then((s) => { baselineSigRef.current = s; }).catch(() => {});
+      setBaseReady(true);   // baseline 로드 끝 → 라이브 루프가 hasBaseline을 다시 계산(2회차+ 자동촬영 활성화)
     });
   }, []);
 
@@ -101,6 +105,7 @@ export default function TrackingFlowScreen({ navigation, route }) {
   const [boxFrac, setBoxFrac] = useState(0.7);                // 규격 박스 크기(짧은변 대비): 소0.5/중0.7/대0.9
   const [facing, setFacing] = useState('back');              // 'back' | 'front'(셀카) — 몸통 등 자가촬영용
   const [busy, setBusy] = useState(false);
+  const [baseReady, setBaseReady] = useState(false);         // baseline 비동기 로드 완료 → 라이브 루프 재평가 트리거
   const [cue, setCue] = useState(null);                      // null | 'ok' | 'near' | 'far' (라이브 방향 큐)
   const baselineOccRef = useRef(null);                       // baseline 피부 점유율
   const baselineLesionRef = useRef(null);                    // baseline 병변 픽셀(거리 큐 기준)
@@ -180,7 +185,7 @@ export default function TrackingFlowScreen({ navigation, route }) {
     const t = setTimeout(tick, 900);
     const id = setInterval(tick, 2000);
     return () => { cancelled = true; clearTimeout(t); clearInterval(id); okCountRef.current = 0; prevLesionRef.current = null; };
-  }, [step, boxFrac, busy, facing]);   // 카메라 전환(전/후면) 시 라이브 루프 재시작
+  }, [step, boxFrac, busy, facing, baseReady]);   // baseReady: baseline 로드 후 hasBaseline 재평가 / facing: 카메라 전환 시 재시작
 
   // 부위 확정 → 첫 사진(baseline)을 고스트·기준으로 로드 후 원거리 단계로
   const confirmSite = async () => {
@@ -194,6 +199,7 @@ export default function TrackingFlowScreen({ navigation, route }) {
     baselineOccRef.current = b?.skin_occupancy ?? null;
     baselineLesionRef.current = b?.lesion_pixels ?? null;
     baselineSigRef.current = b?.overview_photo_path ? await imageSignature(b.overview_photo_path, 32).catch(() => null) : null;
+    setBaseReady(true);
     setStep('overview');
   };
 
@@ -237,6 +243,15 @@ export default function TrackingFlowScreen({ navigation, route }) {
         laplacian_var: measure.laplacian_var,
         box_frac: boxFrac,
       });
+      // 실측 면적%·중증도를 모니터링 기록으로 남긴다 → 홈·기록·모니터링 상세에 실제 값 반영
+      try {
+        recordAreaMeasurement({
+          name: folderNameOf(bodySite?.part, intake?.disease),
+          areaPct: measure.area_ratio,
+          severity: diag?.severity || [],
+          photoUri: boxUri,
+        });
+      } catch (e) { /* 기록 실패가 측정 결과 표시를 막지 않도록 무시 */ }
       setResult({ measure, severity: diag?.severity || [], flags, saved, mode: 'skin', value: measure.area_ratio });
       setStep('done');
     } catch (e) {
@@ -262,6 +277,15 @@ export default function TrackingFlowScreen({ navigation, route }) {
         severity_scores: diag?.severity || null, quality_flags: qualityFlagKeys(flags),
         skin_occupancy: measure.skin_occupancy, laplacian_var: measure.laplacian_var, box_frac: boxFrac,
       });
+      // 기준물(배꼽/양안) 모드여도 모니터링 기록엔 피부 대비 면적%(measure.area_ratio)를 남겨 단위 일관성 유지
+      try {
+        recordAreaMeasurement({
+          name: folderNameOf(bodySite?.part, intake?.disease),
+          areaPct: measure.area_ratio,
+          severity: diag?.severity || [],
+          photoUri: boxUri,
+        });
+      } catch (e) { /* 기록 실패 무시 */ }
       setResult({ measure, severity: diag?.severity || [], flags, saved, mode: 'ref', value: areaRef });
       setStep('done');
     } catch (e) { setError(e?.message || String(e)); }

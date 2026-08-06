@@ -237,6 +237,59 @@ export function deleteFolder(id) {
 }
 
 /**
+ * 병변 면적 추적(SkinAI2 규격 촬영)의 **실측값**을 모니터링 기록으로 남긴다.
+ * ensureFolderForTarget/addRecord가 만드는 dump 값과 달리, lesionAreaPct는 실제 세그멘테이션
+ * 면적%이고 iga·세부증상은 중증도 모델 출력에서 나온다 → 홈·기록·모니터링 상세에 그대로 반영된다.
+ *
+ * 같은 이름("{부위} {질환}")의 폴더가 없으면 만들고, 오늘 날짜 기록을 생성/갱신한다.
+ * 수면·가려움은 면적추적이 측정하지 않으므로 직전 기록값을 이어받는다(첫 기록이면 중립 기본값).
+ *
+ * @param {{ name: string, areaPct: number, severity?: Array<{key,level,max_level}>, photoUri?: string }} args
+ */
+export function recordAreaMeasurement({ name, areaPct, severity, photoUri }) {
+  let folder = folders.find((f) => f.name === name);
+  if (!folder) {
+    folder = { id: `f_area_${hashStr(name)}`, targetId: `area_${hashStr(name)}`, name, startDate: todayKey(), createdTs: Date.now(), records: [] };
+    folders = [folder, ...folders];
+  }
+
+  // 중증도 5개 헤드 → 기록 필드. iga_grade(0~4) 그대로, 나머지(0~max)는 0~10으로 환산.
+  const sev = {};
+  (severity || []).forEach((s) => { if (s && s.key) sev[s.key] = s; });
+  const sym = (k) => { const s = sev[k]; if (!s) return 0; const mx = s.max_level || 3; return clamp(round1((s.level / Math.max(1, mx)) * 10), 0, 10); };
+  const iga = sev.iga_grade ? clamp(round1(sev.iga_grade.level), 0, 4) : 0;
+
+  const date = todayKey();
+  const dayOffset = daysBetween(folder.startDate, date);
+  const last = folder.records[folder.records.length - 1];
+  const record = {
+    id: `${folder.id}-${date}-${Date.now()}`,
+    seed: hashStr(`${folder.id}-${date}-${Date.now()}`),
+    date,
+    dayOffset,
+    ts: Date.now(),
+    // 면적추적은 수면·가려움을 측정하지 않는다 → 직전 값 유지(첫 기록이면 중립 기본값)
+    sleepScore: last ? last.sleepScore : 75,
+    itchVas: last ? last.itchVas : 0,
+    iga,
+    redness: sym('erythema'),
+    bumps: sym('papulation'),
+    scratch: sym('excoriation'),
+    thickening: sym('lichenification'),
+    lesionAreaPct: clamp(round1(areaPct), 0, 100),   // ← 실제 세그멘테이션 면적%
+    photo: photoUri ? { uri: photoUri } : (last ? last.photo : null),
+  };
+
+  const idx = folder.records.findIndex((r) => r.date === date);
+  const records = idx >= 0
+    ? folder.records.map((r, i) => (i === idx ? record : r))
+    : [...folder.records, record].sort((a, b) => a.dayOffset - b.dayOffset);
+  folders = folders.map((f) => (f.id === folder.id ? { ...f, records } : f));
+  emit();
+  return record;
+}
+
+/**
  * "오늘의 피부 상태 기록" 버튼으로 방금 촬영한 사진을 폴더에 새 기록으로 추가한다.
  * 아직 실제 분석 파이프라인이 없어(온디바이스 모델 연동 전) 마지막 기록 값을 기준으로 살짝
  * 흔들어 오늘치 dump 수치를 만든다 — 프리셋 폴더의 시계열 생성과 같은 잡음 스타일이다.
