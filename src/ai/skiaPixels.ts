@@ -7,6 +7,26 @@ export async function loadSkImage(uri: string): Promise<SkImage> {
   return image;
 }
 
+/** src 영역을 outW x outH로 리사이즈해 RGBA 8888 픽셀을 그대로 읽어온다.
+ * (정규화 없이 통계·품질 판정용으로 픽셀이 필요할 때 사용) */
+export function readResizedRGBA(image: SkImage, src: SkRect, outW: number, outH: number): Uint8Array {
+  const surface = Skia.Surface.MakeOffscreen(outW, outH);
+  if (!surface) throw new Error('오프스크린 서피스를 만들지 못했어요');
+
+  const canvas = surface.getCanvas();
+  canvas.drawImageRect(image, src, { x: 0, y: 0, width: outW, height: outH }, Skia.Paint());
+  surface.flush();
+
+  const pixels = surface.makeImageSnapshot().readPixels(0, 0, {
+    width: outW,
+    height: outH,
+    colorType: ColorType.RGBA_8888,
+    alphaType: AlphaType.Unpremul,
+  }) as Uint8Array | null;
+  if (!pixels) throw new Error('픽셀을 읽지 못했어요');
+  return pixels;
+}
+
 /** src 영역을 outSize x outSize로 리사이즈해 픽셀을 읽고, 0~1 스케일 후 imagenet mean/std로 정규화한
  * NHWC(RGB) Float32Array를 반환한다. 종횡비를 유지하지 않는 단순 리사이즈로,
  * 파이썬 학습 파이프라인(cv2.resize)과 동일하게 동작한다. */

@@ -87,9 +87,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.taeeek2.skincareapp'
+    namespace 'com.ohhhhh.skincareapp'
     defaultConfig {
-        applicationId 'com.taeeek2.skincareapp'
+        applicationId 'com.ohhhhh.skincareapp'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

@@ -55,7 +55,7 @@ export function RoutineRowContent({
       >
         {routine.name}
       </Text>
-      <Text style={styles.routineTime}>{routine.time}</Text>
+      <Text style={styles.routineTime}>{routine.freqLabel ?? routine.time}</Text>
       {onDelete && (
         <Pressable onPress={onDelete} style={{ paddingLeft: 8 }}>
           <MaterialIcons name="close" size={18} color="#C7CBD1" />

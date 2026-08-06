@@ -1,0 +1,293 @@
+/**
+ * 모니터링 폴더 저장소 (세션 메모리 + 구독).
+ *
+ * 폴더 하나 = 모니터링 대상(MonitorTarget) 하나. 폴더 안에는 촬영 날짜별 기록
+ * (수면 점수 · 가려움 VAS · 피부 종합 상태 IGA)이 쌓인다.
+ *
+ * 폴더는 사용자가 직접 만들지 않는다 — 기록 탭의 "신규 모니터링 등록하기" 흐름
+ * (문진 → 부위 선택 → 가이드 촬영)을 끝내면 ensureFolderForTarget이 "{부위} {질환}" 이름으로
+ * 자동 생성한다. 프리셋 폴더 2개는 UI 흐름 시연용 dump 시계열이다.
+ *
+ * ⚠️ 세션 메모리에만 유지된다(앱 재시작 시 초기화).
+ */
+import { useSyncExternalStore } from 'react';
+import { ATOPIC_PHOTOS, CHEEK_PHOTOS } from './dumpPhotos';
+import { DEMO_TARGETS, folderNameOf } from './targets';
+
+const pad = (n) => String(n).padStart(2, '0');
+const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+export const todayKey = () => keyOf(new Date());
+export const addDaysKey = (dateKey, n) => {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const dt = new Date(y, m - 1, d + n);
+  return keyOf(dt);
+};
+export const daysBetween = (fromKey, toKey) => {
+  const [y1, m1, d1] = fromKey.split('-').map(Number);
+  const [y2, m2, d2] = toKey.split('-').map(Number);
+  const ms = new Date(y2, m2 - 1, d2) - new Date(y1, m1 - 1, d1);
+  return Math.round(ms / 86400000);
+};
+export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const round1 = (v) => Math.round(v * 10) / 10;
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/** 문자열 -> 32bit 정수 시드 (간단 해시) */
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+/** seed -> [0,1) 결정적 난수 제공자 (mulberry32) */
+export function makeRng(seed) {
+  let a = seed >>> 0;
+  return function rng() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * 촬영 시작일부터 spanDays 동안 captureCount번 촬영했다고 가정하고
+ * 3개 지표(수면 점수 · 가려움 VAS · 피부 종합 상태 IGA)의 dump 시계열을 생성한다.
+ * 실제 사용자는 매일 촬영하지 않으므로 날짜 간격을 일부러 들쭉날쭉하게 만든다.
+ *
+ * from -> to로 밋밋하게 한쪽으로만 줄어들면 비현실적이라, 물결(wave) 성분을 얹어
+ * 중간중간 좋아졌다 나빠졌다 하는 변동을 준다. 처음/마지막 기록은 폴더가 의도한
+ * from/to 값 그대로 남도록 물결의 진폭을 양 끝에서 0으로 줄이는 envelope을 곱한다.
+ */
+function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to, photos }) {
+  const rng = makeRng(seedBase);
+
+  // 0일차, 마지막 날은 반드시 포함 + 중간은 불규칙 간격으로 샘플링
+  const offsets = new Set([0, spanDays]);
+  while (offsets.size < captureCount) {
+    offsets.add(Math.round(1 + rng() * (spanDays - 2)));
+  }
+  const sorted = Array.from(offsets).sort((a, b) => a - b);
+
+  const wavePhase = rng() * Math.PI * 2;
+  const waveFreq = 2.2 + rng() * 2.3; // 전체 구간 동안 오르내림이 대략 2~4.5회 정도 반복
+
+  return sorted.map((offset, i) => {
+    const t = sorted.length > 1 ? i / (sorted.length - 1) : 1;
+    const noise = () => (rng() - 0.5);
+    const envelope = Math.sin(t * Math.PI); // 0(양 끝) ~ 1(중간) — 첫/최근 기록은 from/to 값을 그대로 유지
+    const wave = (phaseOffset) => Math.sin(t * Math.PI * waveFreq + wavePhase + phaseOffset) * envelope;
+
+    const sleepSpan = Math.max(6, Math.abs(to.sleep - from.sleep));
+    const itchSpan = Math.max(1.5, Math.abs(to.itch - from.itch));
+    const igaSpan = Math.max(1, Math.abs(to.iga - from.iga));
+
+    // 수면 점수(삼성헬스, 0~100, 정수) · 가려움 VAS(0~10, 정수) · 피부 종합 상태 IGA(0~4, 소수 가능)
+    const sleepScore = clamp(Math.round(lerp(from.sleep, to.sleep, t) + wave(0) * sleepSpan * 0.4 + noise() * sleepSpan * 0.14), 0, 100);
+    const itchVas = clamp(Math.round(lerp(from.itch, to.itch, t) + wave(1.3) * itchSpan * 0.4 + noise() * itchSpan * 0.14), 0, 10);
+    // 모델이 5단계(0~4) 각각의 확률에 대한 기댓값을 출력하므로 argmax처럼 정수로 딱 떨어지지 않고
+    // 1.7처럼 소수로도 나온다 — round1로 소수 첫째 자리까지만 남겨 정수/소수가 섞여서 나오게 한다.
+    const iga = clamp(round1(lerp(from.iga, to.iga, t) + wave(2.6) * igaSpan * 0.4 + noise() * igaSpan * 0.14), 0, 4);
+
+    // 세부 증상(피부 붉기 · 오돌토돌함 · 긁은 상처 · 피부 두꺼워짐, 0~10) — 종합 점수(iga×2)를
+    // 중심으로 증상마다 독립적인 잡음을 더해, 같은 날이라도 증상별로 조금씩 다르게 흔들리게 한다.
+    const skin10 = iga * 2;
+    const symptomNoise = (phaseOffset) => wave(phaseOffset) * 1.2 + noise() * 1.4;
+    const redness = clamp(round1(skin10 + symptomNoise(3.1)), 0, 10);
+    const bumps = clamp(round1(skin10 + symptomNoise(4.4)), 0, 10);
+    const scratch = clamp(round1(skin10 + symptomNoise(5.7)), 0, 10);
+    const thickening = clamp(round1(skin10 + symptomNoise(7.0)), 0, 10);
+
+    const date = addDaysKey(startKey, offset);
+    return {
+      id: `${startKey}-${offset}`,
+      seed: hashStr(`${startKey}-${offset}-${seedBase}`),
+      date,
+      dayOffset: offset,
+      ts: new Date(date).getTime(),
+      sleepScore,
+      itchVas,
+      iga,
+      redness,
+      bumps,
+      scratch,
+      thickening,
+      // LesionThumb의 사진 오버레이 윤곽선 크기에만 쓰는 dump 값 — IGA 단계가 높을수록 넓게 잡는다.
+      // UI 지표/그래프에는 더 이상 "병변 면적"으로 노출하지 않는다.
+      lesionAreaPct: clamp(round1(3 + iga * 6 + noise() * 3), 0.5, 45),
+      // 촬영 순서(i, 시간순 정렬됨)에 맞춰 실제 사진을 1:1로 매칭 — 그려낸 이미지가 아니라 실제 dump 이미지
+      photo: photos[i % photos.length],
+    };
+  });
+}
+
+function makeFolder({ id, targetId, name, spanDaysAgoStart, spanDays, captureCount, from, to, photos }) {
+  const startDate = addDaysKey(todayKey(), -spanDaysAgoStart);
+  const seedBase = hashStr(id + name);
+  return {
+    id,
+    targetId,
+    name,
+    startDate,
+    createdTs: Date.now(),
+    records: generateRecords(startDate, seedBase, { spanDays, captureCount, from, to, photos }),
+  };
+}
+
+/** 데모 폴더도 실제 등록으로 만들어진 폴더와 똑같이 "{부위} {질환}" 이름을 쓴다 */
+const demoName = (t) => folderNameOf(t.label, t.diagnosis?.disease);
+
+// ── 프리셋 폴더 2개 (dump) ───────────────────────────────────────────────
+let folders = [
+  makeFolder({
+    id: 'f1',
+    targetId: DEMO_TARGETS[0].id, // 오른쪽 상완 앞 아토피피부염
+    name: demoName(DEMO_TARGETS[0]),
+    spanDaysAgoStart: 53,
+    spanDays: 53,
+    captureCount: 14,
+    from: { sleep: 58, itch: 7, iga: 3.8 },
+    to: { sleep: 84, itch: 2, iga: 0.4 },
+    photos: ATOPIC_PHOTOS,
+  }),
+  makeFolder({
+    id: 'f2',
+    targetId: DEMO_TARGETS[1].id, // 얼굴 주사
+    name: demoName(DEMO_TARGETS[1]),
+    spanDaysAgoStart: 21,
+    spanDays: 21,
+    captureCount: 7,
+    from: { sleep: 82, itch: 2, iga: 0.8 },
+    to: { sleep: 68, itch: 5, iga: 3.6 },
+    photos: CHEEK_PHOTOS,
+  }),
+];
+const listeners = new Set();
+function emit() { listeners.forEach((l) => l()); }
+function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+
+export function getFolders() { return folders; }
+export function useFolders() { return useSyncExternalStore(subscribe, getFolders); }
+export function getFolder(id) { return folders.find((f) => f.id === id) || null; }
+export function useFolder(id) {
+  useFolders(); // 변경 시 리렌더 트리거용 구독
+  return getFolder(id);
+}
+
+/** 폴더의 촬영 시작일로부터 오늘까지 며칠째인지 (예: D+53) */
+export function dayCount(folder) {
+  return Math.max(0, daysBetween(folder.startDate, todayKey()));
+}
+
+/** 한 모니터링 대상(MonitorTarget)에 딸린 폴더 */
+export function getFolderByTarget(targetId) {
+  return folders.find((f) => f.targetId === targetId) || null;
+}
+
+/**
+ * 모든 폴더를 통틀어 가장 최근 촬영 기록 하나 (홈 화면 요약 카드용). 폴더 안 기록은 항상
+ * 날짜 오름차순(offset 순)으로 쌓이므로 각 폴더의 마지막 기록끼리만 ts로 비교하면 된다.
+ * 폴더가 하나도 없으면(또는 전부 기록이 비어 있으면) null.
+ */
+export function latestRecordAcrossFolders() {
+  let best = null;
+  for (const folder of folders) {
+    const last = folder.records[folder.records.length - 1];
+    if (last && (!best || last.ts > best.record.ts)) best = { folder, record: last };
+  }
+  return best;
+}
+
+export function useLatestMonitoringRecord() {
+  useFolders(); // 변경 시 리렌더 트리거용 구독
+  return latestRecordAcrossFolders();
+}
+
+/**
+ * "신규 모니터링 등록하기" 흐름이 가이드 촬영까지 끝냈을 때 호출한다.
+ *
+ * 그 대상의 폴더가 없으면 "{부위} {질환}" 이름으로 새로 만들고(이름은 호출부에서 folderNameOf로
+ * 지어 넘긴다), 방금 찍은 사진을 첫 기록으로 넣는다. 같은 자리를 다시 등록한 경우엔
+ * (ensureTarget이 기존 대상을 그대로 돌려주므로) 이미 있는 폴더에 오늘 기록만 덧붙는다 —
+ * 같은 자리의 추이가 폴더 하나에 계속 이어져야 비교가 의미 있기 때문이다.
+ *
+ * @param {{ targetId: string, name: string, photo: { uri: string } }} args
+ */
+export function ensureFolderForTarget({ targetId, name, photo }) {
+  const existing = getFolderByTarget(targetId);
+  if (!existing) {
+    folders = [
+      { id: `f_${targetId}`, targetId, name, startDate: todayKey(), createdTs: Date.now(), records: [] },
+      ...folders,
+    ];
+  } else if (existing.name !== name) {
+    // 같은 자리를 다시 등록하면서 문진에서 질환명을 바꿨으면 폴더 이름도 따라간다
+    folders = folders.map((f) => (f.id === existing.id ? { ...f, name } : f));
+  }
+  // 여기서는 emit하지 않는다 — 기록이 0개인 순간이 구독자에게 보이면 폴더 화면이 빈 배열을
+  // 그리게 된다. 바로 아래 addRecord가 첫 기록까지 채운 뒤 한 번만 알린다.
+  return addRecord(existing ? existing.id : `f_${targetId}`, photo);
+}
+
+export function deleteFolder(id) {
+  folders = folders.filter((f) => f.id !== id);
+  emit();
+}
+
+/**
+ * "오늘의 피부 상태 기록" 버튼으로 방금 촬영한 사진을 폴더에 새 기록으로 추가한다.
+ * 아직 실제 분석 파이프라인이 없어(온디바이스 모델 연동 전) 마지막 기록 값을 기준으로 살짝
+ * 흔들어 오늘치 dump 수치를 만든다 — 프리셋 폴더의 시계열 생성과 같은 잡음 스타일이다.
+ * 같은 날 이미 기록이 있으면(하루 여러 번 촬영) 새로 덮어쓴다.
+ *
+ * @param {string} folderId
+ * @param {{ uri: string }} photo — 카메라/앨범에서 방금 고른 사진
+ */
+export function addRecord(folderId, photo) {
+  const folder = folders.find((f) => f.id === folderId);
+  if (!folder) return null;
+
+  const date = todayKey();
+  const dayOffset = daysBetween(folder.startDate, date);
+  const last = folder.records[folder.records.length - 1];
+  const rng = makeRng(hashStr(`${folderId}-${date}-${Date.now()}`));
+  const jitter = (span, amt) => (rng() - 0.5) * span * amt;
+
+  const sleepScore = clamp(Math.round((last ? last.sleepScore : 75) + jitter(100, 0.12)), 0, 100);
+  const itchVas = clamp(Math.round((last ? last.itchVas : 3) + jitter(10, 0.12)), 0, 10);
+  const iga = clamp(round1((last ? last.iga : 1.5) + jitter(4, 0.12)), 0, 4);
+  const skin10 = iga * 2;
+  const symptomNoise = () => jitter(3, 0.4);
+  const redness = clamp(round1(skin10 + symptomNoise()), 0, 10);
+  const bumps = clamp(round1(skin10 + symptomNoise()), 0, 10);
+  const scratch = clamp(round1(skin10 + symptomNoise()), 0, 10);
+  const thickening = clamp(round1(skin10 + symptomNoise()), 0, 10);
+
+  const record = {
+    id: `${folderId}-${date}-${Date.now()}`,
+    seed: hashStr(`${folderId}-${date}-${Date.now()}`),
+    date,
+    dayOffset,
+    ts: Date.now(),
+    sleepScore,
+    itchVas,
+    iga,
+    redness,
+    bumps,
+    scratch,
+    thickening,
+    lesionAreaPct: clamp(round1(3 + iga * 6 + jitter(3, 0.4)), 0.5, 45),
+    photo,
+  };
+
+  const existingIdx = folder.records.findIndex((r) => r.date === date);
+  const records = existingIdx >= 0
+    ? folder.records.map((r, i) => (i === existingIdx ? record : r))
+    : [...folder.records, record].sort((a, b) => a.dayOffset - b.dayOffset);
+
+  folders = folders.map((f) => (f.id === folderId ? { ...f, records } : f));
+  emit();
+  return record;
+}

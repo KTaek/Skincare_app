@@ -2,6 +2,7 @@
   "expo": {
     "name": "피부 케어",
     "slug": "skin-care-app",
+    "owner": "ohhhhh",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -20,7 +21,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.taeeek2.skincareapp"
+      "package": "com.ohhhhh.skincareapp"
     },
     "plugins": [
       "@react-native-community/datetimepicker",
@@ -48,7 +49,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "866c58cb-e5b5-47de-87e3-ac030bd0497b"
+        "projectId": "52006d3c-57a1-4089-92ce-228facb859c1"
       }
     }
   }

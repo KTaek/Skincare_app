@@ -1,4 +1,4 @@
-package com.taeeek2.skincareapp
+package com.ohhhhh.skincareapp
 
 import android.app.Application
 import android.content.res.Configuration

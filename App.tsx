@@ -6,6 +6,7 @@ import { RoutineProvider } from './src/context/RoutineContext';
 import { RecordsProvider } from './src/context/RecordsContext';
 import { LeaveGuardProvider } from './src/context/LeaveGuardContext';
 import { TrackingModalProvider } from './src/TrackingModalContext';
+import { MonitoringProvider } from './src/context/MonitoringContext';
 import RootNavigator from './src/navigation/RootNavigator';
 
 export default function App() {
@@ -13,14 +14,16 @@ export default function App() {
     <SafeAreaProvider>
       <RoutineProvider>
         <RecordsProvider>
-          <LeaveGuardProvider>
-            <NavigationContainer>
-              <StatusBar style="dark" />
-              <TrackingModalProvider>
-                <RootNavigator />
-              </TrackingModalProvider>
-            </NavigationContainer>
-          </LeaveGuardProvider>
+          <MonitoringProvider>
+            <LeaveGuardProvider>
+              <NavigationContainer>
+                <StatusBar style="dark" />
+                <TrackingModalProvider>
+                  <RootNavigator />
+                </TrackingModalProvider>
+              </NavigationContainer>
+            </LeaveGuardProvider>
+          </MonitoringProvider>
         </RecordsProvider>
       </RoutineProvider>
     </SafeAreaProvider>
