@@ -5,7 +5,7 @@ import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, StatusBar, Imag
 import { Ionicons } from '@expo/vector-icons';
 import { AppColors } from '../appTheme';
 
-export default function LandmarkPicker({ uri, refName, onBack, onConfirm }) {
+export default function LandmarkPicker({ uri, refName, mode = 'circle', onBack, onConfirm }) {
   const [wrap, setWrap] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
@@ -47,7 +47,8 @@ export default function LandmarkPicker({ uri, refName, onBack, onConfirm }) {
 
   const zoom = (s) => { setScale(s); setTx(0); setTy(0); };
   const len = pts.length === 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
-  const navelArea = pts.length === 2 ? Math.PI * (len / 2) ** 2 : 0;   // 배꼽 면적(512² px, 원 근사)
+  // 기준 면적: 원 모드=π r²(배꼽/홍채), 길이 모드=길이²(눈 가로 폭)
+  const refArea = pts.length === 2 ? (mode === 'length' ? len * len : Math.PI * (len / 2) ** 2) : 0;
   const center512 = pts.length === 2 ? { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 } : null;
 
   // 화면 좌표(현재 확대/이동 반영)
@@ -65,19 +66,34 @@ export default function LandmarkPicker({ uri, refName, onBack, onConfirm }) {
         <View style={{ width: 26 }} />
       </View>
 
-      <Text style={styles.title}>「{refName}」를 원으로 감싸도록 지름 양 끝을 탭하세요 · {pts.length}/2</Text>
-      <Text style={styles.sub}>배꼽을 원으로 색칠해 그 면적을 기준으로 씁니다 · 확대(＋)/드래그 가능</Text>
+      <Text style={styles.title}>
+        {mode === 'length'
+          ? `양쪽 바깥 눈꼬리를 두 번 탭하세요 (좌·우) · ${pts.length}/2`
+          : `「${refName}」를 원으로 감싸도록 지름 양 끝을 탭하세요 · ${pts.length}/2`}
+      </Text>
+      <Text style={styles.sub}>
+        {mode === 'length'
+          ? '양쪽 바깥 눈꼬리 사이 거리(양안 폭)를 기준으로 거리를 보정합니다 · 확대(＋)/드래그 가능'
+          : `${refName}을 원으로 색칠해 그 면적을 기준으로 씁니다 · 확대(＋)/드래그 가능`}
+      </Text>
 
       <View style={styles.imgWrap}
         onLayout={(e) => setWrap({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}>
         <View pointerEvents="none" style={[StyleSheet.absoluteFill, { transform: [{ translateX: tx }, { translateY: ty }, { scale }] }]}>
           {uri && <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="contain" />}
         </View>
-        {/* 배꼽 원(색칠) — 지름 2점으로 정의 */}
-        {center512 && (() => {
+        {/* 기준 표시: 원(면적) 또는 선(길이) */}
+        {center512 && mode !== 'length' && (() => {
           const c = screen(center512);
           const r = ((len / 2) / 512) * wrap.w * scale;
           return <View pointerEvents="none" style={[styles.circle, { left: c.x - r, top: c.y - r, width: 2 * r, height: 2 * r, borderRadius: r }]} />;
+        })()}
+        {pts.length === 2 && mode === 'length' && (() => {
+          const a = screen(pts[0]), b = screen(pts[1]);
+          const L = Math.hypot(b.x - a.x, b.y - a.y);
+          const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+          return <View pointerEvents="none" style={[styles.line, { left: mx - L / 2, top: my - 1.5, width: L, transform: [{ rotateZ: `${ang}deg` }] }]} />;
         })()}
         {/* 점은 변환 밖에서 그려 크기 일정하게 */}
         {pts.map((p, i) => {
@@ -106,8 +122,8 @@ export default function LandmarkPicker({ uri, refName, onBack, onConfirm }) {
 
       <View style={{ paddingHorizontal: 16, paddingBottom: 18 }}>
         <TouchableOpacity style={[styles.primaryBtn, pts.length < 2 && styles.primaryOff]}
-          disabled={pts.length < 2} onPress={() => onConfirm(navelArea)}>
-          <Text style={styles.primaryTxt}>{pts.length < 2 ? `${refName} 지름 2점 탭` : '확인 · 측정'}</Text>
+          disabled={pts.length < 2} onPress={() => onConfirm(refArea)}>
+          <Text style={styles.primaryTxt}>{pts.length < 2 ? `${refName} 양 끝 2점 탭` : '확인 · 측정'}</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -127,6 +143,7 @@ const styles = StyleSheet.create({
          alignItems: 'center', justifyContent: 'center' },
   dotCore: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#E8A33D' },
   circle: { position: 'absolute', backgroundColor: 'rgba(232,163,61,0.35)', borderWidth: 2, borderColor: '#E8A33D' },
+  line: { position: 'absolute', height: 3, backgroundColor: '#E8A33D', borderRadius: 2 },
   zoomRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 12 },
   zoomBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16, borderWidth: 1, borderColor: AppColors.line, backgroundColor: AppColors.card },
   zoomOn: { backgroundColor: AppColors.greenTop, borderColor: AppColors.greenTop },

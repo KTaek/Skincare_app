@@ -429,8 +429,9 @@ export default function TrackingFlowScreen({ navigation, route }) {
       <LandmarkPicker
         uri={capturedBoxUri}
         refName={bodySite?.ref}
+        mode={bodySite?.ref_mode || 'circle'}
         onBack={() => setStep('overview')}
-        onConfirm={(len) => processAllRef(capturedBoxUri, len)}
+        onConfirm={(refArea) => processAllRef(capturedBoxUri, refArea)}
       />
     );
   }
@@ -482,15 +483,15 @@ export default function TrackingFlowScreen({ navigation, route }) {
             <Image source={{ uri: result.measure.overlayUri }} style={styles.overlay} resizeMode="cover" />
           )}
           <View style={styles.rowBig}>
-            <Text style={styles.bigLabel}>{result?.mode === 'ref' ? `${bodySite?.ref} 면적 대비` : '피부 대비 면적비'}</Text>
+            <Text style={styles.bigLabel}>병변 면적</Text>
             <Text style={styles.bigVal}>
-              {result?.value != null ? (result.mode === 'ref' ? `${result.value}배` : `${result.value}%`) : '-'}
+              {result?.value != null ? `${Math.round(result.value)}%` : '-'}
             </Text>
           </View>
           <Text style={styles.measureOnly}>
             {result?.mode === 'ref'
-              ? `병변이 ${bodySite?.ref} 면적의 ${result?.value ?? '-'}배로 기록되었습니다. (참고용, 거리불변)`
-              : `면적 ${result?.value ?? '-'}%로 기록되었습니다. (참고용 측정값)`}
+              ? `「${bodySite?.ref}」 크기를 기준으로 한 병변 면적입니다. (참고용, 거리불변)`
+              : `피부 면적 대비 병변 면적입니다. (참고용 측정값)`}
           </Text>
 
           {result?.severity?.length > 0 && (

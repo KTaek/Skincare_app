@@ -76,9 +76,9 @@ export default function TrackingSiteDetailScreen({ route, navigation }) {
   const mode = (sessions[sessions.length - 1]?.measure_mode) || 'skin';
   const refName = sessions[sessions.length - 1]?.ref_name || null;
   const areaLabel = mode === 'ref'
-    ? `병변 면적 (${refName || '기준'} 면적의 배수)`
-    : '병변 면적 (피부 대비 %)';
-  const areaUnit = mode === 'ref' ? '배' : '%';
+    ? `병변 면적 (${refName || '기준'} 기준)`
+    : '병변 면적 (피부 대비)';
+  const areaUnit = '%';
 
   // 앱 공용 LineChart용 데이터 (면적 / IGA)
   const areaData = pts.map(p => ({ date: new Date(p.t), value: p.v }));
@@ -110,8 +110,8 @@ export default function TrackingSiteDetailScreen({ route, navigation }) {
           {latest && (
             <View style={styles.summaryRow}>
               <View>
-                <Text style={styles.sumBig}>{latest.v}{areaUnit}</Text>
-                <Text style={styles.sumCap}>최근 {mode === 'ref' ? '지표' : '면적'}</Text>
+                <Text style={styles.sumBig}>{Math.round(latest.v)}{areaUnit}</Text>
+                <Text style={styles.sumCap}>최근 병변 면적</Text>
               </View>
               {band && (
                 <View style={styles.bandInfo}>
@@ -119,10 +119,10 @@ export default function TrackingSiteDetailScreen({ route, navigation }) {
                     <Text style={styles.withinTxt}>변화 범위 내</Text>
                   ) : (
                     <Text style={styles.deltaTxt}>
-                      기준 {baseVal}{areaUnit} 대비 {latest.v - baseVal >= 0 ? '+' : ''}{(latest.v - baseVal).toFixed(1)} 기록
+                      기준 {Math.round(baseVal)}{areaUnit} 대비 {latest.v - baseVal >= 0 ? '+' : ''}{Math.round(latest.v - baseVal)}{areaUnit} 기록
                     </Text>
                   )}
-                  <Text style={styles.bandCap}>기준 {baseVal}{areaUnit} · 변동 ±{std.toFixed(1)}</Text>
+                  <Text style={styles.bandCap}>기준 {Math.round(baseVal)}{areaUnit} · 변동 ±{Math.round(std)}{areaUnit}</Text>
                 </View>
               )}
             </View>
@@ -156,7 +156,7 @@ export default function TrackingSiteDetailScreen({ route, navigation }) {
                   ? <Image source={{ uri: s.overview_photo_path }} style={styles.frameImg} />
                   : <View style={[styles.frameImg, styles.thumbEmpty]}><Ionicons name="image" size={20} color={AppColors.navInactive} /></View>}
                 <Text style={styles.frameDate}>{fmtDate(s.timestamp)}</Text>
-                <Text style={styles.frameArea}>{s.area_ratio != null ? `${s.area_ratio}%` : '-'}</Text>
+                <Text style={styles.frameArea}>{s.area_ratio != null ? `${Math.round(s.area_ratio)}%` : '-'}</Text>
                 {iga && <Text style={styles.frameIga}>IGA {iga.grade_ko}</Text>}
                 {(s.quality_flags || []).length > 0 && (
                   <View style={styles.flagDot}><Ionicons name="alert" size={10} color="#fff" /></View>
@@ -206,7 +206,7 @@ export default function TrackingSiteDetailScreen({ route, navigation }) {
           </View>
 
           {viewer.area != null && (
-            <Text style={styles.modalArea}>피부 대비 면적비 {viewer.area}%</Text>
+            <Text style={styles.modalArea}>병변 면적 {Math.round(viewer.area)}%</Text>
           )}
 
           {/* 원본 / 병변 / 피부 토글 */}

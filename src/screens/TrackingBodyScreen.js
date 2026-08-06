@@ -8,8 +8,8 @@ import { getTrackedSites } from '../utils/tracking';
 
 // 여러 부위에 퍼진 경우 한 번에 잡는 넓은 범위 선택
 const WHOLE = [
-  { part: '몸통 전체', ref: '배꼽' },
-  { part: '등 전체', ref: null },
+  { part: '몸통 전체', ref: '배꼽', ref_mode: 'circle' },
+  { part: '등 전체', ref: null, ref_mode: null },
 ];
 
 export default function TrackingBodyScreen({ navigation }) {
@@ -24,7 +24,7 @@ export default function TrackingBodyScreen({ navigation }) {
     });
   }, []);
 
-  const bodySite = sel ? { part: sel.part, side: null, ref: sel.ref } : null;
+  const bodySite = sel ? { part: sel.part, side: null, ref: sel.ref, ref_mode: sel.ref_mode || 'circle' } : null;
   const goDetail = () => { if (bodySite) navigation.navigate('TrackingSiteDetail', { body_site: bodySite }); };
   const goCapture = () => { if (bodySite) navigation.navigate('TrackingFlow', { body_site: bodySite }); };
 
