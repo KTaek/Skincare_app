@@ -1,21 +1,42 @@
-import React, { useState } from 'react';
-import { Image, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { AppColors, cardDecoration } from '../theme';
-import { BODY_REGION_LABELS, SkinRecord, sevOf } from '../models';
-import { useRecords } from '../context/RecordsContext';
 import { useFolders } from '../folders/store';
-import { SevBadge } from '../components/widgets';
+import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
+import LesionThumb from '../folders/components/LesionThumb';
+import { useMonitoring } from '../context/MonitoringContext';
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 
+/** 모니터링 폴더의 기록 하나 + 그 기록이 속한 폴더 */
+type FolderEntry = { folder: any; record: any };
+
+/** 폴더의 날짜 문자열("2026-08-06")을 달력 셀 키("2026-8-6", 앞자리 0 없음)로 맞춘다 */
+function toCellKey(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return `${y}-${m}-${d}`;
+}
+
 export default function RecordsScreen() {
-  const { records } = useRecords();
   const folders = useFolders();
   const navigation = useNavigation<any>();
   const [view, setView] = useState(() => new Date());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  // 모든 모니터링 폴더의 기록을 날짜(달력 셀 키) 기준으로 묶어 둔다 — 같은 날 여러 부위를
+  // 찍었으면 그 날짜 칸에 여러 건이 쌓인다.
+  const entriesByDate = useMemo(() => {
+    const map: Record<string, FolderEntry[]> = {};
+    for (const folder of folders) {
+      for (const record of folder.records) {
+        const key = toCellKey(record.date);
+        (map[key] ??= []).push({ folder, record });
+      }
+    }
+    return map;
+  }, [folders]);
 
   const changeMonth = (delta: number) => {
     setView((v) => new Date(v.getFullYear(), v.getMonth() + delta, 1));
@@ -34,7 +55,7 @@ export default function RecordsScreen() {
 
       <CalendarCard
         view={view}
-        records={records}
+        entriesByDate={entriesByDate}
         selectedKey={selectedKey}
         onSelect={setSelectedKey}
         onChangeMonth={changeMonth}
@@ -43,7 +64,7 @@ export default function RecordsScreen() {
       {selectedKey != null && (
         <>
           <View style={{ height: 16 }} />
-          <DetailSection records={records[selectedKey]} />
+          <DetailSection dateKey={selectedKey} entries={entriesByDate[selectedKey]} />
         </>
       )}
 
@@ -101,13 +122,13 @@ function ActionBox({
 
 function CalendarCard({
   view,
-  records,
+  entriesByDate,
   selectedKey,
   onSelect,
   onChangeMonth,
 }: {
   view: Date;
-  records: Record<string, SkinRecord[]>;
+  entriesByDate: Record<string, FolderEntry[]>;
   selectedKey: string | null;
   onSelect: (k: string) => void;
   onChangeMonth: (d: number) => void;
@@ -122,7 +143,7 @@ function CalendarCard({
   for (let i = 0; i < first; i++) cells.push(<View key={`blank-${i}`} style={styles.cell} />);
   for (let d = 1; d <= days; d++) {
     const key = `${year}-${month + 1}-${d}`;
-    const recs = records[key];
+    const entries = entriesByDate[key];
     const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === d;
     const isSel = selectedKey === key;
     cells.push(
@@ -143,10 +164,16 @@ function CalendarCard({
           >
             {d}
           </Text>
-          {recs && recs.length > 0 && (
+          {entries && entries.length > 0 && (
             <View style={styles.dotsRow}>
-              {recs.slice(0, 3).map((r, i) => (
-                <View key={i} style={[styles.dot, { backgroundColor: sevOf(r.sev).color }]} />
+              {entries.slice(0, 3).map((e, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.dot,
+                    { backgroundColor: skinConditionInfo(DISPLAY_SCALE.iga(e.record.iga)).color },
+                  ]}
+                />
               ))}
             </View>
           )}
@@ -189,8 +216,8 @@ function NavBtn({ icon, onPress }: { icon: 'chevron-left' | 'chevron-right'; onP
   );
 }
 
-function DetailSection({ records }: { records: SkinRecord[] | undefined }) {
-  if (!records || records.length === 0) {
+function DetailSection({ dateKey, entries }: { dateKey: string; entries: FolderEntry[] | undefined }) {
+  if (!entries || entries.length === 0) {
     return (
       <View style={[cardDecoration(), { padding: 18, alignItems: 'center' }]}>
         <Text style={styles.noRecord}>이 날에는 검사 기록이 없어요.</Text>
@@ -198,73 +225,111 @@ function DetailSection({ records }: { records: SkinRecord[] | undefined }) {
     );
   }
 
-  const sorted = [...records].sort((a, b) => b.date.getTime() - a.date.getTime());
-  const first = sorted[0];
-  const dateStr = `${first.date.getFullYear()}.${first.date.getMonth() + 1}.${first.date.getDate()}`;
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const dateStr = `${y}.${m}.${d}`;
 
   return (
     <>
       <Text style={styles.dateHeading}>
-        {dateStr} 검사{sorted.length > 1 ? ` · ${sorted.length}건` : ''}
+        {dateStr} 검사{entries.length > 1 ? ` · ${entries.length}건` : ''}
       </Text>
       <View style={{ height: 10 }} />
-      {sorted.map((record, i) => (
-        <View key={i} style={i !== sorted.length - 1 ? { marginBottom: 12 } : undefined}>
-          <DetailCard record={record} />
+      {entries.map((entry, i) => (
+        <View key={entry.record.id ?? i} style={i !== entries.length - 1 ? { marginBottom: 12 } : undefined}>
+          <DetailCard entry={entry} />
         </View>
       ))}
     </>
   );
 }
 
-function DetailCard({ record }: { record: SkinRecord }) {
-  const s = sevOf(record.sev);
-  const timeStr = record.date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+/**
+ * 홈의 "최근 피부 상태" 카드와 같은 4개 지표(피부 종합 상태 · 가려움 · 수면 점수 · 병변 면적)로
+ * 통일했다 — 사진/부위/병명만 이 폴더가 참조하는 모니터링 대상(MonitorTarget)에서 그대로 가져온다.
+ */
+function DetailCard({ entry }: { entry: FolderEntry }) {
+  const { folder, record } = entry;
+  const { findTarget } = useMonitoring();
+  const target = folder.targetId ? findTarget(folder.targetId) : undefined;
+  const siteLabel: string | undefined = target?.label;
+  const diseaseName: string = target?.diagnosis?.disease ?? folder.name;
+
+  const skinValue = DISPLAY_SCALE.iga(record.iga);
+  const itchValue = DISPLAY_SCALE.itch(record.itchVas);
+  const skin = skinConditionInfo(skinValue);
+  const itch = itchBand(itchValue);
+  const sleep = sleepBand(record.sleepScore);
+
   return (
     <View style={[cardDecoration(), styles.detailCard]}>
-      <Text style={styles.detailDate}>{timeStr} 검사</Text>
+      <Text style={styles.detailDate}>D+{record.dayOffset} 기록</Text>
       <View style={{ height: 10 }} />
       <View style={{ flexDirection: 'row' }}>
         <View style={{ alignItems: 'center' }}>
-          <View style={styles.thumb}>
-            {record.photoUri ? (
-              <Image source={{ uri: record.photoUri }} style={styles.thumbImage} />
-            ) : (
-              <MaterialIcons name="image" size={24} color="#AAAABB" />
-            )}
-          </View>
-          {record.region && (
+          <LesionThumb
+            photo={record.photo}
+            areaPct={record.lesionAreaPct}
+            seed={record.seed}
+            mode="photo"
+            size={60}
+            style={undefined}
+          />
+          {siteLabel != null && (
             <>
               <View style={{ height: 6 }} />
               <View style={styles.regionPill}>
-                <Text style={styles.regionPillText}>{BODY_REGION_LABELS[record.region]}</Text>
+                <Text style={styles.regionPillText}>{siteLabel}</Text>
               </View>
             </>
           )}
         </View>
         <View style={{ width: 12 }} />
-        <View>
-          <Text style={styles.detailDisease}>{record.disease}</Text>
-          <View style={{ height: 6 }} />
-          <SevBadge sev={record.sev} prefix="중증도" />
+        <View style={{ flex: 1, justifyContent: 'center' }}>
+          <Text style={styles.detailDisease}>{diseaseName}</Text>
         </View>
       </View>
       <View style={{ height: 14 }} />
       <View style={{ flexDirection: 'row' }}>
-        <Metric label="가려움 정도" value={record.itch} />
-        <View style={{ width: 10 }} />
-        <Metric label="병변 중증도" value={s.stage} />
+        <MonitorStat label="피부 종합 상태" value={skinValue.toFixed(1)} unit="/100" band={skin.ko} bandColor={skin.color} />
+        <MonitorStat label="가려움" value={`${itchValue}`} unit="/100" band={itch.ko} bandColor={itch.color} />
+        <MonitorStat label="수면 점수" value={`${record.sleepScore}`} unit="/100" band={sleep.ko} bandColor={sleep.color} />
+        <MonitorStat label="병변 면적" value={record.lesionAreaPct.toFixed(1)} unit="%" />
       </View>
     </View>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function MonitorStat({
+  label,
+  value,
+  unit,
+  band,
+  bandColor,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  band?: string;
+  bandColor?: string;
+}) {
   return (
     <View style={styles.metric}>
-      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricLabel} numberOfLines={1}>
+        {label}
+      </Text>
       <View style={{ height: 3 }} />
-      <Text style={styles.metricValue}>{value}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
+        <Text style={styles.metricValue}>{value}</Text>
+        {unit != null && <Text style={styles.metricUnit}>{unit}</Text>}
+      </View>
+      {band != null && (
+        <>
+          <View style={{ height: 2 }} />
+          <Text style={[styles.metricBand, bandColor && { color: bandColor }]} numberOfLines={1}>
+            {band}
+          </Text>
+        </>
+      )}
     </View>
   );
 }
@@ -304,20 +369,12 @@ const styles = StyleSheet.create({
   dateHeading: { fontSize: 13, fontWeight: '700', color: AppColors.ink },
   detailCard: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 18 },
   detailDate: { fontSize: 13, fontWeight: '600', color: AppColors.sub },
-  thumb: {
-    width: 60,
-    height: 60,
-    borderRadius: 14,
-    backgroundColor: '#E7EBF0',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  thumbImage: { width: '100%', height: '100%' },
   regionPill: { backgroundColor: '#F1F3F6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
   regionPillText: { fontSize: 10.5, fontWeight: '700', color: AppColors.sub },
   detailDisease: { fontSize: 17, fontWeight: '800', color: AppColors.ink },
-  metric: { flex: 1, backgroundColor: '#F4F6F9', borderRadius: 12, padding: 10, alignItems: 'center' },
-  metricLabel: { fontSize: 11, color: AppColors.sub },
-  metricValue: { fontSize: 16, fontWeight: '800', color: AppColors.ink },
+  metric: { flex: 1, backgroundColor: '#F4F6F9', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', marginHorizontal: 3 },
+  metricLabel: { fontSize: 10, color: AppColors.sub },
+  metricValue: { fontSize: 14, fontWeight: '800', color: AppColors.ink },
+  metricUnit: { fontSize: 9, fontWeight: '700', color: AppColors.sub, marginLeft: 1, marginBottom: 1 },
+  metricBand: { fontSize: 9.5, fontWeight: '700', color: AppColors.sub },
 });

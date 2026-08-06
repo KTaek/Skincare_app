@@ -1,62 +1,59 @@
-import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
-import { Routine, initialRoutines } from '../models';
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { Routine, initialRoutines, withPatchDayDisplay, addDays, recordKey } from '../models';
 
 interface RoutineContextValue {
-  /** 시각 순으로 정렬된 전체 루틴 */
+  /** 오늘 기준, 시각 순으로 정렬된 전체 루틴 */
   sorted: Routine[];
-  /** 홈에 노출되는, 아직 숨겨지지 않은 다가오는 3개 */
-  upcoming: Routine[];
+  /** 오늘 루틴 체크 토글 */
   toggle: (id: number) => void;
   add: (name: string, time: string) => void;
   remove: (id: number) => void;
+  /** offsetDays만큼 떨어진 날짜(음수=과거, 0=오늘, 양수=미래)의 루틴 목록을 반환 —
+   *  홈의 "루틴" 카드를 좌우로 넘겨볼 때 사용 */
+  routinesForOffset: (offsetDays: number) => Routine[];
+  /** offsetDays 날짜의 특정 루틴 체크를 토글 (과거 기록 정정용, 오늘 포함) */
+  toggleForOffset: (offsetDays: number, id: number) => void;
 }
 
 const RoutineContext = createContext<RoutineContextValue | null>(null);
 
 export function RoutineProvider({ children }: { children: React.ReactNode }) {
+  // routines는 이름/시각 등 '틀'만 담는다 — 완료 여부는 날짜별로 completions에 따로 쌓인다
   const [routines, setRoutines] = useState<Routine[]>(initialRoutines);
-  // 완료 애니메이션이 끝나 홈에서 사라진 루틴
-  const [hiddenFromHome, setHiddenFromHome] = useState<Set<number>>(new Set());
-  // setTimeout 정리를 위한 보관
-  const timers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  // 날짜 키("2026-8-6") -> 그날 완료 처리된 루틴 id 집합
+  const [completions, setCompletions] = useState<Record<string, Set<number>>>({});
 
-  const sorted = useMemo(
-    () => [...routines].sort((a, b) => a.time.localeCompare(b.time)),
-    [routines],
+  const routinesForDate = useCallback(
+    (date: Date): Routine[] => {
+      const key = recordKey(date);
+      const done = completions[key];
+      const named = withPatchDayDisplay(
+        [...routines].sort((a, b) => a.time.localeCompare(b.time)),
+        date,
+      );
+      return named.map((r) => ({ ...r, done: done ? done.has(r.id) : false }));
+    },
+    [routines, completions],
   );
 
-  const upcoming = useMemo(
-    () => sorted.filter((r) => !hiddenFromHome.has(r.id)).slice(0, 3),
-    [sorted, hiddenFromHome],
+  const routinesForOffset = useCallback(
+    (offsetDays: number) => routinesForDate(addDays(new Date(), offsetDays)),
+    [routinesForDate],
   );
 
-  const toggle = useCallback((id: number) => {
-    setRoutines((prev) => {
-      const next = prev.map((r) => (r.id === id ? { ...r, done: !r.done } : r));
-      const target = next.find((r) => r.id === id);
-      if (target?.done) {
-        // 줄긋기는 즉시, 홈 목록에서 제거는 1초 페이드 아웃 후
-        const t = setTimeout(() => {
-          setHiddenFromHome((h) => new Set(h).add(id));
-          timers.current.delete(id);
-        }, 1000);
-        timers.current.set(id, t);
-      } else {
-        const t = timers.current.get(id);
-        if (t) {
-          clearTimeout(t);
-          timers.current.delete(id);
-        }
-        setHiddenFromHome((h) => {
-          if (!h.has(id)) return h;
-          const copy = new Set(h);
-          copy.delete(id);
-          return copy;
-        });
-      }
-      return next;
+  const sorted = useMemo(() => routinesForDate(new Date()), [routinesForDate]);
+
+  const toggleForOffset = useCallback((offsetDays: number, id: number) => {
+    const key = recordKey(addDays(new Date(), offsetDays));
+    setCompletions((prev) => {
+      const next = new Set(prev[key] ?? []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...prev, [key]: next };
     });
   }, []);
+
+  const toggle = useCallback((id: number) => toggleForOffset(0, id), [toggleForOffset]);
 
   const add = useCallback((name: string, time: string) => {
     setRoutines((prev) => [...prev, { id: Date.now(), name, time, done: false }]);
@@ -67,8 +64,8 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ sorted, upcoming, toggle, add, remove }),
-    [sorted, upcoming, toggle, add, remove],
+    () => ({ sorted, toggle, add, remove, routinesForOffset, toggleForOffset }),
+    [sorted, toggle, add, remove, routinesForOffset, toggleForOffset],
   );
 
   return <RoutineContext.Provider value={value}>{children}</RoutineContext.Provider>;

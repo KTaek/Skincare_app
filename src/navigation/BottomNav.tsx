@@ -13,7 +13,7 @@ const TABS: Record<string, { icon: IconName; label: string }> = {
   Home: { icon: 'home', label: '홈' },
   Records: { icon: 'calendar-today', label: '기록' },
   Camera: { icon: 'photo-camera', label: '카메라' },
-  Routine: { icon: 'checklist', label: '루틴' },
+  WholeBody: { icon: 'accessibility-new', label: '전신결과' },
   Hospital: { icon: 'location-on', label: '주변 병원' },
 };
 

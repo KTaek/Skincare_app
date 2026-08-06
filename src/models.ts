@@ -4,8 +4,11 @@ import { AppColors } from './theme';
 export interface Routine {
   id: number;
   name: string;
-  time: string; // "HH:mm"
+  time: string; // "HH:mm" — 정렬 기준. 화면에는 freqLabel이 있으면 그것을 대신 표시한다
   done: boolean;
+  /** 시각 대신 표시할 문구(예: "매일", "격일"). 빈 문자열이면 아무것도 표시하지 않는다.
+   *  undefined면 기존처럼 time을 표시한다(사용자가 직접 추가한 루틴용). */
+  freqLabel?: string;
 }
 
 /** 신체 영역 — 촬영 전 사용자가 표시한 병변 위치를 6개 구역으로 단순화 */
@@ -45,15 +48,10 @@ export interface Hospital {
   rating: number;
 }
 
-/** 홈 상단 카드에 표시되는 최근 상태 */
+/** 홈 상단 카드에 표시되는 최근 상태 (질환명 · 병변 중증도) */
 export interface SkinStatus {
   disease: string;
   sev: number;
-  itch: string; // "4 / 10"
-  itchDelta: string; // "2점 ↓"
-  lastExam: string; // "2일 전"
-  rate: string; // "66%"
-  rateDelta: string; // "22% ↑"
 }
 
 /** 중증도 정보 (단계 / 색 / 라벨) */
@@ -75,12 +73,30 @@ export const sevOf = (s: number): Severity => kSeverity[s] ?? kSeverity[1];
 
 export const kUserName = '임경택';
 
+/** 격일로 반복되는 음압 패치 루틴의 id — 날짜에 따라 이름/문구가 자동으로 바뀐다 */
+export const PATCH_ROUTINE_ID = 3;
+
 export const initialRoutines = (): Routine[] => [
-  { id: 1, name: '병변 상태 사진 찍기', time: '12:00', done: false },
-  { id: 2, name: '세라마이드 보습제 바르기', time: '14:00', done: false },
-  { id: 3, name: '미지근한 물로 샤워하기', time: '18:00', done: false },
-  { id: 4, name: '항히스타민제 복용', time: '21:00', done: false },
+  { id: 1, name: '병변 상태 사진 찍기', time: '09:00', done: false, freqLabel: '' },
+  { id: 2, name: '보습제 바르기 (BT 4 Complex)', time: '09:05', done: false, freqLabel: '매일' },
+  { id: PATCH_ROUTINE_ID, name: '음압 패치 붙이기', time: '09:10', done: false, freqLabel: '격일' },
 ];
+
+/** 오늘이 음압 패치를 붙이는 날인지 — 날짜 기준으로 자동 격일 판정 */
+export function isPatchDay(date: Date = new Date()): boolean {
+  const dayIndex = Math.floor(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000,
+  );
+  return dayIndex % 2 === 0;
+}
+
+/** 음압 패치 루틴은 격일로 이름이 바뀐다 — 오늘 날짜를 기준으로 표시용 이름을 계산해 덮어씌운다 */
+export function withPatchDayDisplay(routines: Routine[], date: Date = new Date()): Routine[] {
+  if (isPatchDay(date)) return routines;
+  return routines.map((r) =>
+    r.id === PATCH_ROUTINE_ID ? { ...r, name: '음압 패치 휴식일 (내일 다시 케어해요!)' } : r,
+  );
+}
 
 export const seedHospitals: Hospital[] = [
   { name: '맑은피부과의원', dist: '320m', rating: 4.8, addr: '수원시 영통구 매탄로 12', open: '진료 중' },
@@ -90,6 +106,22 @@ export const seedHospitals: Hospital[] = [
 ];
 
 export const recordKey = (d: Date): string => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+
+/** 기준일에서 days만큼 이동한 날짜 (음수면 과거) */
+export function addDays(date: Date, days: number): Date {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+/** 홈의 "루틴" 카드를 좌우로 넘길 때 붙이는 날짜 라벨 (예: "오늘 · 8월 6일", "2일 전 · 8월 4일") */
+export function dayOffsetLabel(offsetDays: number, date: Date): string {
+  const md = `${date.getMonth() + 1}월 ${date.getDate()}일`;
+  if (offsetDays === 0) return `오늘 · ${md}`;
+  if (offsetDays === -1) return `어제 · ${md}`;
+  if (offsetDays === 1) return `내일 · ${md}`;
+  return offsetDays < 0 ? `${-offsetDays}일 전 · ${md}` : `${offsetDays}일 후 · ${md}`;
+}
 
 export function buildSeedRecords(): Record<string, SkinRecord[]> {
   const now = new Date();
@@ -110,42 +142,12 @@ export function buildSeedRecords(): Record<string, SkinRecord[]> {
 
 export const parseItch = (itch: string): number => parseInt(itch.split('/')[0].trim(), 10);
 
-/** 가려움 정도 변화량 — 직전 검사 대비 최근 검사의 차이 */
-function itchDeltaOf(latest: SkinRecord, previous: SkinRecord | undefined): string {
-  if (!previous) return '변화없음';
-  const diff = parseItch(latest.itch) - parseItch(previous.itch);
-  if (diff === 0) return '변화없음';
-  return diff < 0 ? `${-diff}점 ↓` : `${diff}점 ↑`;
-}
-
-const daysAgo = (date: Date): string => {
-  const now = new Date();
-  const diff = Math.round((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-  return diff <= 0 ? '오늘' : `${diff}일 전`;
-};
-
-/** 오늘 루틴 중 완료한 비율 (예: 4개 중 2개 완료 → "50%") */
-export function routineRateOf(routines: Routine[]): string {
-  if (routines.length === 0) return '0%';
-  const done = routines.filter((r) => r.done).length;
-  return `${Math.round((done / routines.length) * 100)}%`;
-}
-
-/** 검사 기록과 오늘의 루틴 이행 현황을 토대로 홈 화면에 표시할 최근 피부 상태를 계산 */
-export function currentStatusFromRecords(records: Record<string, SkinRecord[]>, routines: Routine[]): SkinStatus {
-  const sorted = Object.values(records)
+/** 검사 기록 중 가장 최근 것을 토대로 홈 화면 상단에 표시할 질환명·중증도를 계산 */
+export function currentStatusFromRecords(records: Record<string, SkinRecord[]>): SkinStatus {
+  const [latest] = Object.values(records)
     .flat()
     .sort((a, b) => b.date.getTime() - a.date.getTime());
-  const [latest, previous] = sorted;
-  return {
-    disease: latest.disease,
-    sev: latest.sev,
-    itch: latest.itch,
-    itchDelta: itchDeltaOf(latest, previous),
-    lastExam: daysAgo(latest.date),
-    rate: routineRateOf(routines),
-    rateDelta: ' ',
-  };
+  return { disease: latest.disease, sev: latest.sev };
 }
 
 /** 하루를 4구간으로 나눠 시간대별 가려움 패턴을 본다 */

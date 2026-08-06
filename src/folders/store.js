@@ -187,6 +187,25 @@ export function getFolderByTarget(targetId) {
 }
 
 /**
+ * 모든 폴더를 통틀어 가장 최근 촬영 기록 하나 (홈 화면 요약 카드용). 폴더 안 기록은 항상
+ * 날짜 오름차순(offset 순)으로 쌓이므로 각 폴더의 마지막 기록끼리만 ts로 비교하면 된다.
+ * 폴더가 하나도 없으면(또는 전부 기록이 비어 있으면) null.
+ */
+export function latestRecordAcrossFolders() {
+  let best = null;
+  for (const folder of folders) {
+    const last = folder.records[folder.records.length - 1];
+    if (last && (!best || last.ts > best.record.ts)) best = { folder, record: last };
+  }
+  return best;
+}
+
+export function useLatestMonitoringRecord() {
+  useFolders(); // 변경 시 리렌더 트리거용 구독
+  return latestRecordAcrossFolders();
+}
+
+/**
  * "신규 모니터링 등록하기" 흐름이 가이드 촬영까지 끝냈을 때 호출한다.
  *
  * 그 대상의 폴더가 없으면 "{부위} {질환}" 이름으로 새로 만들고(이름은 호출부에서 folderNameOf로
