@@ -11,10 +11,13 @@ import { GROUP_LABELS, GROUP_OF_PART, GROUP_PARTS, PartGroupId, spotFromNormal }
 /** 1단계 — 3D 모델을 돌려가며 탭해서 관찰할 부위(큰 덩어리)를 고른다 */
 export default function PartSelectScreen({
   modelId,
+  stepLabel = '1 / 4',
   onBack,
   onNext,
 }: {
   modelId: BodyModelId;
+  /** 흐름마다 단계 수가 달라서 부모가 넘겨준다 (예: "1 / 4") */
+  stepLabel?: string;
   onBack: () => void;
   /** spotId — 여기서 탭한 면을 다음 화면에서 그대로 골라 둔다 */
   onNext: (group: PartGroupId, spotId: string) => void;
@@ -32,7 +35,7 @@ export default function PartSelectScreen({
         </Pressable>
         <Text style={styles.headerTitle}>부위 선택</Text>
       </View>
-      <Text style={styles.step}>1 / 3 · 드래그해서 돌리고, 탭해서 부위를 고르세요</Text>
+      <Text style={styles.step}>{stepLabel} · 드래그해서 돌리고, 탭해서 부위를 고르세요</Text>
 
       <View style={styles.viewer}>
         <Body3DView

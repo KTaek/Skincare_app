@@ -234,14 +234,14 @@ export function scoreConfidence(
   const score = Math.round(hardFailed.length > 0 ? Math.min(weighted, 45) : weighted);
 
   const warnings: string[] = [];
-  if (!hard.focus) warnings.push('초점이 맞지 않은 상태로 촬영됐어요 (후처리로 복구할 수 없어요)');
+  if (!hard.focus) warnings.push('초점이 맞지 않은 상태로 촬영됐어요 (나중에 되살릴 수 없어요)');
   else if (breakdown.focus < 0.35) warnings.push('초점이 충분히 선명하지 않아요');
   if (!hard.exposure) warnings.push('밝은 부분이나 어두운 부분의 색 정보가 날아갔어요');
   else if (breakdown.exposure < 0.4) warnings.push('빛이 날아가거나 어두워 색 정보가 일부 손실됐어요');
   if (!hard.framing) warnings.push('병변이 프레임 안에 제대로 담기지 않았어요');
-  if (breakdown.registration < 0.35) warnings.push('지난 촬영과 거리·각도 차이가 커서 정합이 완전하지 않아요');
-  if (breakdown.color < 0.4) warnings.push('조명이 지난번과 달라 색 보정을 크게 적용했어요');
-  if (!hard.recoverable) warnings.push('후처리로 보정할 수 있는 범위를 벗어났어요');
+  if (breakdown.registration < 0.35) warnings.push('지난 촬영과 거리·각도 차이가 커서 비교가 정확하지 않을 수 있어요');
+  if (breakdown.color < 0.4) warnings.push('조명이 지난번과 많이 달라요');
+  if (!hard.recoverable) warnings.push('지난 촬영과 거리·각도 차이가 너무 커요');
 
   // 필수 조건을 하나라도 놓친 촬영은 추세 계산에서 제외한다
   const usable = hardFailed.length === 0 && score >= 35;

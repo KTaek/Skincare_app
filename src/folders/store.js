@@ -4,9 +4,10 @@
  * 폴더 하나 = 모니터링 대상(MonitorTarget) 하나. 폴더 안에는 촬영 날짜별 기록
  * (수면 점수 · 가려움 VAS · 피부 종합 상태 IGA)이 쌓인다.
  *
- * 폴더는 사용자가 직접 만들지 않는다 — 기록 탭의 "신규 모니터링 등록하기" 흐름
- * (문진 → 부위 선택 → 가이드 촬영)을 끝내면 ensureFolderForTarget이 "{부위} {질환}" 이름으로
- * 자동 생성한다. 프리셋 폴더 2개는 UI 흐름 시연용 dump 시계열이다.
+ * 폴더는 사용자가 직접 만들지 않는다 — 카메라 탭의 "신규 검사"(부위 선택 → 질환 등록 →
+ * 가려움 문진 → 촬영 → 결과)를 끝낸 뒤 결과 화면에서 "경과 기록에 연동"을 누르면
+ * ensureFolder가 "{부위} {질환}" 이름으로 만들고 recordExam이 그 검사의 실측값을 첫 기록으로
+ * 넣는다. 프리셋 폴더 2개는 UI 흐름 시연용 dump 시계열이다.
  *
  * ⚠️ 세션 메모리에만 유지된다(앱 재시작 시 초기화).
  */
@@ -143,7 +144,7 @@ const demoName = (t) => folderNameOf(t.label, t.diagnosis?.disease);
 let folders = [
   makeFolder({
     id: 'f1',
-    targetId: DEMO_TARGETS[0].id, // 오른쪽 상완 앞 아토피피부염
+    targetId: DEMO_TARGETS[0].id, // 우측 팔 건선
     name: demoName(DEMO_TARGETS[0]),
     spanDaysAgoStart: 53,
     spanDays: 53,
@@ -205,40 +206,86 @@ export function useLatestMonitoringRecord() {
   return latestRecordAcrossFolders();
 }
 
-/**
- * "신규 모니터링 등록하기" 흐름이 가이드 촬영까지 끝냈을 때 호출한다.
- *
- * 그 대상의 폴더가 없으면 "{부위} {질환}" 이름으로 새로 만들고(이름은 호출부에서 folderNameOf로
- * 지어 넘긴다), 방금 찍은 사진을 첫 기록으로 넣는다. 같은 자리를 다시 등록한 경우엔
- * (ensureTarget이 기존 대상을 그대로 돌려주므로) 이미 있는 폴더에 오늘 기록만 덧붙는다 —
- * 같은 자리의 추이가 폴더 하나에 계속 이어져야 비교가 의미 있기 때문이다.
- *
- * @param {{ targetId: string, name: string, photo: { uri: string } }} args
- */
-export function ensureFolderForTarget({ targetId, name, photo }) {
-  const existing = getFolderByTarget(targetId);
-  if (!existing) {
-    folders = [
-      { id: `f_${targetId}`, targetId, name, startDate: todayKey(), createdTs: Date.now(), records: [] },
-      ...folders,
-    ];
-  } else if (existing.name !== name) {
-    // 같은 자리를 다시 등록하면서 문진에서 질환명을 바꿨으면 폴더 이름도 따라간다
-    folders = folders.map((f) => (f.id === existing.id ? { ...f, name } : f));
-  }
-  // 여기서는 emit하지 않는다 — 기록이 0개인 순간이 구독자에게 보이면 폴더 화면이 빈 배열을
-  // 그리게 된다. 바로 아래 addRecord가 첫 기록까지 채운 뒤 한 번만 알린다.
-  return addRecord(existing ? existing.id : `f_${targetId}`, photo);
-}
-
 export function deleteFolder(id) {
   folders = folders.filter((f) => f.id !== id);
   emit();
 }
 
 /**
+ * 한 모니터링 대상의 폴더를 (없으면 "{부위} {질환}" 이름으로 만들어서) 돌려준다 — 기록은 넣지 않는다.
+ *
+ * 카메라 탭의 "경과 기록에 연동" 흐름이 쓴다: 폴더를 먼저 확보한 뒤 recordExam으로 방금 검사한
+ * 실측값을 오늘 기록으로 넣는다. 여기서 일부러 emit하지 않는데, 기록이 0개인 순간이 구독자에게
+ * 보이면 폴더 화면이 빈 배열을 그리게 되기 때문이다 — 기록까지 채운 recordExam이 한 번만 알린다.
+ *
+ * @param {{ targetId: string, name: string }} args
+ * @returns {string} 폴더 id
+ */
+export function ensureFolder({ targetId, name }) {
+  const existing = getFolderByTarget(targetId);
+  if (existing) {
+    // 질환명이 바뀌었으면(모델이 추정한 이름이 새로 붙는 경우 등) 폴더 이름도 따라간다
+    if (existing.name !== name) folders = folders.map((f) => (f.id === existing.id ? { ...f, name } : f));
+    return existing.id;
+  }
+  const id = `f_${targetId}`;
+  folders = [{ id, targetId, name, startDate: todayKey(), createdTs: Date.now(), records: [] }, ...folders];
+  return id;
+}
+
+/**
+ * 카메라 탭 검사 결과(온디바이스 모델의 **실측값**)를 폴더의 오늘 기록으로 남긴다.
+ *
+ * addRecord가 만드는 dump 수치와 달리 iga·세부 증상·병변 면적이 전부 실제 분석 결과다.
+ * 같은 날 이미 기록이 있으면(하루 여러 번 검사) 새로 덮어쓴다.
+ *
+ * 수면 점수는 검사가 만들어내는 값이 아니라 삼성헬스 연동 값이라, 직전 기록의 값을 이어받는다.
+ * 이어받을 기록조차 없으면 그래프가 깨지지 않도록 중립값을 넣되 hasSleepSource=false로 알려서
+ * 결과 화면이 "등록 안함"을 띄우게 한다. 가려움도 문진을 건너뛰면(null) 같은 이유로 직전 값을
+ * 이어받고, "이번 검사에서 실제로 등록했는지"는 결과 화면이 따로 판단한다.
+ *
+ * @param {{ folderId: string, iga: number, redness: number, bumps: number, scratch: number,
+ *           thickening: number, itchVas: number|null, areaPct: number, photoUri?: string }} args
+ * @returns {{ record: any, hasSleepSource: boolean }|null}
+ */
+export function recordExam({ folderId, iga, redness, bumps, scratch, thickening, itchVas, areaPct, photoUri }) {
+  const folder = folders.find((f) => f.id === folderId);
+  if (!folder) return null;
+
+  const date = todayKey();
+  const dayOffset = daysBetween(folder.startDate, date);
+  const last = folder.records[folder.records.length - 1];
+  const stamp = Date.now();
+
+  const record = {
+    id: `${folder.id}-${date}-${stamp}`,
+    seed: hashStr(`${folder.id}-${date}-${stamp}`),
+    date,
+    dayOffset,
+    ts: stamp,
+    sleepScore: last ? last.sleepScore : 75,
+    itchVas: itchVas != null ? clamp(Math.round(itchVas), 0, 10) : (last ? last.itchVas : 0),
+    iga: clamp(round1(iga), 0, 4),
+    redness: clamp(round1(redness), 0, 10),
+    bumps: clamp(round1(bumps), 0, 10),
+    scratch: clamp(round1(scratch), 0, 10),
+    thickening: clamp(round1(thickening), 0, 10),
+    lesionAreaPct: clamp(round1(areaPct), 0.5, 100),
+    photo: photoUri ? { uri: photoUri } : (last ? last.photo : null),
+  };
+
+  const idx = folder.records.findIndex((r) => r.date === date);
+  const records = idx >= 0
+    ? folder.records.map((r, i) => (i === idx ? record : r))
+    : [...folder.records, record].sort((a, b) => a.dayOffset - b.dayOffset);
+  folders = folders.map((f) => (f.id === folder.id ? { ...f, records } : f));
+  emit();
+  return { record, hasSleepSource: !!last };
+}
+
+/**
  * 병변 면적 추적(SkinAI2 규격 촬영)의 **실측값**을 모니터링 기록으로 남긴다.
- * ensureFolderForTarget/addRecord가 만드는 dump 값과 달리, lesionAreaPct는 실제 세그멘테이션
+ * addRecord가 만드는 dump 값과 달리, lesionAreaPct는 실제 세그멘테이션
  * 면적%이고 iga·세부증상은 중증도 모델 출력에서 나온다 → 홈·기록·모니터링 상세에 그대로 반영된다.
  *
  * 같은 이름("{부위} {질환}")의 폴더가 없으면 만들고, 오늘 날짜 기록을 생성/갱신한다.

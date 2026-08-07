@@ -27,6 +27,7 @@ export default function SpotSelectScreen({
   modelId,
   group,
   initialSpotId,
+  stepLabel = '2 / 4',
   onBack,
   onNext,
 }: {
@@ -34,6 +35,8 @@ export default function SpotSelectScreen({
   group: PartGroupId;
   /** 앞 화면에서 탭한 면 */
   initialSpotId?: string;
+  /** 흐름마다 단계 수가 달라서 부모가 넘겨준다 (예: "2 / 4") */
+  stepLabel?: string;
   onBack: () => void;
   onNext: (spot: BodySpot) => void;
 }) {
@@ -77,7 +80,7 @@ export default function SpotSelectScreen({
         </Pressable>
         <Text style={styles.headerTitle}>{GROUP_LABELS[group]}</Text>
       </View>
-      <Text style={styles.step}>2 / 3 · 촬영할 면을 골라주세요</Text>
+      <Text style={styles.step}>{stepLabel} · 촬영할 면을 골라주세요</Text>
 
       {/* 3D는 화면의 1/3 정도만 쓰고, 남는 공간의 한가운데에 놓는다 (상자는 아래에 붙는다) */}
       <View style={styles.viewerArea}>

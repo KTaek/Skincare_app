@@ -11,6 +11,8 @@ interface MonitoringContextValue {
   /** 같은 자리를 다시 고르면 기존 대상을 돌려준다 (기준 세션이 이어져야 비교가 된다) */
   ensureTarget: (modelId: BodyModelId, spot: BodySpot, diagnosis?: MonitorDiagnosis) => MonitorTarget;
   findTarget: (id: string) => MonitorTarget | undefined;
+  /** 결과 화면에서 질환 분류 모델이 이름을 알아냈을 때 대상에 붙여 준다 (폴더 이름이 여기서 나온다) */
+  setDiagnosis: (targetId: string, diagnosis: MonitorDiagnosis) => void;
   addSession: (session: MonitorSession, baseline?: Baseline) => void;
   sessionsOf: (targetId: string) => MonitorSession[];
 }
@@ -58,6 +60,10 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
 
   const findTarget = useCallback((id: string) => targets.find((t) => t.id === id), [targets]);
 
+  const setDiagnosis = useCallback((targetId: string, diagnosis: MonitorDiagnosis) => {
+    setTargets((prev) => prev.map((t) => (t.id === targetId ? { ...t, diagnosis } : t)));
+  }, []);
+
   const addSession = useCallback((session: MonitorSession, baseline?: Baseline) => {
     setSessions((prev) => [...prev, session]);
     setTargets((prev) =>
@@ -82,8 +88,8 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
   );
 
   const value = useMemo(
-    () => ({ targets, sessions, ensureTarget, findTarget, addSession, sessionsOf }),
-    [targets, sessions, ensureTarget, findTarget, addSession, sessionsOf],
+    () => ({ targets, sessions, ensureTarget, findTarget, setDiagnosis, addSession, sessionsOf }),
+    [targets, sessions, ensureTarget, findTarget, setDiagnosis, addSession, sessionsOf],
   );
 
   return <MonitoringContext.Provider value={value}>{children}</MonitoringContext.Provider>;

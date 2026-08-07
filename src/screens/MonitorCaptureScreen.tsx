@@ -2,12 +2,21 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { CameraType, CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
 import { AppColors } from '../theme';
 import { useMonitoring } from '../context/MonitoringContext';
-import { detectLesionShape, LesionDetection } from '../monitoring/lesionShape';
+import { detectLesionShape, LesionDetection, LesionShape } from '../monitoring/lesionShape';
 import { evaluateFrame, GATE, measureImageQuality } from '../monitoring/frameQuality';
-import { baselineFromResult, FIELD_OF_VIEW_FACTOR, newId, postProcessCapture } from '../monitoring/postProcess';
-import { FrameEvaluation, MonitorSession, MonitorTarget, PostProcessResult } from '../monitoring/types';
+import { FIELD_OF_VIEW_FACTOR, newId, scoreConfidence } from '../monitoring/postProcess';
+import {
+  Baseline,
+  FrameEvaluation,
+  ImageQualityMetrics,
+  MonitorSession,
+  MonitorTarget,
+  SessionConfidence,
+} from '../monitoring/types';
+import { DUMP_RESULTS, makeDumpBaseline, makeDumpConfidence } from '../exam/dumpAnalysis';
 
 /** 필수 조건이 충족된 뒤, 더 나은 프레임을 노리며 기다리는 시간 */
 const BEST_FRAME_WINDOW_MS = 1200;
@@ -16,20 +25,62 @@ const MAX_CANDIDATES = 3;
 /** 프리뷰 판정 주기 */
 const TICK_MS = 900;
 
+/** 촬영 후보 한 장. 품질 판정에 실패해도 사진은 살리므로 detection/evaluation은 없을 수 있다. */
 interface Candidate {
   uri: string;
-  detection: LesionDetection;
-  evaluation: FrameEvaluation;
+  detection: LesionDetection | null;
+  evaluation: FrameEvaluation | null;
 }
 
 type Phase = 'preview' | 'processing' | 'review';
 
 /**
- * 3단계 — 가이드에 "대충" 맞으면 자동으로 찍고, 나머지는 후처리가 흡수한다.
+ * 품질을 재지 못한 촬영의 신뢰도.
+ * 점수를 억지로 매기지 않고 중간값에 경고를 달아, 이 기록이 "측정되지 않았다"는 사실을 남긴다.
+ */
+const UNMEASURED_CONFIDENCE: SessionConfidence = {
+  score: 50,
+  tier: 'medium',
+  breakdown: { focus: 0, exposure: 0, framing: 0, registration: 0, color: 0 },
+  warnings: ['촬영 품질을 측정하지 못했어요 — 신뢰도 점수는 참고만 해주세요'],
+  usable: true,
+};
+
+/** 이번 촬영을 이 자리의 기준(baseline)으로 삼는다 — 다음 촬영의 고스트·거리·각도 안내가 여기서 나온다 */
+function baselineFromCapture(
+  sessionId: string,
+  uri: string,
+  shape: LesionShape,
+  metrics: ImageQualityMetrics,
+): Baseline {
+  return {
+    sessionId,
+    processedUri: uri,
+    orientation: shape.orientation,
+    radiusNorm: shape.radiusPx / Math.min(shape.imageWidth, shape.imageHeight),
+    // 색 정규화를 하지 않으므로 실제로 쓰이지는 않는다 — 프레임의 채널 평균만 기록해 둔다
+    colorStats: { mean: metrics.channelMeans, std: [0.1, 0.1, 0.1] },
+    brightness: metrics.brightness,
+  };
+}
+
+/**
+ * 촬영 단계 — 가이드에 "대충" 맞으면 자동으로 찍고, 나머지는 후처리가 흡수한다.
  *
  * 필수 조건(초점·프레이밍·노출·후처리 하한선)이 모두 충족되면 셔터가 열리고,
  * 그 순간부터 짧은 창(BEST_FRAME_WINDOW_MS) 동안 후보 프레임을 모아 권장 조건 점수가 가장 높은 장면을 채택한다.
  * 사용자는 완벽하게 맞출 필요가 없고, 앱이 그중 제일 나은 순간을 고른다.
+ *
+ * 자동 셔터를 기다리지 않고 직접 찍을 수도 있고(수동 셔터), 이미 찍어 둔 사진을 앨범에서 고를
+ * 수도 있다. 필수 조건을 못 넘긴 프레임은 scoreConfidence가 신뢰도 상한을 씌우므로, 품질이
+ * 낮은 기록이 추세를 흔들지는 않는다.
+ *
+ * 이전에 찍은 기준 사진이 있으면 프리뷰 위에 반투명하게 겹쳐(고스트) 같은 구도를 유도한다.
+ *
+ * ⚠️ 정합·색보정(postProcessCapture)은 지금 꺼져 있다 — 실기기에서 Skia 오프스크린 렌더가
+ * 실패해 촬영이 통째로 막히는 문제가 있어, 촬영본을 그대로 쓰고 흐름이 절대 끊기지 않게 했다.
+ * 품질 판정(detectLesionShape/evaluateFrame)이 실패해도 사진은 그대로 살려서 결과로 넘어간다.
+ * 후처리를 되살릴 때는 finalize에서 postProcessCapture를 다시 호출하면 된다.
  */
 export default function MonitorCaptureScreen({
   target,
@@ -46,10 +97,11 @@ export default function MonitorCaptureScreen({
   const [live, setLive] = useState<FrameEvaluation | null>(null);
   /** 등·목 뒤처럼 혼자 찍기 어려운 자리는 전면 카메라로 거울처럼 보며 찍는다 */
   const [facing, setFacing] = useState<CameraType>('back');
-  const [result, setResult] = useState<PostProcessResult | null>(null);
   const [session, setSession] = useState<MonitorSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
+  /** 기준 사진 겹쳐보기(고스트) — 병변 자체를 가려서 오히려 맞추기 어려울 때 잠깐 끌 수 있다 */
+  const [ghostOn, setGhostOn] = useState(true);
 
   const cameraRef = useRef<CameraView>(null);
   const candidates = useRef<Candidate[]>([]);
@@ -60,43 +112,95 @@ export default function MonitorCaptureScreen({
 
   const baseline = target.baseline;
 
+  /**
+   * 고른 사진을 이번 세션으로 확정한다. 여기서는 실패할 수 있는 일을 하지 않는다 —
+   * 촬영을 마친 뒤에 흐름이 막히는 일이 없어야 하기 때문이다.
+   */
   const finalize = useCallback(
-    async (chosen: Candidate) => {
-      setPhase('processing');
-      try {
-        const sessionId = newId('sess');
-        const post = await postProcessCapture({
-          detection: chosen.detection,
-          evaluation: chosen.evaluation,
-          baseline,
-          sessionId,
-        });
-        const created: MonitorSession = {
-          id: sessionId,
-          targetId: target.id,
-          capturedAt: new Date(),
-          rawUri: chosen.uri,
-          processedUri: post.processedUri,
-          confidence: post.confidence,
-          softScore: chosen.evaluation.softScore,
-        };
-        addSession(
-          created,
-          baselineFromResult(sessionId, post, chosen.detection.shape, chosen.evaluation.metrics.brightness),
-        );
-        setResult(post);
-        setSession(created);
-        setPhase('review');
-      } catch (e: any) {
-        setError(e?.message ?? '후처리 중 문제가 생겼어요');
-        setPhase('review');
-      }
+    (chosen: Candidate) => {
+      const sessionId = newId('sess');
+      const confidence = DUMP_RESULTS
+        ? makeDumpConfidence(sessionId)
+        : chosen.evaluation
+          ? scoreConfidence(
+              chosen.evaluation,
+              // 정합을 하지 않으므로 "손대지 않은" 변환으로 점수만 계산한다
+              { scale: 1, rotationRad: 0, translation: { x: 0, y: 0 }, isBaseline: !baseline },
+              [1, 1, 1],
+              baseline,
+            )
+          : UNMEASURED_CONFIDENCE;
+
+      const created: MonitorSession = {
+        id: sessionId,
+        targetId: target.id,
+        capturedAt: new Date(),
+        rawUri: chosen.uri,
+        // 후처리가 꺼져 있어 촬영본이 곧 결과 사진이다
+        processedUri: chosen.uri,
+        confidence,
+        softScore: chosen.evaluation?.softScore ?? 0,
+      };
+
+      addSession(
+        created,
+        DUMP_RESULTS
+          ? makeDumpBaseline(sessionId, chosen.uri)
+          : chosen.detection && chosen.evaluation
+            ? baselineFromCapture(sessionId, chosen.uri, chosen.detection.shape, chosen.evaluation.metrics)
+            : undefined,
+      );
+      setSession(created);
+      setPhase('review');
     },
     [addSession, baseline, target.id],
   );
 
+  /**
+   * 사진 한 장(수동 셔터 또는 앨범)을 이번 세션으로 확정한다.
+   * 자동 촬영 루프가 끼어들지 못하도록 먼저 멈추고, 품질 판정이 실패해도 사진은 그대로 살린다.
+   */
+  const commitPhoto = useCallback(
+    async (uri: string) => {
+      cancelled.current = true;
+      setPhase('processing');
+      let detection: LesionDetection | null = null;
+      let evaluation: FrameEvaluation | null = null;
+      if (!DUMP_RESULTS) {
+        try {
+          detection = await detectLesionShape(uri);
+          evaluation = evaluateFrame(measureImageQuality(detection.image), detection.shape, baseline);
+        } catch {
+          // 품질을 못 재도 촬영 자체는 살린다 — 신뢰도만 "측정 못 함"으로 남는다
+        }
+      }
+      finalize({ uri, detection, evaluation });
+    },
+    [baseline, finalize],
+  );
+
+  const shootNow = useCallback(async () => {
+    try {
+      const photo = await cameraRef.current?.takePictureAsync({ quality: 0.9, shutterSound: false });
+      if (photo) await commitPhoto(photo.uri);
+    } catch (e: any) {
+      setError(e?.message ?? '사진을 찍지 못했어요');
+      setPhase('review');
+    }
+  }, [commitPhoto]);
+
+  const pickFromAlbum = useCallback(async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return;
+    const picked = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+    if (picked.canceled || !picked.assets[0]) return;
+    await commitPhoto(picked.assets[0].uri);
+  }, [commitPhoto]);
+
   /** 프리뷰를 주기적으로 찍어 품질을 판정하고, 조건이 되면 자동으로 확정한다 */
   useEffect(() => {
+    // dump 모드에서는 판정할 모델이 없으므로 자동 셔터 루프를 아예 돌리지 않는다 (수동 촬영·앨범만 쓴다)
+    if (DUMP_RESULTS) return;
     if (phase !== 'preview' || !permission?.granted) return;
     cancelled.current = false;
     // 카메라를 바꾸면 이전 카메라로 모아 둔 후보는 버린다
@@ -130,11 +234,12 @@ export default function MonitorCaptureScreen({
         const started = windowStart.current;
         if (started == null || candidates.current.length === 0) return;
 
-        const best = candidates.current.reduce((a, b) => (b.evaluation.softScore > a.evaluation.softScore ? b : a));
+        const softOf = (c: Candidate) => c.evaluation?.softScore ?? 0;
+        const best = candidates.current.reduce((a, b) => (softOf(b) > softOf(a) ? b : a));
         const windowOver = Date.now() - started >= BEST_FRAME_WINDOW_MS;
-        if (best.evaluation.softScore >= GATE.excellentSoftScore || windowOver || candidates.current.length >= MAX_CANDIDATES) {
+        if (softOf(best) >= GATE.excellentSoftScore || windowOver || candidates.current.length >= MAX_CANDIDATES) {
           cancelled.current = true;
-          await finalize(best);
+          finalize(best);
         }
       } catch {
         // 한 프레임 실패는 무시하고 다음 주기에 다시 시도
@@ -155,7 +260,6 @@ export default function MonitorCaptureScreen({
     candidates.current = [];
     windowStart.current = null;
     cancelled.current = false;
-    setResult(null);
     setSession(null);
     setError(null);
     setLive(null);
@@ -184,9 +288,9 @@ export default function MonitorCaptureScreen({
       <View style={[styles.root, styles.center]}>
         <ActivityIndicator size="large" color={AppColors.greenTop} />
         <View style={{ height: 16 }} />
-        <Text style={styles.processingTitle}>사진을 정렬하고 색을 맞추는 중...</Text>
+        <Text style={styles.processingTitle}>사진을 확인하는 중...</Text>
         <View style={{ height: 6 }} />
-        <Text style={styles.processingSub}>이전 촬영과 같은 구도·같은 색 기준으로 변환하고 있어요</Text>
+        <Text style={styles.processingSub}>촬영 품질을 재고 있어요</Text>
       </View>
     );
   }
@@ -195,19 +299,19 @@ export default function MonitorCaptureScreen({
     return (
       <ReviewView
         target={target}
-        result={result}
         session={session}
+        isBaseline={!baseline}
         error={error}
         onRetake={retake}
-        onContinue={() => result && session && onComplete(result.processedUri, session)}
+        onContinue={() => session && onComplete(session.processedUri, session)}
       />
     );
   }
 
   const armed = live?.hardPass ?? false;
 
-  // 가이드 박스는 후처리가 잘라낼 화각과 같은 크기로 그린다.
-  // 그래야 "박스를 채우면 지난번과 같은 거리" 라는 안내가 실제 결과와 일치한다.
+  // 가이드 박스는 기준 촬영의 병변 크기로 정한 화각과 같은 크기로 그린다.
+  // 그래야 "박스를 채우면 지난번과 같은 거리"라는 안내가 실제와 맞는다.
   const shortSide = Math.min(previewSize.width, previewSize.height);
   const guideSize = shortSide
     ? baseline
@@ -220,8 +324,8 @@ export default function MonitorCaptureScreen({
       <View style={{ flex: 1 }} onLayout={(e) => setPreviewSize(e.nativeEvent.layout)}>
         <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing={facing} />
 
-        {/* 이전 기준 사진을 반투명하게 겹쳐 같은 구도로 유도 */}
-        {baseline && (
+        {/* 이전 기준 사진을 반투명하게 겹쳐(고스트) 같은 구도로 유도 */}
+        {baseline && ghostOn && (
           <View pointerEvents="none" style={styles.guideWrap}>
             <Image
               source={{ uri: baseline.processedUri }}
@@ -234,44 +338,67 @@ export default function MonitorCaptureScreen({
           <View style={[styles.guide, { width: guideSize, height: guideSize }, armed && styles.guideArmed]} />
         </View>
 
-        <Text style={styles.hint}>{live?.hint ?? '병변이 보이도록 카메라를 비춰주세요'}</Text>
+        <Text style={styles.hint}>
+          {live?.hint ?? (baseline ? '지난 사진과 같은 자리가 보이도록 맞춰주세요' : '병변이 가이드 안에 들어오도록 맞춰주세요')}
+        </Text>
 
         <Pressable style={styles.closeBtn} onPress={onCancel}>
           <MaterialIcons name="chevron-left" size={24} color="#FFFFFF" />
         </Pressable>
 
-        <View style={styles.statusPanel}>
-          <Text style={styles.statusTitle}>필수</Text>
-          <View style={styles.chipRow}>
-            <GateChip label="초점" ok={live?.hard.focus} />
-            <GateChip label="구도" ok={live?.hard.framing} />
-            <GateChip label="노출" ok={live?.hard.exposure} />
-            <GateChip label="보정 가능" ok={live?.hard.recoverable} />
+        {/* 고스트 촬영 토글 — 기준 사진이 있을 때만 의미가 있다 */}
+        {baseline && (
+          <Pressable style={[styles.ghostBtn, ghostOn && styles.ghostBtnOn]} onPress={() => setGhostOn((v) => !v)}>
+            <MaterialIcons name={ghostOn ? 'layers' : 'layers-clear'} size={16} color="#FFFFFF" />
+            <Text style={styles.ghostBtnText}>고스트 {ghostOn ? 'ON' : 'OFF'}</Text>
+          </Pressable>
+        )}
+
+        {/* 품질 판정 패널은 모델이 살아 있을 때만 의미가 있다 */}
+        {!DUMP_RESULTS && (
+          <View style={styles.statusPanel}>
+            <Text style={styles.statusTitle}>필수</Text>
+            <View style={styles.chipRow}>
+              <GateChip label="초점" ok={live?.hard.focus} />
+              <GateChip label="구도" ok={live?.hard.framing} />
+              <GateChip label="노출" ok={live?.hard.exposure} />
+              <GateChip label="거리·각도" ok={live?.hard.recoverable} />
+            </View>
+            <View style={{ height: 8 }} />
+            <Text style={styles.statusTitle}>
+              권장 {live ? `${Math.round(live.softScore * 100)}%` : '--'} (못 맞춰도 촬영은 돼요)
+            </Text>
+            <View style={styles.chipRow}>
+              <SoftBar label="정렬" value={live?.soft.alignment} />
+              <SoftBar label="거리" value={live?.soft.distance} />
+              <SoftBar label="각도" value={live?.soft.angle} />
+              <SoftBar label="밝기" value={live?.soft.brightness} />
+            </View>
           </View>
-          <View style={{ height: 8 }} />
-          <Text style={styles.statusTitle}>권장 (못 맞춰도 후처리가 보정해요)</Text>
-          <View style={styles.chipRow}>
-            <SoftBar label="정렬" value={live?.soft.alignment} />
-            <SoftBar label="거리" value={live?.soft.distance} />
-            <SoftBar label="각도" value={live?.soft.angle} />
-            <SoftBar label="밝기" value={live?.soft.brightness} />
-          </View>
-        </View>
+        )}
       </View>
 
       <View style={styles.bottomBar}>
-        <Pressable style={styles.smallBtn} onPress={() => setFacing((f) => (f === 'back' ? 'front' : 'back'))}>
-          <MaterialIcons name="flip-camera-android" size={22} color="#FFFFFF" />
-          <Text style={styles.smallBtnText}>{facing === 'back' ? '후면' : '전면'}</Text>
-        </Pressable>
-        {/* 셔터는 조건이 맞으면 앱이 알아서 누른다 — 여기는 상태 표시만 한다 */}
-        <View style={[styles.shutter, armed && styles.shutterArmed]}>
-          <Text style={[styles.shutterText, armed && styles.shutterTextArmed]}>
-            {armed ? '촬영 중' : '대기'}
-          </Text>
-        </View>
-        <View style={styles.smallBtn}>
-          <Text style={styles.scoreText}>{live ? `${Math.round(live.softScore * 100)}%` : '--'}</Text>
+        <Text style={styles.bottomHint}>
+          {armed
+            ? '조건이 맞았어요 — 가장 좋은 순간을 골라 자동으로 찍는 중'
+            : '가운데 버튼을 눌러 촬영하거나, 앨범에서 사진을 고르세요'}
+        </Text>
+        <View style={styles.bottomRow}>
+          <Pressable style={styles.smallBtn} onPress={pickFromAlbum}>
+            <MaterialIcons name="photo-library" size={20} color="#FFFFFF" />
+            <Text style={styles.smallBtnText}>앨범</Text>
+          </Pressable>
+          {/* 조건이 맞으면 앱이 알아서 누르고, 그 전에도 직접 누를 수 있다 */}
+          <Pressable style={[styles.shutter, armed && styles.shutterArmed]} onPress={shootNow}>
+            <Text style={[styles.shutterText, armed && styles.shutterTextArmed]}>
+              {armed ? '자동 촬영' : '촬영'}
+            </Text>
+          </Pressable>
+          <Pressable style={styles.smallBtn} onPress={() => setFacing((f) => (f === 'back' ? 'front' : 'back'))}>
+            <MaterialIcons name="flip-camera-android" size={20} color="#FFFFFF" />
+            <Text style={styles.smallBtnText}>{facing === 'back' ? '후면' : '전면'}</Text>
+          </Pressable>
         </View>
       </View>
     </View>
@@ -302,27 +429,30 @@ function SoftBar({ label, value }: { label: string; value?: number }) {
 
 function ReviewView({
   target,
-  result,
   session,
+  isBaseline,
   error,
   onRetake,
   onContinue,
 }: {
   target: MonitorTarget;
-  result: PostProcessResult | null;
   session: MonitorSession | null;
+  /** 이 자리에 기준 사진이 아직 없어서 이번 촬영이 기준이 되는 경우 */
+  isBaseline: boolean;
   error: string | null;
   onRetake: () => void;
   onContinue: () => void;
 }) {
-  if (error || !result || !session) {
+  // 사진을 아예 얻지 못한 경우(카메라/앨범 자체가 실패)만 여기로 온다 —
+  // 판정이나 보정이 실패했다고 촬영이 막히지는 않는다.
+  if (error || !session) {
     return (
       <View style={[styles.root, styles.center]}>
         <MaterialIcons name="error-outline" size={36} color="#FF6B6B" />
         <View style={{ height: 12 }} />
-        <Text style={styles.processingTitle}>후처리에 실패했어요</Text>
+        <Text style={styles.processingTitle}>사진을 가져오지 못했어요</Text>
         <View style={{ height: 6 }} />
-        <Text style={styles.processingSub}>{error ?? '결과를 만들지 못했어요'}</Text>
+        <Text style={styles.processingSub}>{error ?? '다시 한 번 촬영해주세요'}</Text>
         <View style={{ height: 18 }} />
         <Pressable style={styles.primaryBtn} onPress={onRetake}>
           <Text style={styles.primaryBtnText}>다시 촬영</Text>
@@ -331,7 +461,7 @@ function ReviewView({
     );
   }
 
-  const { confidence } = result;
+  const { confidence } = session;
   const tierColor =
     confidence.tier === 'high' ? AppColors.sev1 : confidence.tier === 'medium' ? AppColors.sev2 : AppColors.sev3;
   const tierLabel = confidence.tier === 'high' ? '신뢰도 높음' : confidence.tier === 'medium' ? '신뢰도 보통' : '신뢰도 낮음';
@@ -340,18 +470,18 @@ function ReviewView({
     <View style={styles.reviewRoot}>
       <Text style={styles.reviewTitle}>{target.label}</Text>
       <Text style={styles.reviewSub}>
-        {result.registration.isBaseline ? '이 사진이 앞으로의 비교 기준이 돼요' : '이전 기준에 맞춰 정렬·색보정했어요'}
+        {isBaseline ? '이 사진이 앞으로의 비교 기준이 돼요' : '지난 기준 사진과 나란히 비교해보세요'}
       </Text>
 
       <View style={styles.reviewImages}>
-        {target.baseline && !result.registration.isBaseline && (
+        {target.baseline && !isBaseline && (
           <View style={styles.reviewImageBox}>
             <Image source={{ uri: target.baseline.processedUri }} style={styles.reviewImage} />
             <Text style={styles.reviewImageCaption}>기준</Text>
           </View>
         )}
         <View style={styles.reviewImageBox}>
-          <Image source={{ uri: result.processedUri }} style={styles.reviewImage} />
+          <Image source={{ uri: session.processedUri }} style={styles.reviewImage} />
           <Text style={styles.reviewImageCaption}>이번 촬영</Text>
         </View>
       </View>
@@ -371,8 +501,9 @@ function ReviewView({
           ))}
         </View>
       )}
+      {/* 품질이 낮아도 진행은 막지 않는다 — 권하기만 하고 선택은 사용자에게 맡긴다 */}
       {!confidence.usable && (
-        <Text style={styles.rejectText}>후처리로도 충분히 보정되지 않았어요. 다시 촬영하는 걸 권해요.</Text>
+        <Text style={styles.rejectText}>촬영 품질이 낮아요. 다시 촬영하는 걸 권해요.</Text>
       )}
 
       <View style={{ flex: 1 }} />
@@ -450,9 +581,24 @@ const styles = StyleSheet.create({
   softTrack: { height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.18)', overflow: 'hidden' },
   softFill: { height: 4, backgroundColor: AppColors.greenTop },
 
-  bottomBar: {
-    height: 130,
-    backgroundColor: '#14171C',
+  ghostBtn: {
+    position: 'absolute',
+    right: 16,
+    top: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  ghostBtnOn: { backgroundColor: 'rgba(147,210,88,0.35)' },
+  ghostBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+
+  bottomBar: { height: 140, backgroundColor: '#14171C', justifyContent: 'center', paddingBottom: 6 },
+  bottomHint: { color: 'rgba(255,255,255,0.6)', fontSize: 11, textAlign: 'center', marginBottom: 10 },
+  bottomRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -467,7 +613,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   smallBtnText: { color: '#FFFFFF', fontSize: 10, fontWeight: '700', marginTop: 2 },
-  scoreText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
   shutter: {
     width: 74,
     height: 74,

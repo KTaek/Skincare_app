@@ -23,7 +23,11 @@ export interface Baseline {
 export interface MonitorDiagnosis {
   /** 피부과 전문의 진단 이력 여부 */
   diagnosed: boolean;
-  disease: string;
+  /**
+   * 질환명. 진단 이력이 없으면 등록 시점에는 비어 있고, 결과 화면의 질환 분류 모델이
+   * 이름을 알아낸 뒤에 채워진다 (진단 이력이 있으면 모델은 아예 돌리지 않는다).
+   */
+  disease?: string;
   /** 사용자가 고른 것인지, 분류 모델이 추정한 것인지 */
   source: 'self' | 'model';
   /** 모델 추정일 때의 확률 (0~1) */

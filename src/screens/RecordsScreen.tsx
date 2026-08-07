@@ -83,10 +83,11 @@ export default function RecordsScreen() {
       <View style={{ height: 10 }} />
       <ActionBox
         icon="add-a-photo"
-        title="신규 모니터링 등록하기"
+        title="신규 검사 시작하기"
+        caption="부위 · 질환 등록부터 촬영까지"
         trailing="chevron-right"
         accent
-        onPress={() => navigation.navigate('Camera', { mode: 'monitor' })}
+        onPress={() => navigation.navigate('Camera', { mode: 'new' })}
       />
       <View style={{ height: 10 }} />
       <ActionBox
