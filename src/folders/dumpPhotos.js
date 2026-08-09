@@ -1,7 +1,7 @@
 /**
  * 모니터링 dump(데모) 기록에 붙일 실제 촬영 사진 풀.
  * Metro는 require() 경로를 정적으로 분석해야 하므로 동적 경로 대신 배열로 나열한다.
- * - ATOPIC_PHOTOS: 프리셋 폴더 "우측 팔 건선" 전용, 기록 수(14)와 1:1 매칭
+ * - ATOPIC_PHOTOS: 프리셋 폴더 "팔 건선" 전용, 기록 수(14)와 1:1 매칭
  * - CHEEK_PHOTOS : 프리셋 폴더 "얼굴 주사" 전용, 기록 수(7)와 1:1 매칭
  */
 export const ATOPIC_PHOTOS = [

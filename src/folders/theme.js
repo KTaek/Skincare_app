@@ -48,8 +48,8 @@ export const DISPLAY_SCALE = {
 };
 
 /**
- * 세 지표(피부 종합 상태 · 가려움 · 수면 점수)와 세부 증상 4종 모두 같은 4단계 색을 쓴다 —
- * 편함(연두) · 신경 쓰임(노랑) · 불편(주황) · 매우 불편(빨강).
+ * 세 지표(피부 종합 상태 · 가려움 · 수면 점수)와 증상 4종 모두 같은 4단계 이름·색을 쓴다 —
+ * 좋음(연두) · 보통(노랑) · 나쁨(주황) · 매우 나쁨(빨강).
  *
  * 지표마다 "구간 목록"(SEGMENTS)을 값이 작은 쪽 → 큰 쪽 순서로 정의해 둔다. 각 항목의 `to`는 그
  * 구간의 위쪽 경계값(첫 구간의 아래쪽 경계는 항상 0)이라, 이 배열 하나가 곧 판정 로직(segmentFor)과
@@ -61,45 +61,45 @@ const LEVEL_COLORS = [monitoringColors.sev1, monitoringColors.sev2, monitoringCo
 
 /** 피부 종합 상태 — 그래프·요약 박스에 쓰는 0~100 표시값(IGA 기댓값 0~4 × 25) 기준 */
 export const SKIN_SEGMENTS = [
-  { to: 12.4, ko: '편함', color: LEVEL_COLORS[0] },
-  { to: 62.4, ko: '신경 쓰임', color: LEVEL_COLORS[1] },
-  { to: 87.4, ko: '불편', color: LEVEL_COLORS[2] },
-  { to: 100, ko: '매우 불편', color: LEVEL_COLORS[3] },
+  { to: 12.4, ko: '좋음', color: LEVEL_COLORS[0] },
+  { to: 62.4, ko: '보통', color: LEVEL_COLORS[1] },
+  { to: 87.4, ko: '나쁨', color: LEVEL_COLORS[2] },
+  { to: 100, ko: '매우 나쁨', color: LEVEL_COLORS[3] },
 ];
 
-/** 가려움 문진(VAS 0~10 × 10 = 0~100 표시값) — "편함"은 0점 하나뿐이라 폭이 0인 구간이다 */
+/** 가려움 문진(VAS 0~10 × 10 = 0~100 표시값) — "좋음"은 0점 하나뿐이라 폭이 0인 구간이다 */
 export const ITCH_SEGMENTS = [
-  { to: 0, ko: '편함', color: LEVEL_COLORS[0] },
-  { to: 40, ko: '신경 쓰임', color: LEVEL_COLORS[1] },
-  { to: 60, ko: '불편', color: LEVEL_COLORS[2] },
-  { to: 100, ko: '매우 불편', color: LEVEL_COLORS[3] },
+  { to: 0, ko: '좋음', color: LEVEL_COLORS[0] },
+  { to: 40, ko: '보통', color: LEVEL_COLORS[1] },
+  { to: 60, ko: '나쁨', color: LEVEL_COLORS[2] },
+  { to: 100, ko: '매우 나쁨', color: LEVEL_COLORS[3] },
 ];
 
 /** 수면 점수(삼성헬스 연동, 0~100) — 높을수록 좋아서 색이 나쁨→좋음(빨강→연두) 순서로 놓인다 */
 export const SLEEP_SEGMENTS = [
-  { to: 59, ko: '매우 불편', color: LEVEL_COLORS[3] },
-  { to: 74, ko: '불편', color: LEVEL_COLORS[2] },
-  { to: 84, ko: '신경 쓰임', color: LEVEL_COLORS[1] },
-  { to: 100, ko: '편함', color: LEVEL_COLORS[0] },
+  { to: 59, ko: '매우 나쁨', color: LEVEL_COLORS[3] },
+  { to: 74, ko: '나쁨', color: LEVEL_COLORS[2] },
+  { to: 84, ko: '보통', color: LEVEL_COLORS[1] },
+  { to: 100, ko: '좋음', color: LEVEL_COLORS[0] },
 ];
 
 /**
- * 세부 증상(피부 붉기 · 오돌토돌함 · 긁은 상처 · 피부 두꺼워짐) 4종이 공유하는 0~100 표시값
+ * 증상 4종(피부 붉기 · 오돌토돌함 · 긁은 상처 · 피부 두꺼워짐)이 공유하는 0~100 표시값
  * (원래 0~10 × 10) 구간. 증상마다 다른 설명 문구 대신, 다른 지표와 똑같은 4단계 이름을 쓴다.
  */
 export const SYMPTOM_SEGMENTS_BASE = [
-  { to: 16.6, ko: '편함', color: LEVEL_COLORS[0] },
-  { to: 50.0, ko: '신경 쓰임', color: LEVEL_COLORS[1] },
-  { to: 83.3, ko: '불편', color: LEVEL_COLORS[2] },
-  { to: 100, ko: '매우 불편', color: LEVEL_COLORS[3] },
+  { to: 16.6, ko: '좋음', color: LEVEL_COLORS[0] },
+  { to: 50.0, ko: '보통', color: LEVEL_COLORS[1] },
+  { to: 83.3, ko: '나쁨', color: LEVEL_COLORS[2] },
+  { to: 100, ko: '매우 나쁨', color: LEVEL_COLORS[3] },
 ];
 
-/** 증상별 이름/부가 설명 — 판정용 4단계 이름은 SYMPTOM_SEGMENTS_BASE의 공용 이름을 그대로 쓴다 */
+/** 증상별 이름 — 판정용 4단계 이름은 SYMPTOM_SEGMENTS_BASE의 공용 이름을 그대로 쓴다 */
 export const SYMPTOMS = {
-  redness: { label: '피부 붉기', hint: '붉어진 정도' },
-  bumps: { label: '오돌토돌함', hint: '트러블 · 솟아오름' },
-  scratch: { label: '긁은 상처', hint: '피 · 진물 · 상처' },
-  thickening: { label: '피부 두꺼워짐', hint: '뻣뻣함 · 굳은살' },
+  redness: { label: '피부 붉기' },
+  bumps: { label: '오돌토돌함' },
+  scratch: { label: '긁은 상처' },
+  thickening: { label: '피부 두꺼워짐' },
 };
 
 /** value가 segments(작은 값 → 큰 값 순) 중 몇 번째 구간에 속하는지 찾아 그 구간 정보를 반환한다 */

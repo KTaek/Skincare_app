@@ -16,13 +16,15 @@ export const labels = raw as {
   min_crop_ratio: number;
   imagenet_mean: number[];
   imagenet_std: number[];
+  /** 중증도 모델의 TFLite 출력 인덱스 순서 (SIGN_KEYS 순 + 마지막이 iga) */
+  cls_output_order: number[];
 };
 
 export const SIGN_NAMES_KO: Record<SignOrIga, string> = {
-  erythema: '홍반',
-  papulation: '구진',
-  excoriation: '긁힌 자국',
-  lichenification: '태선화',
+  erythema: '피부 붉기',
+  papulation: '오돌토돌함',
+  excoriation: '긁은 상처',
+  lichenification: '피부 두꺼워짐',
   iga: '종합 중증도',
 };
 

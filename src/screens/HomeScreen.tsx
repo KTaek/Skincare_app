@@ -1,321 +1,188 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, PanResponder, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
-import {
-  SkinStatus,
-  kUserName,
-  currentStatusFromRecords,
-  worstItchTimeSlot,
-  timeSlotOf,
-  addDays,
-  dayOffsetLabel,
-  Routine,
-} from '../models';
+import { CareItem } from '../models';
 import { SectionHeader, RoutineRowContent } from '../components/widgets';
 import { useRoutines } from '../context/RoutineContext';
-import { useRecords } from '../context/RecordsContext';
+import { useProfile } from '../context/ProfileContext';
 import { useLatestMonitoringRecord } from '../folders/store';
 import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
-import ItchDetailScreen from './ItchDetailScreen';
+import { Badge } from '../components/MetricCard';
 
 export default function HomeScreen({ navigation }: { navigation: any }) {
-  const { sorted, routinesForOffset, toggleForOffset } = useRoutines();
-  const { records } = useRecords();
-  const currentStatus = useMemo(() => currentStatusFromRecords(records), [records]);
-  const latestMonitoring = useLatestMonitoringRecord();
-  const [showDetail, setShowDetail] = useState(false);
-  // "루틴" 카드가 지금 몇 일째를 보여주고 있는지 (0=오늘, 음수=과거, 양수=미래)
-  const [careDayOffset, setCareDayOffset] = useState(0);
+  const { careItemsForOffset, toggleForOffset } = useRoutines();
+  const { name, healthConnected } = useProfile();
+  const latest = useLatestMonitoringRecord();
 
-  // 평소 가려움이 가장 심했던 시간대에 지금이 해당하면 미리 진정 케어를 안내
-  const worstSlot = useMemo(() => worstItchTimeSlot(records), [records]);
-  const showItchTip = worstSlot != null && timeSlotOf(new Date()) === worstSlot.slot;
-
-  const goCamera = () => navigation.navigate('Camera');
-  const goRoutine = () => navigation.navigate('Routine');
-
-  if (showDetail) {
-    return <ItchDetailScreen records={records} onBack={() => setShowDetail(false)} />;
-  }
+  /** 요약 카드를 누르면 가장 최근 촬영의 상세 결과 페이지로 바로 넘어간다 */
+  const goLatestDetail = () => {
+    if (!latest) return;
+    navigation.navigate('MonitoringDetail', { folderId: latest.folder.id, recordId: latest.record.id });
+  };
 
   return (
     <ScrollView
       style={{ flex: 1 }}
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 24 }}
     >
-      <Text style={styles.greeting}>안녕하세요, {kUserName}님</Text>
+      <Text style={styles.greeting}>안녕하세요, {name}님</Text>
       <View style={{ height: 3 }} />
       <Text style={styles.headline}>오늘 피부 상태를 확인해볼까요?</Text>
-      <View style={{ height: 14 }} />
+      <View style={{ height: 18 }} />
 
-      <StatusCard
-        userName={kUserName}
-        status={currentStatus}
-        monitoring={latestMonitoring?.record}
-        onDetail={() => setShowDetail(true)}
+      <RecentStatusCard
+        record={latest?.record}
+        healthConnected={healthConnected}
+        onPress={goLatestDetail}
       />
 
-      {showItchTip && (
-        <>
-          <View style={{ height: 12 }} />
-          <ItchTipCard />
-        </>
-      )}
-
-      <View style={{ height: 16 }} />
-
-      <ScanCard onScan={goCamera} />
-
-      <SectionHeader title="루틴" onMore={goRoutine} />
+      <SectionHeader title="오늘의 피부 케어" onMore={() => navigation.navigate('Routine')} />
       <TodayCareCard
-        dayOffset={careDayOffset}
-        onStepDay={(delta) => setCareDayOffset((o) => o + delta)}
-        routinesForOffset={routinesForOffset}
-        onToggle={(id) => toggleForOffset(careDayOffset, id)}
+        items={careItemsForOffset(0)}
+        onToggle={(key) => toggleForOffset(0, key)}
       />
+
+      <View style={{ height: 24 }} />
+      {/* 문진 없이 지금 피부만 찍어 결과만 보는 길 — 기록으로 남기지 않는다 */}
+      <Pressable
+        onPress={() => navigation.navigate('Camera', { mode: 'quick' })}
+        style={[cardDecoration(), styles.quickCard]}
+      >
+        <View style={styles.quickIcon}>
+          <MaterialIcons name="center-focus-strong" size={22} color="#16320A" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.quickTitle}>피부 바로 스캔</Text>
+          <Text style={styles.quickSub}>피부를 빠르게 촬영하고 분석 결과를 확인해요</Text>
+          {/* 누르면 바로 카메라로 들어가므로, 저장되지 않는다는 건 여기서 미리 알려야 한다 */}
+          <Text style={styles.noticeText}>피부 바로 스캔 기능으로 촬영한 사진은 저장되지 않아요</Text>
+        </View>
+      </Pressable>
     </ScrollView>
   );
 }
 
 /**
- * "루틴" 카드 — 왼쪽으로 슬라이드하면 하루씩 과거(어제, 그제…)로, 오른쪽으로
- * 슬라이드하면 하루씩 미래(내일, 모레…)로 넘어간다. 미래 날짜는 아직 이행할 수 없으니
- * 체크박스를 비활성화한다.
+ * "경과 관찰" 요약 카드 — 상세 결과·경과 관찰 화면과 같은 생김새(큰 숫자 + 단계 배지)를 쓴다.
+ * 예전의 진한 초록 카드는 값이 작아 정작 중요한 "지금 어느 단계인지"가 눈에 안 들어왔다.
  */
-function TodayCareCard({
-  dayOffset,
-  onStepDay,
-  routinesForOffset,
-  onToggle,
+function RecentStatusCard({
+  record,
+  healthConnected,
+  onPress,
 }: {
-  dayOffset: number;
-  onStepDay: (delta: number) => void;
-  routinesForOffset: (offsetDays: number) => Routine[];
-  onToggle: (id: number) => void;
+  record?: { iga: number; itchVas: number; sleepScore: number };
+  healthConnected: boolean;
+  onPress: () => void;
 }) {
-  const routines = routinesForOffset(dayOffset).slice(0, 3);
-  const label = dayOffsetLabel(dayOffset, addDays(new Date(), dayOffset));
-  const isFuture = dayOffset > 0;
-
-  const dragX = useRef(new Animated.Value(0)).current;
-  const contentOpacity = useRef(new Animated.Value(1)).current;
-
-  const stepDay = (delta: number) => {
-    Animated.timing(contentOpacity, { toValue: 0, duration: 120, useNativeDriver: true }).start(() => {
-      onStepDay(delta);
-      Animated.timing(contentOpacity, { toValue: 1, duration: 180, useNativeDriver: true }).start();
-    });
-  };
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-      onPanResponderMove: (_, g) => dragX.setValue(g.dx * 0.3),
-      onPanResponderRelease: (_, g) => {
-        Animated.spring(dragX, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
-        const SWIPE_THRESHOLD = 40;
-        if (g.dx <= -SWIPE_THRESHOLD) stepDay(-1); // 왼쪽으로 슬라이드 → 어제(과거) 방향
-        else if (g.dx >= SWIPE_THRESHOLD) stepDay(1); // 오른쪽으로 슬라이드 → 내일(미래) 방향
-      },
-      onPanResponderTerminate: () => {
-        Animated.spring(dragX, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
-      },
-    }),
-  ).current;
-
-  return (
-    <View>
-      <View style={styles.dayNavRow}>
-        <Pressable onPress={() => stepDay(-1)} style={styles.dayNavBtn} hitSlop={8}>
-          <MaterialIcons name="chevron-left" size={20} color={AppColors.sub} />
-        </Pressable>
-        <Text style={styles.dayNavLabel}>{label}</Text>
-        <Pressable onPress={() => stepDay(1)} style={styles.dayNavBtn} hitSlop={8}>
-          <MaterialIcons name="chevron-right" size={20} color={AppColors.sub} />
-        </Pressable>
+  if (!record) {
+    return (
+      <View style={[cardDecoration(), styles.emptyStatus]}>
+        <MaterialIcons name="photo-camera" size={26} color={AppColors.sub} />
+        <View style={{ height: 8 }} />
+        <Text style={styles.emptyStatusText}>아직 기록이 없어요{'\n'}첫 촬영을 남기면 여기에 상태가 쌓여요</Text>
       </View>
-      <Animated.View
-        {...panResponder.panHandlers}
-        style={{ transform: [{ translateX: dragX }], opacity: contentOpacity }}
-      >
-        <View style={[cardDecoration(), { paddingHorizontal: 18 }]}>
-          {[0, 1, 2].map((i) => (
-            <View
-              key={i}
-              style={[
-                { paddingVertical: 15 },
-                i !== 2 && { borderBottomWidth: 1, borderBottomColor: AppColors.line },
-              ]}
-            >
-              {i < routines.length ? (
-                <FadingRoutineRow
-                  routine={routines[i]}
-                  onToggle={isFuture ? undefined : () => onToggle(routines[i].id)}
-                />
-              ) : (
-                <View style={{ height: 26 }} />
-              )}
-            </View>
-          ))}
-        </View>
-      </Animated.View>
-    </View>
-  );
-}
+    );
+  }
 
-/** 체크 시 목록에서 사라지지 않고, 줄긋기와 함께 서서히 흐려지는 홈 루틴 행 */
-function FadingRoutineRow({ routine, onToggle }: { routine: Routine; onToggle?: () => void }) {
-  const opacity = useRef(new Animated.Value(routine.done ? 0.45 : 1)).current;
-  useEffect(() => {
-    Animated.timing(opacity, {
-      toValue: routine.done ? 0.45 : 1,
-      duration: 400,
-      useNativeDriver: true,
-    }).start();
-  }, [routine.done, opacity]);
-  return (
-    <Animated.View style={{ opacity }}>
-      <RoutineRowContent routine={routine} onToggle={onToggle} />
-    </Animated.View>
-  );
-}
-
-// ---- 그린 상태 카드 ----
-function StatusCard({
-  userName,
-  status,
-  monitoring,
-  onDetail,
-}: {
-  userName: string;
-  status: SkinStatus;
-  /** 전 모니터링 폴더를 통틀어 가장 최근 촬영 기록 — 아직 하나도 없으면 undefined */
-  monitoring?: { iga: number; itchVas: number; sleepScore: number; lesionAreaPct: number };
-  onDetail: () => void;
-}) {
-  // 모니터링 페이지의 요약 박스(피부 종합 상태 · 가려움 · 수면 점수)와 같은 0~100 표시값·4단계
-  // 판정을 그대로 가져와 쓴다 — 병변 면적만 별도 4단계 없이 원본 % 그대로 보여준다(모니터링
-  // 폴더 화면과 동일).
-  const skinValue = monitoring ? DISPLAY_SCALE.iga(monitoring.iga) : null;
-  const itchValue = monitoring ? DISPLAY_SCALE.itch(monitoring.itchVas) : null;
-  const skin = skinValue != null ? skinConditionInfo(skinValue) : null;
-  const itch = itchValue != null ? itchBand(itchValue) : null;
-  const sleep = monitoring ? sleepBand(monitoring.sleepScore) : null;
+  const skinValue = DISPLAY_SCALE.iga(record.iga);
+  const itchValue = DISPLAY_SCALE.itch(record.itchVas);
+  const sleepValue = healthConnected ? record.sleepScore : null;
 
   return (
-    <View style={styles.statusShadow}>
-      <View style={styles.statusClip}>
-        <View style={styles.statusHeader}>
-          <Text style={styles.statusHeaderText}>{userName}님의 최근 피부 상태</Text>
-          <Pressable onPress={onDetail}>
-            <Text style={styles.detailLink}>자세히 보기</Text>
-          </Pressable>
-        </View>
-        <View style={styles.statusBody}>
-          <Text style={styles.statusDisease}>{status.disease}</Text>
-          <View style={{ height: 18 }} />
-          <View style={{ flexDirection: 'row' }}>
-            <Stat
-              label="피부 종합 상태"
-              value={skinValue != null ? skinValue.toFixed(1) : '-'}
-              unit="/100"
-              band={skin?.ko ?? ' '}
-              bandColor={skin?.color}
-            />
-            <Divider />
-            <Stat
-              label="가려움"
-              value={itchValue != null ? `${itchValue}` : '-'}
-              unit="/100"
-              band={itch?.ko ?? ' '}
-              bandColor={itch?.color}
-            />
-            <Divider />
-            <Stat
-              label="수면 점수"
-              value={monitoring ? `${monitoring.sleepScore}` : '-'}
-              unit="/100"
-              band={sleep?.ko ?? ' '}
-              bandColor={sleep?.color}
-            />
-            <Divider />
-            <Stat
-              label="병변 면적"
-              value={monitoring ? monitoring.lesionAreaPct.toFixed(1) : '-'}
-              unit="%"
-              band=" "
-            />
-          </View>
-        </View>
+    <Pressable onPress={onPress} style={[cardDecoration(), styles.statusCard]}>
+      <View style={styles.statusHead}>
+        <Text style={styles.statusTitle} numberOfLines={1}>
+          최근 피부 상태
+        </Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={20} color={AppColors.sub} />
       </View>
-    </View>
+      <View style={styles.statusRow}>
+        <Stat label="피부 종합 상태" value={skinValue.toFixed(1)} band={skinConditionInfo(skinValue)} />
+        <Stat label="가려움" value={`${itchValue}`} band={itchBand(itchValue)} />
+        <Stat
+          label="수면 점수"
+          value={sleepValue != null ? `${sleepValue}` : '-'}
+          band={sleepValue != null ? sleepBand(sleepValue) : null}
+        />
+      </View>
+    </Pressable>
   );
 }
-
-const Divider = () => <View style={styles.divider} />;
 
 function Stat({
   label,
   value,
-  unit,
   band,
-  bandColor,
 }: {
   label: string;
   value: string;
-  unit?: string;
-  band: string;
-  bandColor?: string;
+  band: { ko: string; color: string } | null;
 }) {
   return (
     <View style={styles.stat}>
       <Text style={styles.statLabel} numberOfLines={1}>
         {label}
       </Text>
-      <View style={{ height: 6 }} />
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
-        <Text style={styles.statValue}>{value}</Text>
-        {unit != null && <Text style={styles.statUnit}>{unit}</Text>}
-      </View>
-      <View style={{ height: 4 }} />
-      <Text style={[styles.statDelta, bandColor && { color: bandColor }]} numberOfLines={1}>
-        {band}
+      <View style={{ height: 7 }} />
+      <Text style={styles.statValue}>
+        {value}
+        <Text style={styles.statUnit}>/100</Text>
       </Text>
+      <View style={{ height: 7 }} />
+      {band ? (
+        <Badge text={band.ko} color={band.color} small />
+      ) : (
+        <Text style={styles.statNone}>미기재</Text>
+      )}
     </View>
   );
 }
 
-// ---- 시간대별 가려움 케어 팁 ----
-function ItchTipCard() {
+/**
+ * "오늘의 피부 케어" 카드 — 오늘 할 일상 루틴과 사용 제품을 시각 순으로 섞어 보여준다.
+ * 지난 날짜를 넘겨보는 기능은 두지 않는다 — 홈에서는 "오늘 무엇이 남았는지"만 보면 되고,
+ * 지난 기록은 기록 탭에서 본다.
+ */
+function TodayCareCard({ items, onToggle }: { items: CareItem[]; onToggle: (key: string) => void }) {
+  const visible = items.slice(0, 3);
   return (
-    <View style={styles.tipCard}>
-      <View style={styles.tipIcon}>
-        <MaterialIcons name="ac-unit" size={20} color="#2D7DD2" />
-      </View>
-      <View style={{ width: 12 }} />
-      <Text style={styles.tipText}>
-        <Text style={styles.tipBold}>평소 가려움이 심한 시간대에요. </Text>
-        가려움이 심해지기 전에 보습이나 냉찜질로 피부를 미리 진정시켜보세요.
-      </Text>
+    <View style={[cardDecoration(), { paddingHorizontal: 18 }]}>
+      {[0, 1, 2].map((i) => (
+        <View
+          key={i}
+          style={[
+            { paddingVertical: 15 },
+            i !== 2 && { borderBottomWidth: 1, borderBottomColor: AppColors.line },
+          ]}
+        >
+          {i < visible.length ? (
+            <FadingCareRow item={visible[i]} onToggle={() => onToggle(visible[i].key)} />
+          ) : (
+            <View style={{ height: 26 }} />
+          )}
+        </View>
+      ))}
     </View>
   );
 }
 
-// ---- 스캔 안내 카드 ----
-function ScanCard({ onScan }: { onScan: () => void }) {
+/** 체크 시 목록에서 사라지지 않고, 줄긋기와 함께 서서히 흐려지는 홈 케어 행 */
+function FadingCareRow({ item, onToggle }: { item: CareItem; onToggle?: () => void }) {
+  const opacity = useRef(new Animated.Value(item.done ? 0.45 : 1)).current;
+  useEffect(() => {
+    Animated.timing(opacity, {
+      toValue: item.done ? 0.45 : 1,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+  }, [item.done, opacity]);
   return (
-    <Pressable onPress={onScan} style={[cardDecoration(), styles.scanCard]}>
-      <View style={styles.scanIcon}>
-        <MaterialIcons name="photo-camera" size={26} color="#5A5A5E" />
-      </View>
-      <View style={{ width: 14 }} />
-      <View style={{ flex: 1 }}>
-        <Text style={styles.scanTitle}>지금 바로 피부를 스캔하세요</Text>
-        <View style={{ height: 3 }} />
-        <Text style={styles.scanSub}>AI가 피부 병변 상태를 정밀히 분석해드립니다</Text>
-      </View>
-    </Pressable>
+    <Animated.View style={{ opacity }}>
+      <RoutineRowContent item={item} onToggle={onToggle} />
+    </Animated.View>
   );
 }
 
@@ -323,72 +190,44 @@ const styles = StyleSheet.create({
   greeting: { fontSize: 14, color: AppColors.sub },
   headline: { fontSize: 18, fontWeight: '700', color: AppColors.ink },
 
-  statusShadow: {
-    borderRadius: 22,
-    shadowColor: '#A8C746',
-    shadowOpacity: 0.25,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 6,
-  },
-  statusClip: { borderRadius: 22, overflow: 'hidden' },
-  statusHeader: {
-    backgroundColor: AppColors.greenTop,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
-    flexDirection: 'row',
+  statusCard: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 16 },
+  statusHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
+  statusTitle: { fontSize: 16.5, fontWeight: '800', color: AppColors.ink, flexShrink: 1 },
+  statusRow: { flexDirection: 'row', gap: 8 },
+  stat: {
+    flex: 1,
     alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  statusHeaderText: { fontSize: 14, fontWeight: '600', color: AppColors.greenDeep },
-  detailLink: { fontSize: 12.5, fontWeight: '600', color: AppColors.sub },
-  statusBody: { backgroundColor: AppColors.greenBody, paddingHorizontal: 20, paddingTop: 14, paddingBottom: 18 },
-  statusDisease: { fontSize: 24, fontWeight: '800', color: '#15290A' },
-  divider: { width: 1, height: 52, backgroundColor: 'rgba(40,70,20,0.18)' },
-  stat: { flex: 1, alignItems: 'center', paddingHorizontal: 2 },
-  statLabel: { fontSize: 10.5, fontWeight: '600', color: AppColors.greenMuted },
-  statValue: { fontSize: 16, fontWeight: '800', color: '#16290B' },
-  statUnit: { fontSize: 10, fontWeight: '700', color: AppColors.greenMuted, marginLeft: 1, marginBottom: 1 },
-  statDelta: { fontSize: 10.5, fontWeight: '600', color: '#3A5A1D' },
-
-  tipCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EAF4FB',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  tipIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tipText: { flex: 1, fontSize: 12.5, color: '#27506E', lineHeight: 18 },
-  tipBold: { fontWeight: '800' },
-
-  scanCard: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 16 },
-  scanIcon: {
-    width: 52,
-    height: 52,
+    backgroundColor: '#F6F8FA',
     borderRadius: 14,
-    backgroundColor: AppColors.bg,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
   },
-  scanTitle: { fontSize: 15, fontWeight: '700', color: AppColors.ink },
-  scanSub: { fontSize: 12.5, color: AppColors.sub, lineHeight: 18 },
+  statLabel: { fontSize: 11, fontWeight: '600', color: AppColors.sub },
+  statValue: { fontSize: 21, fontWeight: '800', color: AppColors.ink },
+  statUnit: { fontSize: 11, fontWeight: '700', color: AppColors.sub },
+  statNone: { fontSize: 11.5, fontWeight: '800', color: AppColors.sub, paddingVertical: 4 },
 
-  dayNavRow: {
+  emptyStatus: { alignItems: 'center', paddingVertical: 28, paddingHorizontal: 20 },
+  emptyStatusText: { fontSize: 13, color: AppColors.sub, textAlign: 'center', lineHeight: 19 },
+
+  // 피부 촬영 탭의 "피부 바로 스캔" 카드와 같은 치수를 쓴다 — 같은 글이 한쪽에서만 두 줄로
+  // 접히지 않게 하려면 글자가 놓이는 폭까지 같아야 한다
+  quickCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingBottom: 10,
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
   },
-  dayNavBtn: { padding: 4 },
-  dayNavLabel: { fontSize: 12.5, fontWeight: '600', color: AppColors.sub, marginHorizontal: 6 },
+  quickIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: AppColors.greenTop,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickTitle: { fontSize: 16, fontWeight: '800', color: AppColors.ink },
+  quickSub: { fontSize: 12, color: AppColors.sub, lineHeight: 17, marginTop: 4 },
+  noticeText: { fontSize: 11.5, fontWeight: '600', color: AppColors.sub, lineHeight: 17, marginTop: 4 },
 });

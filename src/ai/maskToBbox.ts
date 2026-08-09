@@ -53,12 +53,36 @@ export function maskToBbox(
     return { found: false, bbox: { x1: 0, y1: 0, x2: origW, y2: origH } };
   }
 
+  return {
+    found: true,
+    bbox: expandMaskBounds({ minX, minY, maxX, maxY }, maskW, maskH, origW, origH, { margin, minRatio }),
+  };
+}
+
+/**
+ * 마스크 격자 좌표의 경계 → 원본 픽셀 좌표의 크롭 사각형.
+ * margin만큼 넓혀 병변 주변 정상 피부를 함께 담고(등급 판정의 대조군이 된다),
+ * minRatio보다 작아지지 않게 키운 뒤 이미지 밖으로 나가지 않게 자른다.
+ *
+ * 마스크 전체를 감싸는 경우와 덩어리(blob) 하나를 감싸는 경우가 같은 규칙을 써야 하므로 분리했다.
+ */
+export function expandMaskBounds(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  maskW: number,
+  maskH: number,
+  origW: number,
+  origH: number,
+  opts: { margin?: number; minRatio?: number } = {},
+): BBoxPixels {
+  const margin = opts.margin ?? 0.15;
+  const minRatio = opts.minRatio ?? 0.1;
+
   const scaleX = origW / maskW;
   const scaleY = origH / maskH;
-  let x1 = minX * scaleX;
-  let x2 = (maxX + 1) * scaleX;
-  let y1 = minY * scaleY;
-  let y2 = (maxY + 1) * scaleY;
+  let x1 = bounds.minX * scaleX;
+  let x2 = (bounds.maxX + 1) * scaleX;
+  let y1 = bounds.minY * scaleY;
+  let y2 = (bounds.maxY + 1) * scaleY;
 
   const w = x2 - x1;
   const h = y2 - y1;
@@ -80,10 +104,10 @@ export function maskToBbox(
     y2 = cy + minH / 2;
   }
 
-  x1 = Math.max(Math.floor(x1), 0);
-  y1 = Math.max(Math.floor(y1), 0);
-  x2 = Math.min(Math.ceil(x2), origW);
-  y2 = Math.min(Math.ceil(y2), origH);
-
-  return { found: true, bbox: { x1, y1, x2, y2 } };
+  return {
+    x1: Math.max(Math.floor(x1), 0),
+    y1: Math.max(Math.floor(y1), 0),
+    x2: Math.min(Math.ceil(x2), origW),
+    y2: Math.min(Math.ceil(y2), origH),
+  };
 }

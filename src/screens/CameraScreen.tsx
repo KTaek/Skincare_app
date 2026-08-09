@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { AppColors } from '../theme';
-import { analyzeLocal } from '../ai/analyzeLocal';
+import { analyzeLocal, LocalAnalysisResult } from '../ai/analyzeLocal';
 import { classifyDisease, preloadDiseaseModel } from '../ai/diseaseModel';
 import { preloadModels } from '../ai/tfliteService';
 import { GRADE_NAMES_KO } from '../ai/labels';
@@ -22,25 +22,26 @@ import ExamFlow from './ExamFlow';
 import ExamResultScreen from './ExamResultScreen';
 
 /**
- * 카메라 탭 — 검사 한 건의 전체 흐름을 붙들고 있는 화면.
+ * 피부 촬영 탭 — 기록 한 건의 전체 흐름을 붙들고 있는 화면.
  *
- *   ① 시작 화면에서 "신규 검사 / 경과 이어서 기록"을 고르고
- *   ② ExamFlow가 (부위 → 질환 → 가려움 문진 →) 가이드 촬영까지 진행한 뒤
+ *   ① 시작 화면에서 "이어서 기록하기 / 신규 증상 기록하기 / 피부 바로 스캔"을 고르고
+ *   ② ExamFlow가 (부위 → 가려움 문진 →) 가이드 촬영까지 진행한 뒤
  *   ③ 여기서 온디바이스 분석을 돌리고
- *   ④ ExamResultScreen이 검사 종류에 맞는 깊이로 결과를 보여준다.
+ *   ④ ExamResultScreen이 셋 모두 같은 구성으로 결과를 보여준다.
  *
- * 질환 분류 모델은 "신규 검사 + 전문의 진단 이력 없음"일 때만 돌린다 — 진단명이 이미 있거나
- * 이미 지켜보는 자리를 다시 찍는 경우엔 질환을 새로 맞힐 이유가 없다.
+ * 질환 분류 모델은 이미 지켜보는 자리를 다시 찍을 때(이어서 기록)와 사용자가 진단명을 직접
+ * 넣어 둔 자리에서는 돌리지 않는다 — 그 경우엔 이름을 새로 맞힐 이유가 없다.
  */
 type Stage = 'start' | 'flow' | 'analyzing' | 'result' | 'error';
 
 export default function CameraScreen({ navigation, route }: { navigation: any; route?: any }) {
   const [stage, setStage] = useState<Stage>('start');
   const [kind, setKind] = useState<ExamKind>('new');
+  /** 홈에서 들어왔을 때 시작 화면에 미리 골라 둘 선택지 */
+  const [startPick, setStartPick] = useState<'new' | 'followUp' | 'quick' | null>(null);
   const [followUp, setFollowUp] = useState<{ folderId: string; target: MonitorTarget } | null>(null);
   const [capture, setCapture] = useState<ExamCapture | null>(null);
   const [analysis, setAnalysis] = useState<ExamAnalysis | null>(null);
-  const [sleepScore, setSleepScore] = useState<number | null>(null);
   const [linkedFolder, setLinkedFolder] = useState<{ id: string; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,11 +64,11 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
 
   const reset = useCallback(() => {
     setStage('start');
+    setStartPick(null);
     setKind('new');
     setFollowUp(null);
     setCapture(null);
     setAnalysis(null);
-    setSleepScore(null);
     setLinkedFolder(null);
     setError(null);
   }, []);
@@ -75,22 +76,53 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
   // 카메라 탭이 다시 열릴 때마다 초기화
   useFocusEffect(
     useCallback(() => {
-      // 기록 탭의 "신규 검사 시작하기"로 들어오면 시작 화면을 건너뛰고 바로 신규 검사로 들어간다
-      const startNew = routeRef.current?.params?.mode === 'new';
-      if (startNew) navigation.setParams({ mode: undefined });
+      // 홈/기록 탭의 버튼으로 들어오면 시작 화면의 선택 단계를 건너뛰거나 미리 골라 둔다
+      const mode = routeRef.current?.params?.mode;
+      if (mode) navigation.setParams({ mode: undefined });
       reset();
-      if (startNew) {
+      if (mode === 'new') {
         setKind('new');
         setStage('flow');
+      } else if (mode === 'quick') {
+        // 홈 카드에 이미 "저장되지 않는다"는 안내가 붙어 있어서 바로 촬영으로 들어간다
+        setKind('quick');
+        setStage('flow');
+      } else if (mode === 'followUp') {
+        setStartPick('followUp');
       }
       setGuarded(false);
     }, [reset, setGuarded, navigation]),
   );
 
-  // 저장하지 않은 결과가 떠 있는 동안에는 다른 탭으로 못 빠져나가게 보호
+  // 분석 결과 자체는 자동으로 저장되므로(saveExamRecord) 더 이상 붙잡을 이유가 없다.
+  // 남은 건 신규 기록의 "경과 관찰에 연동" 하나뿐이라 — 그걸 누르지 않고 나가면 폴더가 만들어지지
+  // 않는다 — 아직 연동하지 않은 신규 결과에서만 확인창을 띄운다.
   React.useEffect(() => {
-    setGuarded(stage === 'result');
-  }, [stage, setGuarded]);
+    setGuarded(stage === 'result' && kind === 'new' && !linkedFolder);
+  }, [stage, kind, linkedFolder, setGuarded]);
+
+  /**
+   * 이번 분석을 기록으로 남긴다. 결과 화면이 뜨는 순간 자동으로 불린다.
+   *
+   * 대상의 진단명은 방금 setDiagnosis로 갱신했을 수 있는데 그 값은 다음 렌더에야 보이므로,
+   * 이번 분석이 알아낸 이름(predicted)을 인자로 받아 쓴다.
+   */
+  const saveExamRecord = useCallback(
+    (cap: ExamCapture, local: LocalAnalysisResult, predicted?: string) => {
+      const igaName = GRADE_NAMES_KO[local.igaGradeName] ?? local.igaGradeName;
+      addRecord({
+        date: new Date(),
+        disease: cap.target.diagnosis?.disease ?? predicted ?? igaName,
+        sev: local.severity,
+        itch: cap.itchVas != null ? `${cap.itchVas} / 10` : '등록 안함',
+        region: PART_TO_REGION[cap.target.part],
+        photoUri: cap.photoUri,
+        siteLabel: cap.target.label,
+        confidence: cap.session.confidence.score,
+      });
+    },
+    [addRecord],
+  );
 
   /** 촬영이 끝나면 온디바이스 분석을 돌리고 결과 화면으로 넘어간다 */
   const runAnalysis = useCallback(
@@ -98,21 +130,29 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
       setCapture(cap);
       setStage('analyzing');
       try {
+        // 촬영 후처리가 계산해 둔 조명 보정 게인 — 사진은 그대로 두고 모델 입력에만 적용한다.
+        // 기준 세션이거나 조명을 추정하지 못한 촬영에서는 [1,1,1]이라 아무 효과가 없다.
+        const colorGain = cap.session.colorNorm?.gain;
+
         // dump 모드에서는 모델을 부르지 않고 지어낸 값으로 결과 화면을 채운다.
         // 세션 id를 씨앗으로 써서 같은 촬영이면 항상 같은 숫자가 나온다.
-        const local = DUMP_RESULTS ? makeDumpLocalResult(cap.session.id) : await analyzeLocal(cap.photoUri);
+        const local = DUMP_RESULTS
+          ? makeDumpLocalResult(cap.session.id)
+          : await analyzeLocal(cap.photoUri, { colorGain });
 
-        // 의사 진단이 있거나 경과 이어서 기록이면 질환 분류 모델은 건너뛴다
+        // 진단명을 직접 넣어 둔 자리이거나 이어서 기록이면 질환 분류 모델은 건너뛴다
         const skipDisease = cap.kind === 'followUp' || !!cap.target.diagnosis?.diagnosed;
         let diseases: ExamAnalysis['diseases'] = null;
+        let predictedDisease: string | undefined;
         if (!skipDisease) {
           const predictions = DUMP_RESULTS
             ? makeDumpDiseases(cap.session.id)
-            : await classifyDisease(cap.photoUri);
+            : await classifyDisease(cap.photoUri, colorGain);
           diseases = predictions.slice(0, 3);
           // 추정한 이름을 대상에 붙여 둔다 — 폴더 이름과 기록의 질환명이 여기서 나온다
           const top = predictions[0];
           if (top) {
+            predictedDisease = top.label;
             setDiagnosis(cap.target.id, {
               diagnosed: false,
               disease: top.label,
@@ -125,7 +165,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
 
         // 경과 이어서 기록은 이미 이어붙일 폴더가 정해져 있으므로 바로 오늘 기록으로 남긴다
         if (cap.kind === 'followUp' && cap.folderId) {
-          const written = recordExam({
+          recordExam({
             folderId: cap.folderId,
             ...toFolderMetrics(local),
             itchVas: cap.itchVas,
@@ -133,8 +173,12 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
           });
           const folder = getFolder(cap.folderId);
           if (folder) setLinkedFolder({ id: folder.id, name: folder.name });
-          setSleepScore(written?.hasSleepSource ? written.record.sleepScore : null);
         }
+
+        // 분석이 끝나는 순간 결과를 남긴다 — 예전에는 결과 화면의 "결과 저장하고 기록 보기"를
+        // 눌러야 저장됐는데, 그 버튼을 못 누르고 나가면 방금 찍은 것이 통째로 사라졌다.
+        // 저장은 앱이 알아서 하고, 버튼은 어디로 갈지만 고르게 한다.
+        if (cap.kind !== 'quick') saveExamRecord(cap, local, predictedDisease);
 
         setAnalysis({ local, diseases });
         setStage('result');
@@ -143,13 +187,13 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         setStage('error');
       }
     },
-    [setDiagnosis],
+    [setDiagnosis, saveExamRecord],
   );
 
   /**
-   * 신규 검사 결과로 이 자리의 경과 기록 폴더를 만들고 오늘 기록을 넣는다.
+   * 신규 증상 기록 결과로 이 자리의 경과 관찰 폴더를 만들고 오늘 기록을 넣는다.
    * 다른 자리의 폴더에 끼워 넣는 선택지는 두지 않는다 — 폴더 하나는 자리 하나를 계속 따라가야
-   * 추이 비교가 의미가 있기 때문이다. (같은 자리를 또 검사하면 ensureFolder가 그 폴더를 돌려준다)
+   * 추이 비교가 의미가 있기 때문이다. (같은 자리를 또 찍으면 ensureFolder가 그 폴더를 돌려준다)
    */
   const linkToFolder = useCallback(() => {
     if (!capture || !analysis) return;
@@ -158,7 +202,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
       targetId: target.id,
       name: folderNameOf(target.label, target.diagnosis?.disease),
     });
-    const written = recordExam({
+    recordExam({
       folderId: id,
       ...toFolderMetrics(analysis.local),
       itchVas: capture.itchVas,
@@ -166,7 +210,6 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     });
     const folder = getFolder(id);
     if (folder) setLinkedFolder({ id: folder.id, name: folder.name });
-    setSleepScore(written?.hasSleepSource ? written.record.sleepScore : null);
   }, [capture, analysis, findTarget]);
 
   const openFolder = useCallback(
@@ -177,30 +220,23 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     [navigation, setGuarded],
   );
 
-  const saveAndGoToRecords = useCallback(() => {
-    if (capture && analysis) {
-      const target = findTarget(capture.target.id) ?? capture.target;
-      const igaName = GRADE_NAMES_KO[analysis.local.igaGradeName] ?? analysis.local.igaGradeName;
-      addRecord({
-        date: new Date(),
-        disease: target.diagnosis?.disease ?? igaName,
-        sev: analysis.local.severity,
-        itch: capture.itchVas != null ? `${capture.itchVas} / 10` : '등록 안함',
-        region: PART_TO_REGION[target.part],
-        photoUri: capture.photoUri,
-        siteLabel: target.label,
-        confidence: capture.session.confidence.score,
-      });
-    }
+  /** 저장은 이미 끝나 있다(saveExamRecord) — 여기서는 기록 탭으로 넘어가기만 한다 */
+  const goToRecords = useCallback(() => {
     setGuarded(false);
     navigation.navigate('Records');
-  }, [capture, analysis, findTarget, addRecord, navigation, setGuarded]);
+  }, [navigation, setGuarded]);
 
   if (stage === 'start') {
     return (
       <ExamStartScreen
+        initialPick={startPick}
         onNewExam={() => {
           setKind('new');
+          setFollowUp(null);
+          setStage('flow');
+        }}
+        onQuickScan={() => {
+          setKind('quick');
           setFollowUp(null);
           setStage('flow');
         }}
@@ -230,11 +266,10 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
       <ExamResultScreen
         capture={capture}
         analysis={analysis}
-        sleepScore={sleepScore}
         linkedFolder={linkedFolder}
         onLink={linkToFolder}
         onOpenFolder={openFolder}
-        onSave={saveAndGoToRecords}
+        onOpenRecords={goToRecords}
         onClose={() => guardedAction(() => navigation.navigate('Home'))}
       />
     );
@@ -246,7 +281,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         <>
           <ActivityIndicator size="large" color={AppColors.greenTop} />
           <View style={{ height: 18 }} />
-          <Text style={styles.title}>병변을 분석하는 중...</Text>
+          <Text style={styles.title}>피부를 분석하는 중...</Text>
           <View style={{ height: 8 }} />
           <Text style={styles.sub}>기기에서 AI 모델이 이미지를 확인하고 있어요</Text>
         </>

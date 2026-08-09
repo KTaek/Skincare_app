@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import Svg, { Circle, Rect } from 'react-native-svg';
@@ -7,70 +7,72 @@ import { AppColors } from '../theme';
 import {
   monitoringColors as mc,
   monitoringCard,
-  itchBand,
-  skinConditionInfo,
-  sleepBand,
-  symptomBand,
   ITCH_SEGMENTS,
   SKIN_SEGMENTS,
-  SLEEP_SEGMENTS,
   SYMPTOM_SEGMENTS_BASE,
 } from '../folders/theme';
-import ScaleBar, { ScaleAxis } from '../folders/components/ScaleBar';
 import { folderNameOf } from '../folders/targets';
+import { plainSiteLabel } from '../models';
 import { LesionBox } from '../ai/analyzeLocal';
 import { GRADE_NAMES_KO } from '../ai/labels';
 import { ExamAnalysis, ExamCapture } from '../exam/examTypes';
 import { DUMP_RESULTS } from '../exam/dumpAnalysis';
 import { igaDisplayValue, itchDisplayValue, SIGN_DISPLAY, SIGN_ORDER, signDisplayValue } from '../exam/examMetrics';
+import { useMonitoring } from '../context/MonitoringContext';
+import { MetricCard, MetricRow } from '../components/MetricCard';
+import UsedProductsCard from '../components/UsedProductsCard';
+
+/** 사용자가 직접 고를 수 있는 진단명 — 분류 모델의 클래스와 같은 집합에 "직접 입력"을 더한 것 */
+const DIAGNOSES = ['아토피피부염', '건선', '여드름', '주사', '지루', '직접 입력'];
 
 /**
- * 검사 결과 화면 — 검사 종류에 따라 보여주는 깊이가 다르다.
+ * 피부 촬영 분석 결과 화면.
  *
- *   신규 검사        : 질환 Top3 + 피부 종합 상태(IGA)만 먼저 보여주고, 세부 지표
- *                      (홍반·구진·찰상·태선화 + 가려움 + 수면)는 "자세히 보기"를 눌렀을 때 펼친다.
- *                      여기서 이 검사를 경과 기록(모니터링 폴더)에 연동할 수 있다.
- *   경과 이어서 기록 : 이미 지켜보는 자리라 질환 분류는 하지 않고, IGA와 세부 지표를 처음부터
- *                      한 화면에 펼쳐 보여준다 ("자세히 보기" 창이 없다).
+ *   신규·바로 스캔 — 사진 → 진단명 → 피부 종합 상태 → 증상 4종 → 가려움 → 사용한 제품
+ *   이어서 기록   — 사진 → 피부 종합 상태 → 증상 4종 → 가려움
+ *
+ * 이어서 기록에서 진단명·사용한 제품 카드를 뺀 건, 이미 정해진 자리를 다시 찍는 것이라 매번
+ * 다시 물을 것이 아니기 때문이다 — 진단명은 상단 제목에 이미 붙어 있고, 바꿀 일이 생기면 그
+ * 폴더에서 고치는 게 맞다.
+ *
+ * 수면 점수는 여기에 없다. 이 단계에서 측정하는 값이 아니라 스마트워치에서 넘어오는 값이라,
+ * 촬영 결과에 끼워 넣으면 이번 촬영으로 잰 값처럼 읽힌다.
+ *
+ * 결과는 이 화면이 뜨기 전에 이미 저장돼 있다(CameraScreen.saveExamRecord) — 버튼은 저장이
+ * 아니라 "어디로 갈지"만 고른다.
  */
 export default function ExamResultScreen({
   capture,
   analysis,
-  sleepScore,
   linkedFolder,
   onLink,
   onOpenFolder,
-  onSave,
+  onOpenRecords,
   onClose,
 }: {
   capture: ExamCapture;
   analysis: ExamAnalysis;
-  /** 삼성헬스 연동 수면 점수(0~100). 이어받을 값이 없으면 null → "등록 안함" */
-  sleepScore: number | null;
   linkedFolder: { id: string; name: string } | null;
-  /** 이 자리로 경과 기록 폴더를 만들고 이번 검사를 첫 기록으로 넣는다 */
+  /** 이 자리로 경과 관찰 폴더를 만들고 이번 기록을 첫 기록으로 넣는다 */
   onLink: () => void;
   onOpenFolder: (folderId: string) => void;
-  onSave: () => void;
+  /** 기록 탭으로 넘어간다 (저장은 이미 끝나 있다) */
+  onOpenRecords: () => void;
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const { findTarget, setDiagnosis } = useMonitoring();
+  const isQuick = capture.kind === 'quick';
   const isNew = capture.kind === 'new';
-  const [detailOpen, setDetailOpen] = useState(false);
+  const isFollowUp = capture.kind === 'followUp';
 
-  const { target, session } = capture;
-  const skinValue = igaDisplayValue(analysis.local.igaGrade);
-  const skin = skinConditionInfo(skinValue);
+  const { session } = capture;
+  // 진단명을 결과 화면에서 고칠 수 있어서, 대상은 항상 저장소의 최신 상태를 읽는다
+  const target = findTarget(capture.target.id) ?? capture.target;
   const disease = target.diagnosis?.disease;
+  const skinValue = igaDisplayValue(analysis.local.igaGrade);
 
-  const detail = (
-    <>
-      <PhotoPair uri={capture.photoUri} bbox={analysis.local.bbox} />
-      <SymptomCard analysis={analysis} />
-      <ItchCard vas={capture.itchVas} />
-      <SleepCard score={sleepScore} />
-    </>
-  );
+  const [editing, setEditing] = useState(false);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -79,9 +81,9 @@ export default function ExamResultScreen({
           <MaterialIcons name="close" size={22} color={AppColors.ink} />
         </Pressable>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>{isNew ? '검사 결과' : '경과 기록 결과'}</Text>
+          <Text style={styles.headerTitle}>피부 분석 결과</Text>
           <Text style={styles.headerSub} numberOfLines={1}>
-            {[target.label, disease].filter(Boolean).join(' · ')}
+            {[isQuick ? '바로 스캔' : plainSiteLabel(target.label), disease].filter(Boolean).join(' · ')}
           </Text>
         </View>
         <ConfidencePill score={session.confidence.score} tier={session.confidence.tier} />
@@ -96,50 +98,50 @@ export default function ExamResultScreen({
             </Text>
           </View>
         )}
-        {isNew ? (
-          <>
-            {analysis.diseases ? (
-              <DiseaseTop3Card predictions={analysis.diseases} />
-            ) : (
-              <RegisteredDiseaseCard disease={disease} />
-            )}
 
-            <SkinCard value={skinValue} band={skin} igaName={analysis.local.igaGradeName} />
+        <PhotoPair uri={capture.photoUri} bbox={analysis.local.bbox} />
 
-            <Pressable style={styles.detailToggle} onPress={() => setDetailOpen((v) => !v)}>
-              <Text style={styles.detailToggleText}>자세히 보기</Text>
-              <MaterialIcons
-                name={detailOpen ? 'expand-less' : 'expand-more'}
-                size={20}
-                color={AppColors.greenMuted}
-              />
-            </Pressable>
-            {detailOpen && detail}
+        {/* 이어서 기록은 이미 이름이 정해진 자리라 진단명을 다시 묻지 않는다 */}
+        {!isFollowUp && (
+          <DiseaseCard
+            predictions={analysis.diseases}
+            disease={disease}
+            selfEntered={target.diagnosis?.source === 'self'}
+            // 바로 스캔은 지켜보는 자리가 아니라 진단명을 붙여 둘 곳이 없다
+            onEdit={isQuick ? undefined : () => setEditing(true)}
+          />
+        )}
 
-            <LinkSection
-              target={target}
-              disease={disease}
-              linkedFolder={linkedFolder}
-              onLink={onLink}
-              onOpenFolder={onOpenFolder}
-            />
-          </>
-        ) : (
-          <>
-            <PhotoPair uri={capture.photoUri} bbox={analysis.local.bbox} />
-            <SkinCard value={skinValue} band={skin} igaName={analysis.local.igaGradeName}>
-              <View style={styles.symptomDivider} />
-              <SymptomList analysis={analysis} />
-            </SkinCard>
-            <ItchCard vas={capture.itchVas} />
-            <SleepCard score={sleepScore} />
-            {linkedFolder && (
-              <Pressable style={styles.openFolderBtn} onPress={() => onOpenFolder(linkedFolder.id)}>
-                <MaterialIcons name="timeline" size={18} color={AppColors.greenMuted} />
-                <Text style={styles.openFolderText}>“{linkedFolder.name}” 추이 보기</Text>
-              </Pressable>
-            )}
-          </>
+        <MetricCard
+          label="피부 종합 상태"
+          value={skinValue}
+          segments={SKIN_SEGMENTS}
+          foot={`IGA ${GRADE_NAMES_KO[analysis.local.igaGradeName] ?? analysis.local.igaGradeName}`}
+        />
+
+        <SymptomCard analysis={analysis} />
+
+        {capture.itchVas != null && (
+          <MetricCard label="가려움" value={itchDisplayValue(capture.itchVas)} segments={ITCH_SEGMENTS} />
+        )}
+
+        {isNew && <UsedProductsCard date={new Date()} />}
+
+        {isNew && (
+          <LinkSection
+            siteLabel={target.label}
+            disease={disease}
+            linkedFolder={linkedFolder}
+            onLink={onLink}
+            onOpenFolder={onOpenFolder}
+          />
+        )}
+
+        {!isNew && !isQuick && linkedFolder && (
+          <Pressable style={styles.openFolderBtn} onPress={() => onOpenFolder(linkedFolder.id)}>
+            <MaterialIcons name="timeline" size={18} color={AppColors.greenMuted} />
+            <Text style={styles.openFolderText}>“{linkedFolder.name}” 추이 보기</Text>
+          </Pressable>
         )}
 
         {session.confidence.warnings.length > 0 && (
@@ -155,14 +157,39 @@ export default function ExamResultScreen({
       </ScrollView>
 
       <View style={styles.footer}>
-        <Pressable style={styles.saveBtn} onPress={onSave}>
-          <Text style={styles.saveBtnText}>결과 저장하고 기록 보기</Text>
+        {/* 저장은 이미 끝났다는 걸 알려 준다 — 누를 것이 없어졌으니 말로라도 확인시켜 줘야 한다 */}
+        {!isQuick && (
+          <>
+            <View style={styles.savedRow}>
+              <MaterialIcons name="check-circle" size={15} color={mc.sev1} />
+              <Text style={styles.savedText}>이번 결과는 기록에 저장됐어요</Text>
+            </View>
+            <View style={{ height: 10 }} />
+          </>
+        )}
+        <Pressable style={styles.saveBtn} onPress={isQuick ? onClose : onOpenRecords}>
+          <Text style={styles.saveBtnText}>{isQuick ? '닫기' : '기록 보기'}</Text>
         </Pressable>
         <View style={{ height: 10 }} />
         <Text style={styles.disclaimer}>
           ** 해당 앱은 치료와 진단을 하지 않습니다. 의심이 들 경우 전문의에게 상담하세요. **
         </Text>
       </View>
+
+      <DiagnosisSheet
+        visible={editing}
+        current={target.diagnosis?.source === 'self' ? disease : undefined}
+        onClose={() => setEditing(false)}
+        onSave={(name) => {
+          setDiagnosis(target.id, {
+            diagnosed: true,
+            disease: name,
+            source: 'self',
+            photoUri: capture.photoUri,
+          });
+          setEditing(false);
+        }}
+      />
     </View>
   );
 }
@@ -177,174 +204,97 @@ function ConfidencePill({ score, tier }: { score: number; tier: 'high' | 'medium
   );
 }
 
-/** 질환 분류 상위 3개 — 1위만 초록 링/강조 행으로 띄운다 */
-function DiseaseTop3Card({ predictions }: { predictions: ExamAnalysis['diseases'] }) {
-  if (!predictions) return null;
-  return (
-    <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>상위 3개 결과</Text>
-      {predictions.map((p, i) => (
-        <View key={p.key} style={[styles.diseaseRow, i === 0 && styles.diseaseRowTop]}>
-          <RingPercent
-            percent={p.score * 100}
-            color={i === 0 ? mc.greenTop : mc.navInactive}
-            size={i === 0 ? 46 : 40}
-          />
-          <Text style={[styles.diseaseName, i === 0 && styles.diseaseNameTop]} numberOfLines={1}>
-            {p.label}
-          </Text>
-        </View>
-      ))}
-      <Text style={styles.metricFoot}>
-        사진으로 추정한 참고용 결과예요. 진단은 피부과 전문의만 내릴 수 있어요.
-      </Text>
-    </View>
-  );
-}
-
-/** 의사 진단을 이미 등록한 경우 — 질환 분류 모델은 돌리지 않는다 */
-function RegisteredDiseaseCard({ disease }: { disease?: string }) {
-  return (
-    <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>등록한 질환</Text>
-      <Text style={styles.registeredName}>{disease ?? '등록 안함'}</Text>
-      <Text style={styles.metricFoot}>
-        전문의 진단을 등록해 두어서 질환 분류는 건너뛰고 중증도만 분석했어요.
-      </Text>
-    </View>
-  );
-}
-
-/** 피부 종합 상태(IGA) — 모니터링 상세 화면과 같은 0~100 스케일·같은 4단계 이름 */
-function SkinCard({
-  value,
-  band,
-  igaName,
-  children,
+/**
+ * 진단명 카드.
+ *
+ * 촬영 전에 "진단 받은 적 있나요?"를 묻던 단계를 없앴다 — 진단명을 안다고 이 앱이 하는 일이
+ * 달라지지 않는데 매번 거쳐야 하는 관문이 되어 있었다. 대신 사진으로 추정한 상위 3개를 여기서
+ * 보여주고, 이미 아는 진단명이 있으면 그때 고쳐 넣게 한다.
+ */
+function DiseaseCard({
+  predictions,
+  disease,
+  selfEntered,
+  onEdit,
 }: {
-  value: number;
-  band: { ko: string; color: string };
-  igaName: string;
-  children?: React.ReactNode;
+  predictions: ExamAnalysis['diseases'];
+  disease?: string;
+  selfEntered: boolean;
+  onEdit?: () => void;
 }) {
   return (
     <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>피부 종합 상태</Text>
-      <View style={styles.metricHeadRow}>
-        <Text style={styles.metricBig}>
-          {value.toFixed(1)}
-          <Text style={styles.metricUnit}>/100</Text>
-        </Text>
-        <Text style={[styles.metricSub, { color: band.color }]}>{band.ko}</Text>
+      <View style={styles.diseaseHead}>
+        <Text style={styles.cardLabel}>진단명</Text>
+        <View style={{ flex: 1 }} />
+        {onEdit && (
+          <Pressable style={styles.editBtn} onPress={onEdit} hitSlop={6}>
+            <MaterialIcons name="edit" size={14} color={AppColors.greenMuted} />
+            <Text style={styles.editBtnText}>{selfEntered ? '수정' : '직접 입력'}</Text>
+          </Pressable>
+        )}
       </View>
-      <ScaleBar value={value} segments={SKIN_SEGMENTS} />
-      <Text style={styles.metricFoot}>IGA {GRADE_NAMES_KO[igaName] ?? igaName}</Text>
-      {children}
+
+      {selfEntered ? (
+        <>
+          <Text style={styles.registeredName}>{disease}</Text>
+          <Text style={styles.metricFoot}>직접 입력한 진단명이에요. 이 이름으로 경과를 이어서 봅니다.</Text>
+        </>
+      ) : predictions && predictions.length > 0 ? (
+        <>
+          {predictions.map((p, i) => (
+            <View key={p.key} style={[styles.diseaseRow, i === 0 && styles.diseaseRowTop]}>
+              <RingPercent
+                percent={p.score * 100}
+                color={i === 0 ? mc.greenTop : mc.navInactive}
+                size={i === 0 ? 46 : 40}
+              />
+              <Text style={[styles.diseaseName, i === 0 && styles.diseaseNameTop]} numberOfLines={1}>
+                {p.label}
+              </Text>
+            </View>
+          ))}
+          <Text style={styles.metricFoot}>
+            사진으로 추정한 참고용 결과예요. 이미 진단받은 이름이 있으면 직접 입력해주세요.
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text style={styles.registeredName}>{disease ?? '미입력'}</Text>
+          <Text style={styles.metricFoot}>진단받은 이름을 알고 있으면 직접 입력해주세요.</Text>
+        </>
+      )}
     </View>
   );
 }
 
-/** 세부 지표 4종을 카드 하나로 (신규 검사의 "자세히 보기"에서 쓴다) */
+/** 4가지 증상을 카드 하나에 모아 보여준다 */
 function SymptomCard({ analysis }: { analysis: ExamAnalysis }) {
-  return (
-    <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>세부 증상</Text>
-      <SymptomList analysis={analysis} />
-    </View>
-  );
-}
-
-/**
- * 세부 지표 목록 — 눈금/숫자/라벨이 4번 반복되면 자리만 차지하므로 ScaleAxis를 맨 위에 한 번만
- * 두고 아래 막대는 minimal로 그린다 (모니터링 상세 화면과 같은 방식).
- */
-function SymptomList({ analysis }: { analysis: ExamAnalysis }) {
   const byKey = useMemo(
     () => Object.fromEntries(analysis.local.signs.map((s) => [s.sign, s])),
     [analysis],
   );
   return (
-    <>
-      <ScaleAxis segments={SYMPTOM_SEGMENTS_BASE} />
-      {SIGN_ORDER.map((sign) => {
+    <View style={[monitoringCard(), styles.card]}>
+      <Text style={styles.cardLabel}>4가지 증상</Text>
+      {SIGN_ORDER.map((sign, i) => {
         const found = byKey[sign];
         const value = found ? signDisplayValue(sign, found.grade) : 0;
-        const band = symptomBand(value);
-        const meta = SIGN_DISPLAY[sign];
         return (
-          <View key={sign} style={styles.symptomRow}>
-            <View style={styles.symptomHeadRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.symptomLabel}>{meta.label}</Text>
-                <Text style={styles.symptomHint}>{meta.hint}</Text>
-              </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={styles.symptomValue}>
-                  {value.toFixed(1)}
-                  <Text style={styles.symptomValueUnit}>/100</Text>
-                </Text>
-                <Text style={[styles.symptomBandText, { color: band.color }]}>{band.ko}</Text>
-              </View>
-            </View>
-            <ScaleBar value={value} segments={SYMPTOM_SEGMENTS_BASE} minimal />
-          </View>
+          <MetricRow
+            key={sign}
+            label={SIGN_DISPLAY[sign].label}
+            value={value}
+            segments={SYMPTOM_SEGMENTS_BASE}
+            first={i === 0}
+          />
         );
       })}
-    </>
-  );
-}
-
-/** 가려움 (VAS) — 문진에서 "넘어가기"를 골랐으면 0점이 아니라 "등록 안함"이다 */
-function ItchCard({ vas }: { vas: number | null }) {
-  if (vas == null) return <NotRegisteredCard label="가려움 (VAS)" />;
-  const value = itchDisplayValue(vas);
-  const band = itchBand(value);
-  return (
-    <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>가려움 (VAS)</Text>
-      <View style={styles.metricHeadRow}>
-        <Text style={styles.metricBig}>
-          {value}
-          <Text style={styles.metricUnit}>/100</Text>
-        </Text>
-        <Text style={[styles.metricSub, { color: band.color }]}>{band.ko}</Text>
-      </View>
-      <ScaleBar value={value} segments={ITCH_SEGMENTS} />
     </View>
   );
 }
 
-/** 수면 점수 — 삼성헬스 연동 값이라 검사만으로는 채워지지 않는다 */
-function SleepCard({ score }: { score: number | null }) {
-  if (score == null) return <NotRegisteredCard label="수면 점수" />;
-  const band = sleepBand(score);
-  return (
-    <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>수면 점수</Text>
-      <View style={styles.metricHeadRow}>
-        <Text style={styles.metricBig}>
-          {score}
-          <Text style={styles.metricUnit}>/100</Text>
-        </Text>
-        <Text style={[styles.metricSub, { color: band.color }]}>{band.ko}</Text>
-      </View>
-      <ScaleBar value={score} segments={SLEEP_SEGMENTS} />
-    </View>
-  );
-}
-
-function NotRegisteredCard({ label }: { label: string }) {
-  return (
-    <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>{label}</Text>
-      <View style={styles.notRegistered}>
-        <Text style={styles.notRegisteredText}>등록 안함</Text>
-      </View>
-    </View>
-  );
-}
-
-/** 촬영 이미지 원본 + 병변 위치 오버레이 — 모니터링 상세 화면의 사진 카드와 같은 배치 */
+/** 촬영 이미지 원본 + 증상 위치 오버레이 — 상세 결과 화면의 사진 카드와 같은 배치 */
 function PhotoPair({ uri, bbox }: { uri: string; bbox: LesionBox }) {
   return (
     <View style={[monitoringCard(), styles.photoCard]}>
@@ -370,22 +320,22 @@ function PhotoPair({ uri, bbox }: { uri: string; bbox: LesionBox }) {
               />
             </Svg>
           </View>
-          <Text style={styles.photoCaption}>마스크 오버레이 이미지</Text>
+          <Text style={styles.photoCaption}>증상 부위 표시</Text>
         </View>
       </View>
     </View>
   );
 }
 
-/** 신규 검사 결과로 이 자리의 경과 기록 폴더를 만드는 자리 */
+/** 신규 기록 결과로 이 자리의 경과 관찰 폴더를 만드는 자리 */
 function LinkSection({
-  target,
+  siteLabel,
   disease,
   linkedFolder,
   onLink,
   onOpenFolder,
 }: {
-  target: ExamCapture['target'];
+  siteLabel: string;
   disease?: string;
   linkedFolder: { id: string; name: string } | null;
   onLink: () => void;
@@ -396,9 +346,9 @@ function LinkSection({
       <View style={[monitoringCard(), styles.card, styles.linkedCard]}>
         <View style={styles.linkedHead}>
           <MaterialIcons name="check-circle" size={20} color={mc.sev1} />
-          <Text style={styles.linkedTitle}>경과 기록에 연동했어요</Text>
+          <Text style={styles.linkedTitle}>경과 관찰에 연동했어요</Text>
         </View>
-        <Text style={styles.linkedName}>{linkedFolder.name}</Text>
+        <Text style={styles.linkedName}>{plainSiteLabel(linkedFolder.name)}</Text>
         <Pressable style={styles.openFolderBtn} onPress={() => onOpenFolder(linkedFolder.id)}>
           <MaterialIcons name="timeline" size={18} color={AppColors.greenMuted} />
           <Text style={styles.openFolderText}>추이 보기</Text>
@@ -408,22 +358,109 @@ function LinkSection({
   }
   return (
     <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>경과 기록에 연동</Text>
+      <Text style={styles.cardLabel}>경과 관찰에 연동</Text>
       <Text style={styles.metricFoot}>
-        이 검사로 경과 기록 폴더를 하나 만들어요. 다음부터 같은 자리를 고스트로 겹쳐 찍고 추이
-        그래프에 이어서 볼 수 있어요.
+        이 기록으로 경과 관찰 폴더를 하나 만들어요. 다음부터 같은 자리를 찍으면 추이 그래프에
+        이어서 볼 수 있어요.
       </Text>
       <View style={{ height: 12 }} />
       <View style={styles.newFolderRow}>
-        <MaterialIcons name="create-new-folder" size={20} color={AppColors.greenMuted} />
+        <MaterialIcons name="accessibility-new" size={20} color={AppColors.greenMuted} />
         <Text style={styles.newFolderName} numberOfLines={1}>
-          {folderNameOf(target.label, disease)}
+          {folderNameOf(plainSiteLabel(siteLabel), disease)}
         </Text>
       </View>
       <View style={{ height: 12 }} />
       <Pressable style={styles.linkBtn} onPress={onLink}>
-        <Text style={styles.linkBtnText}>경과 기록에 연동하기</Text>
+        <Text style={styles.linkBtnText}>경과 관찰에 연동하기</Text>
       </Pressable>
+    </View>
+  );
+}
+
+/** 진단명 직접 입력 시트 */
+function DiagnosisSheet({
+  visible,
+  current,
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  current?: string;
+  onClose: () => void;
+  onSave: (name: string) => void;
+}) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const [custom, setCustom] = useState('');
+
+  React.useEffect(() => {
+    if (!visible) return;
+    if (current && DIAGNOSES.includes(current)) {
+      setPicked(current);
+      setCustom('');
+    } else if (current) {
+      setPicked('직접 입력');
+      setCustom(current);
+    } else {
+      setPicked(null);
+      setCustom('');
+    }
+  }, [visible, current]);
+
+  if (!visible) return null;
+
+  const name = picked === '직접 입력' ? custom.trim() : picked ?? '';
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      <View style={styles.sheetBackdrop}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={styles.sheetCard}>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>진단명 입력</Text>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <MaterialIcons name="close" size={20} color={mc.sub} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.sheetBody} keyboardShouldPersistTaps="handled">
+            <Text style={styles.sheetHint}>
+              피부과에서 들은 진단명이 있으면 골라주세요. 입력하지 않으면 분석으로 추정한 이름을 씁니다.
+            </Text>
+            <View style={{ height: 14 }} />
+            <View style={styles.grid}>
+              {DIAGNOSES.map((d) => (
+                <Pressable
+                  key={d}
+                  style={[styles.gridBox, picked === d && styles.gridBoxActive]}
+                  onPress={() => setPicked(d)}
+                >
+                  <Text style={[styles.gridText, picked === d && styles.gridTextActive]}>{d}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {picked === '직접 입력' && (
+              <>
+                <View style={{ height: 12 }} />
+                <TextInput
+                  style={styles.input}
+                  value={custom}
+                  onChangeText={setCustom}
+                  placeholder="진단명을 입력해주세요"
+                  placeholderTextColor={mc.sub}
+                />
+              </>
+            )}
+            <View style={{ height: 20 }} />
+            <Pressable
+              style={[styles.linkBtn, !name && styles.linkBtnDisabled]}
+              disabled={!name}
+              onPress={() => onSave(name)}
+            >
+              <Text style={[styles.linkBtnText, !name && styles.linkBtnTextDisabled]}>저장</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
+      </View>
     </View>
   );
 }
@@ -489,23 +526,21 @@ const styles = StyleSheet.create({
   },
   dumpNoticeText: { flex: 1, fontSize: 11.5, color: mc.greenDeep, lineHeight: 17 },
   card: { padding: 16 },
-  cardLabel: { fontSize: 17, fontWeight: '800', color: mc.ink, marginBottom: 12 },
-  metricHeadRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
-  metricBig: { fontSize: 28, fontWeight: '800', color: mc.ink },
-  metricUnit: { fontSize: 15, fontWeight: '600', color: mc.sub },
-  metricSub: { fontSize: 12, fontWeight: '800', marginBottom: 4, textAlign: 'right', flexShrink: 1, marginLeft: 8 },
+  cardLabel: { fontSize: 16, fontWeight: '800', color: mc.ink, marginBottom: 12 },
   metricFoot: { fontSize: 11.5, color: mc.sub, marginTop: 10, lineHeight: 17 },
 
-  notRegistered: {
-    borderRadius: 12,
-    backgroundColor: mc.bg,
-    borderWidth: 1,
-    borderColor: mc.line,
-    paddingVertical: 18,
+  diseaseHead: { flexDirection: 'row', alignItems: 'center' },
+  editBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EFF5E4',
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 12,
   },
-  notRegisteredText: { fontSize: 16, fontWeight: '800', color: mc.sub },
-
+  editBtnText: { fontSize: 12, fontWeight: '800', color: AppColors.greenMuted },
   diseaseRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -522,33 +557,11 @@ const styles = StyleSheet.create({
   ringText: { position: 'absolute', fontSize: 11.5, fontWeight: '800', color: mc.ink },
   registeredName: { fontSize: 22, fontWeight: '800', color: mc.ink },
 
-  symptomDivider: { height: 1, backgroundColor: mc.line, marginTop: 16, marginBottom: 12 },
-  symptomRow: { marginTop: 12 },
-  symptomHeadRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6 },
-  symptomLabel: { fontSize: 13.5, fontWeight: '700', color: mc.ink },
-  symptomHint: { fontSize: 10.5, color: mc.sub, marginTop: 1 },
-  symptomValue: { fontSize: 14, fontWeight: '800', color: mc.ink },
-  symptomValueUnit: { fontSize: 10, fontWeight: '600', color: mc.sub },
-  symptomBandText: { fontSize: 10.5, fontWeight: '800', marginTop: 1 },
-
   photoCard: { padding: 12 },
   photoRow: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
   photoCol: { alignItems: 'center' },
   photo: { width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: 10, overflow: 'hidden', backgroundColor: mc.bg },
   photoCaption: { fontSize: 10.5, color: mc.sub, marginTop: 6, textAlign: 'center' },
-
-  detailToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 14,
-    borderRadius: 14,
-    backgroundColor: mc.card,
-    borderWidth: 1.5,
-    borderColor: mc.greenTop,
-  },
-  detailToggleText: { fontSize: 14.5, fontWeight: '800', color: AppColors.greenMuted },
 
   linkedCard: { borderWidth: 1.5, borderColor: mc.greenTop },
   linkedHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -567,7 +580,9 @@ const styles = StyleSheet.create({
   },
   newFolderName: { flex: 1, fontSize: 14.5, fontWeight: '800', color: mc.ink },
   linkBtn: { backgroundColor: mc.greenTop, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  linkBtnDisabled: { backgroundColor: '#E7E9EC' },
   linkBtnText: { fontSize: 15, fontWeight: '800', color: '#16320A' },
+  linkBtnTextDisabled: { color: mc.sub },
   openFolderBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -576,7 +591,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: mc.bg,
+    backgroundColor: mc.card,
   },
   openFolderText: { fontSize: 13.5, fontWeight: '800', color: AppColors.greenMuted },
 
@@ -585,6 +600,50 @@ const styles = StyleSheet.create({
   footer: { paddingHorizontal: 16, paddingBottom: 18, paddingTop: 10, backgroundColor: mc.bg },
   saveBtn: { backgroundColor: mc.greenTop, borderRadius: 14, paddingVertical: 15, alignItems: 'center' },
   saveBtnText: { fontSize: 15, fontWeight: '800', color: '#16320A' },
+  savedRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  savedText: { fontSize: 12, fontWeight: '600', color: mc.sub },
   disclaimer: { fontSize: 10, color: mc.sub, textAlign: 'center' },
 
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  sheetCard: {
+    backgroundColor: mc.card,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    maxHeight: '86%',
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: mc.line,
+  },
+  sheetTitle: { fontSize: 16, fontWeight: '800', color: mc.ink },
+  sheetBody: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 26 },
+  sheetHint: { fontSize: 12.5, color: mc.sub, lineHeight: 18 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  gridBox: {
+    width: '47%',
+    paddingVertical: 15,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#E7E9EC',
+    backgroundColor: '#F7F8FA',
+    alignItems: 'center',
+  },
+  gridBoxActive: { borderColor: mc.greenTop, backgroundColor: mc.greenTop },
+  gridText: { fontSize: 14.5, fontWeight: '700', color: mc.ink },
+  gridTextActive: { color: '#16320A' },
+  input: {
+    borderWidth: 1.5,
+    borderColor: '#E7E9EC',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: mc.ink,
+  },
 });

@@ -1,5 +1,4 @@
 import React from 'react';
-import { View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -9,8 +8,9 @@ import HomeScreen from '../screens/HomeScreen';
 import RecordsScreen from '../screens/RecordsScreen';
 import CameraScreen from '../screens/CameraScreen';
 import WholeBodyResultScreen from '../screens/WholeBodyResultScreen';
-import HospitalScreen from '../screens/HospitalScreen';
+import DataExportScreen from '../screens/DataExportScreen';
 import RoutineScreen from '../screens/RoutineScreen';
+import ProfileScreen from '../screens/ProfileScreen';
 import MonitoringScreen from '../folders/screens/MonitoringScreen';
 import MonitoringFolderScreen from '../folders/screens/MonitoringFolderScreen';
 import MonitoringDetailScreen from '../folders/screens/MonitoringDetailScreen';
@@ -31,10 +31,13 @@ function withTopInset<P extends object>(Component: React.ComponentType<P>) {
 
 const HomeWrapped = withTopInset(HomeScreen);
 const RecordsWrapped = withTopInset(RecordsScreen);
-const WholeBodyResultWrapped = withTopInset(WholeBodyResultScreen);
-const HospitalWrapped = withTopInset(HospitalScreen);
+const RoutineWrapped = withTopInset(RoutineScreen);
+const ProfileWrapped = withTopInset(ProfileScreen);
 
-/** 하단 바가 붙어 있는 5개 탭 — 앱의 기본 화면 */
+/**
+ * 하단 바가 붙어 있는 5개 탭 — 앱의 기본 화면.
+ * 홈 · 피부 촬영 · 기록 · 루틴 · 마이페이지. 전신 결과는 기록 탭 안에서 스택 화면으로 열린다.
+ */
 function Tabs() {
   return (
     <Tab.Navigator
@@ -43,23 +46,21 @@ function Tabs() {
       screenOptions={{ headerShown: false, lazy: false }}
       tabBar={(props) => <BottomNav {...props} />}
     >
-      {/* 탭 순서 = 하단 바 순서: 홈 · 기록 · 카메라 · 전신결과 · 주변 병원 */}
+      {/* 탭 순서 = 하단 바 순서 */}
       <Tab.Screen name="Home" component={HomeWrapped} />
-      <Tab.Screen name="Records" component={RecordsWrapped} />
       <Tab.Screen name="Camera" component={CameraScreen} />
-      <Tab.Screen name="WholeBody" component={WholeBodyResultWrapped} />
-      <Tab.Screen name="Hospital" component={HospitalWrapped} />
+      <Tab.Screen name="Records" component={RecordsWrapped} />
+      <Tab.Screen name="Routine" component={RoutineWrapped} />
+      <Tab.Screen name="Profile" component={ProfileWrapped} />
     </Tab.Navigator>
   );
 }
 
 /**
- * 탭 위에 스택을 한 겹 얹는다 — 기록 탭의 "등록된 모니터링 기록 보기"에서 밀려 올라오는
- * 모니터링 폴더 화면 3종과, 홈의 "루틴" 화살표에서 열리는 루틴 추가/삭제
- * 화면이 여기 올라탄다. 탭 화면 안에서 navigate('Monitoring')/navigate('Routine')을 부르면
- * 탭 안에 없는 이름이라 이 부모 스택으로 올라와 처리된다(그 반대로 navigate('Camera')는
- * 탭 안에서 그대로 해결되므로 기존 코드에 영향이 없다). Routine 화면은 탭 바가 없는 화면이라
- * 자체 뒤로가기 버튼을 두고 있다.
+ * 탭 위에 스택을 한 겹 얹는다 — 경과 관찰 화면 3종과 기록 탭에서 열리는 전신 결과가 여기
+ * 올라탄다. 탭 화면 안에서 navigate('WholeBody') 같이 탭에 없는 이름을 부르면 이 부모 스택으로
+ * 올라와 처리된다(navigate('Camera')처럼 탭 안에 있는 이름은 그대로 탭에서 해결되므로 기존
+ * 코드에 영향이 없다).
  */
 export default function RootNavigator() {
   return (
@@ -70,7 +71,17 @@ export default function RootNavigator() {
       <Stack.Screen name="Monitoring" component={MonitoringScreen} />
       <Stack.Screen name="MonitoringFolder" component={MonitoringFolderScreen} />
       <Stack.Screen name="MonitoringDetail" component={MonitoringDetailScreen} />
-      <Stack.Screen name="Routine" component={RoutineScreen} />
+      {/* 탭에서 빠져나온 화면 — 자체 뒤로가기가 없어 네이티브 헤더를 켠다 */}
+      <Stack.Screen
+        name="WholeBody"
+        component={WholeBodyResultScreen}
+        options={{ headerShown: true, title: '전신 결과', headerTintColor: AppColors.ink }}
+      />
+      <Stack.Screen
+        name="DataExport"
+        component={DataExportScreen}
+        options={{ headerShown: true, title: '데이터 다운로드', headerTintColor: AppColors.ink }}
+      />
     </Stack.Navigator>
   );
 }

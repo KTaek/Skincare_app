@@ -6,17 +6,15 @@ import diseaseMeta from '../../assets/models/disease_labels.json';
 import { makeRng } from '../folders/store';
 
 /**
- * 카메라 탭을 온디바이스 모델 없이 굴리는 스위치.
+ * 촬영 탭을 온디바이스 모델 없이 굴리는 스위치.
  *
- * 실기기에서 tflite 모델이 "Failed to allocate memory for input/output tensors"로 뜨지 않아
- * 검사 흐름 전체가 막히는 상태라, 화면 설계를 먼저 확인할 수 있도록 모델을 아예 부르지 않고
- * 아래 dump 값으로 결과를 채운다.
+ * 지금은 꺼져 있다 — 실제 학습 체크포인트 3종(질환 cls_dis_512 · 중증도 cls_sev_384 ·
+ * 분할 seg_lesion_512)을 float32 입출력 TFLite로 변환해 번들에 넣었고, 그 모델들이 기기에서
+ * 실제로 돌아간다. 아래 dump 값은 모델 없이 화면만 확인할 일이 다시 생겼을 때를 위해 남겨 둔다.
  *
- * ⚠️ 여기서 나오는 숫자는 전부 가짜다 — 실제 병변과 아무 관계가 없다.
- * 모델이 다시 뜨면 이 상수만 false로 바꾸면 원래의 실제 분석 경로로 돌아간다
- * (호출부는 두 경로를 모두 그대로 들고 있다).
+ * ⚠️ 켜면 여기서 나오는 숫자는 전부 가짜다 — 실제 피부 상태와 아무 관계가 없다.
  */
-export const DUMP_RESULTS = true;
+export const DUMP_RESULTS = false;
 
 /** 문자열 → 32bit 정수 시드 (folders/store.js의 해시와 같은 FNV-1a) */
 function hashStr(s: string): number {
@@ -52,7 +50,7 @@ export function makeDumpLocalResult(seedKey: string): LocalAnalysisResult {
     return { sign, grade, gradeName: grades[grade] };
   });
 
-  // 사진 가운데를 살짝 벗어난 자리에 병변이 있는 것처럼 박스를 잡는다
+  // 사진 가운데를 살짝 벗어난 자리에 증상이 있는 것처럼 박스를 잡는다
   const side = 0.28 + rng() * 0.2;
   const left = (1 - side) / 2 + (rng() - 0.5) * 0.12;
   const top = (1 - side) / 2 + (rng() - 0.5) * 0.12;
@@ -65,12 +63,17 @@ export function makeDumpLocalResult(seedKey: string): LocalAnalysisResult {
     imageHeight: DUMP_IMAGE_SIZE,
   };
 
+  const igaGradeName = labels.grade_names_by_sign.iga[igaGrade];
   return {
     signs,
     igaGrade,
-    igaGradeName: labels.grade_names_by_sign.iga[igaGrade],
+    igaGradeName,
     severity: IGA_GRADE_TO_SEVERITY[igaGrade] ?? 1,
     bbox,
+    // 실제 마스크가 없으니 박스 넓이의 절반쯤을 마스크 넓이로 친다 (박스는 여백을 포함한다)
+    maskAreaPct: Math.round(side * side * 50 * 10) / 10,
+    // dump에서는 증상 덩어리를 하나로만 지어낸다 — 여러 덩어리는 실제 마스크가 있어야 나온다
+    regions: [{ bbox, signs, igaGrade, igaGradeName, share: 1 }],
     inferenceTimeMs: 0,
   };
 }
@@ -97,17 +100,14 @@ export function makeDumpDiseases(seedKey: string): DiseasePrediction[] {
  * 기준 사진(baseline) dump.
  *
  * 원래는 세그멘테이션이 찾은 병변 크기·방향에서 나오는 값이다. dump 모드에서도 이걸 남겨야
- * 다음 촬영 때 고스트 겹쳐보기와 가이드 박스 크기가 동작한다 — 안 그러면 "경과 이어서 기록"의
+ * 다음 촬영의 조명 보정과 확인 화면의 기준 사진 비교가 동작한다 — 안 그러면 "경과 이어서 기록"의
  * 핵심 화면을 확인할 수 없다.
  */
 export function makeDumpBaseline(sessionId: string, uri: string): Baseline {
   return {
     sessionId,
     processedUri: uri,
-    orientation: 0,
-    // 가이드 박스가 화면 짧은 변의 70% 정도가 되도록 잡은 값 (FIELD_OF_VIEW_FACTOR 3.2 기준)
-    radiusNorm: 0.11,
-    colorStats: { mean: [0.5, 0.45, 0.42], std: [0.1, 0.1, 0.1] },
+    skinReference: [0.5, 0.45, 0.42],
     brightness: 0.5,
   };
 }
@@ -119,7 +119,7 @@ export function makeDumpConfidence(seedKey: string): SessionConfidence {
   return {
     score,
     tier: score >= 75 ? 'high' : 'medium',
-    breakdown: { focus: 0.8, exposure: 0.8, framing: 0.8, registration: 1, color: 1 },
+    breakdown: { focus: 0.8, exposure: 0.8, skin: 0.9, color: 1 },
     warnings: [],
     usable: true,
   };

@@ -2,7 +2,7 @@ import React from 'react';
 import { Text, View, Pressable, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors } from '../theme';
-import { Routine, sevOf } from '../models';
+import { CareItem, cycleLabel, sevOf } from '../models';
 
 /** "루틴 >" 처럼 제목 + 원형 화살표 버튼 */
 export function SectionHeader({ title, onMore }: { title: string; onMore?: () => void }) {
@@ -18,16 +18,21 @@ export function SectionHeader({ title, onMore }: { title: string; onMore?: () =>
   );
 }
 
-/** 루틴 한 줄의 내용 (체크 + 이름 + 시각 + 선택적 삭제) — 테두리/패딩 없이 내용만 */
+/**
+ * 케어 한 줄의 내용 (체크 + 이름 + 시각 + 선택적 삭제) — 테두리/패딩 없이 내용만.
+ * 제품은 이름 앞에 알약 아이콘을, 매일이 아니면 주기 배지("격일")를 함께 단다.
+ */
 export function RoutineRowContent({
-  routine,
+  item,
   onToggle,
   onDelete,
 }: {
-  routine: Routine;
+  item: CareItem;
   onToggle?: () => void;
   onDelete?: () => void;
 }) {
+  const isProduct = item.kind === 'product';
+  const showCycle = isProduct && (item.cycleDays ?? 1) > 1;
   return (
     <View style={styles.row}>
       <Pressable
@@ -35,29 +40,40 @@ export function RoutineRowContent({
         style={[
           styles.checkbox,
           {
-            backgroundColor: routine.done ? AppColors.greenTop : 'transparent',
-            borderColor: routine.done ? AppColors.greenTop : '#DADDE2',
+            backgroundColor: item.done ? AppColors.greenTop : 'transparent',
+            borderColor: item.done ? AppColors.greenTop : '#DADDE2',
           },
         ]}
       >
-        {routine.done && <MaterialIcons name="check" size={14} color="#FFFFFF" />}
+        {item.done && <MaterialIcons name="check" size={14} color="#FFFFFF" />}
       </Pressable>
-      <View style={{ width: 13 }} />
+      <View style={{ width: 11 }} />
+      {isProduct && (
+        <MaterialIcons name="medication" size={16} color={AppColors.greenMuted} style={{ marginRight: 5 }} />
+      )}
       <Text
         style={[
           styles.routineName,
           {
-            color: routine.done ? AppColors.sub : AppColors.ink,
-            textDecorationLine: routine.done ? 'line-through' : 'none',
+            color: item.done ? AppColors.sub : AppColors.ink,
+            textDecorationLine: item.done ? 'line-through' : 'none',
           },
         ]}
         numberOfLines={1}
       >
-        {routine.name}
+        {item.name}
       </Text>
-      <Text style={styles.routineTime}>{routine.freqLabel ?? routine.time}</Text>
+      {showCycle && (
+        <View style={styles.cyclePill}>
+          <Text style={styles.cyclePillText}>{cycleLabel(item.cycleDays ?? 1)}</Text>
+        </View>
+      )}
+      {item.push && (
+        <MaterialIcons name="notifications-active" size={14} color="#C0C4CB" style={{ marginRight: 6 }} />
+      )}
+      <Text style={styles.routineTime}>{item.time}</Text>
       {onDelete && (
-        <Pressable onPress={onDelete} style={{ paddingLeft: 8 }}>
+        <Pressable onPress={onDelete} style={{ paddingLeft: 8 }} hitSlop={6}>
           <MaterialIcons name="close" size={18} color="#C7CBD1" />
         </Pressable>
       )}
@@ -65,14 +81,14 @@ export function RoutineRowContent({
   );
 }
 
-/** 루틴 한 줄 (테두리 + 패딩 + 내용) */
+/** 케어 한 줄 (구분선 + 패딩 + 내용) */
 export function RoutineRow({
-  routine,
+  item,
   onToggle,
   onDelete,
   last = false,
 }: {
-  routine: Routine;
+  item: CareItem;
   onToggle?: () => void;
   onDelete?: () => void;
   last?: boolean;
@@ -82,9 +98,11 @@ export function RoutineRow({
       style={[
         styles.routineRow,
         !last && { borderBottomWidth: 1, borderBottomColor: AppColors.line },
+        // 오늘 쓰는 날이 아닌 제품은 흐리게 — 목록에서 사라지면 관리할 수가 없어 남겨는 둔다
+        !item.due && { opacity: 0.45 },
       ]}
     >
-      <RoutineRowContent routine={routine} onToggle={onToggle} onDelete={onDelete} />
+      <RoutineRowContent item={item} onToggle={onToggle} onDelete={onDelete} />
     </View>
   );
 }
@@ -134,6 +152,14 @@ const styles = StyleSheet.create({
   },
   routineName: { flex: 1, fontSize: 15, fontWeight: '600' },
   routineTime: { fontSize: 15, fontWeight: '700', color: AppColors.ink },
+  cyclePill: {
+    backgroundColor: '#EFF5E4',
+    borderRadius: 7,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    marginRight: 8,
+  },
+  cyclePillText: { fontSize: 10.5, fontWeight: '800', color: AppColors.greenMuted },
   routineRow: { paddingVertical: 15 },
   badge: { alignSelf: 'flex-start', paddingHorizontal: 9, paddingVertical: 3, borderRadius: 8 },
   badgeText: { fontSize: 12, fontWeight: '700', color: '#FFFFFF' },

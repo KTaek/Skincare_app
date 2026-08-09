@@ -31,25 +31,55 @@ const GROUP_BASE: Record<Group, { r: number; g: number; b: number }> = {
   context: CONTEXT_BASE,
 };
 
-/** 그룹×명암 단계별 색을 미리 만들어 둔다 (프레임마다 색 문자열을 만들지 않도록) */
-const PALETTE: Record<Group, string[]> = {
-  base: [],
-  selected: [],
-  context: [],
-};
-(Object.keys(GROUP_BASE) as Group[]).forEach((g) => {
-  const c = GROUP_BASE[g];
+/** 바탕색 하나를 명암 단계별 색으로 펼친다 */
+function makeShades(c: { r: number; g: number; b: number }): string[] {
+  const out: string[] = [];
   for (let i = 0; i < SHADE_LEVELS; i++) {
     const f = 0.55 + (0.55 * i) / (SHADE_LEVELS - 1);
     const to = (v: number) => Math.round(Math.min(255, v * f));
-    PALETTE[g].push(`rgb(${to(c.r)},${to(c.g)},${to(c.b)})`);
+    out.push(`rgb(${to(c.r)},${to(c.g)},${to(c.b)})`);
   }
-});
+  return out;
+}
 
+/** 그룹×명암 단계별 색을 미리 만들어 둔다 (프레임마다 색 문자열을 만들지 않도록) */
+const PALETTE: Record<Group, string[]> = {
+  base: makeShades(GROUP_BASE.base),
+  selected: makeShades(GROUP_BASE.selected),
+  context: makeShades(GROUP_BASE.context),
+};
+
+/**
+ * partColors로 넘어온 임의의 색(#RRGGBB)도 같은 방식으로 펼쳐 둔다.
+ * 부위마다 색이 다른 화면(전신 결과의 호전/악화 지도)이 쓰는데, 슬라이더를 끌면 색이 계속
+ * 바뀌므로 한 번 만든 단계는 캐시해 두고 재사용한다.
+ */
+const customShades = new Map<string, string[]>();
+function shadesOf(hex: string): string[] {
+  const cached = customShades.get(hex);
+  if (cached) return cached;
+  const m = hex.replace('#', '');
+  const made = makeShades({
+    r: parseInt(m.slice(0, 2), 16),
+    g: parseInt(m.slice(2, 4), 16),
+    b: parseInt(m.slice(4, 6), 16),
+  });
+  customShades.set(hex, made);
+  return made;
+}
+
+/**
+ * 한 번에 칠할 삼각형 묶음. 색은 담아 두지 않고 그리기 직전에 고른다 —
+ * 선택/강조 색만 바뀔 때 경로를 다시 만들지 않기 위해서다 (슬라이더로 색이 계속 바뀌는
+ * 전신 결과 화면에서 특히 중요하다).
+ */
 interface Bucket {
   key: string;
   path: SkPath;
-  color: string;
+  part: BodyPartId;
+  /** faceHighlight로 강조된 면 묶음인지 */
+  face: boolean;
+  level: number;
 }
 
 export default function Body3DView({
@@ -60,6 +90,8 @@ export default function Body3DView({
   contextParts,
   highlightParts,
   faceHighlight,
+  partColors,
+  rotatable = true,
   marker: markerPoint,
   view,
   onPick,
@@ -78,6 +110,13 @@ export default function Body3DView({
   highlightParts?: BodyPartId[];
   /** 특정 부위에서 그 방향을 향한 면만 빨갛게 칠한다 (앞/뒤 중 어느 쪽을 고른 건지 보여줄 때) */
   faceHighlight?: { parts: BodyPartId[]; direction: Vec3 };
+  /**
+   * 부위별 바탕색(#RRGGBB). 지정한 부위는 highlight/context 대신 이 색으로 칠한다 —
+   * 전신 결과처럼 부위마다 다른 색(호전/악화)을 입혀야 하는 화면용.
+   */
+  partColors?: Partial<Record<BodyPartId, string>>;
+  /** false면 드래그로 돌리지 못한다 (스크롤 안에 붙박이로 놓을 때) */
+  rotatable?: boolean;
   /** 모델 좌표계 위의 점 하나에 마커를 찍는다 */
   marker?: Vec3 | null;
   /** 밖에서 시점을 지정한다. 값이 바뀔 때마다 그 각도로 회전한다 (이후 드래그는 자유) */
@@ -277,11 +316,10 @@ export default function Body3DView({
 
     const out: Bucket[] = [];
     orderedParts.forEach((part) => {
-      const base: Group = highlightSet.has(part) ? 'selected' : contextSet.has(part) ? 'context' : 'base';
-      // 같은 부위 안에서도 강조된 면과 나머지가 색이 다르므로 (그룹, 명암) 조합별로 모은다
+      // 같은 부위 안에서도 강조된 면과 나머지가 색이 다르므로 (강조 여부, 명암) 조합별로 모은다
       const byKey = new Map<string, number[][]>();
       partTris.get(part)?.forEach(({ level, tri, face }) => {
-        const key = `${face ? 'selected' : base}-${level}`;
+        const key = `${face ? 'face' : 'base'}-${level}`;
         const cmds = byKey.get(key);
         const next = cmds ?? [];
         // [이동, 선, 선, 닫기] — 문자열 경로보다 좌표 변환 비용이 없다
@@ -289,14 +327,24 @@ export default function Body3DView({
         if (!cmds) byKey.set(key, next);
       });
       byKey.forEach((cmds, key) => {
-        const [group, lv] = key.split('-') as [Group, string];
+        const [kind, lv] = key.split('-');
         const path = Skia.Path.MakeFromCmds(cmds);
         if (!path) return;
-        out.push({ key: `${part}-${key}`, path, color: PALETTE[group][Number(lv)] });
+        out.push({ key: `${part}-${key}`, path, part, face: kind === 'face', level: Number(lv) });
       });
     });
     return out;
-  }, [mesh, bounds, camera, rot, highlightSet, contextSet, faceSet, faceHighlight]);
+  }, [mesh, bounds, camera, rot, faceSet, faceHighlight]);
+
+  const colorOf = useCallback(
+    (b: Bucket) => {
+      if (b.face) return PALETTE.selected[b.level];
+      const custom = partColors?.[b.part];
+      if (custom) return shadesOf(custom)[b.level];
+      return PALETTE[highlightSet.has(b.part) ? 'selected' : contextSet.has(b.part) ? 'context' : 'base'][b.level];
+    },
+    [partColors, highlightSet, contextSet],
+  );
 
   // 선택 지점을 화면 좌표로 옮겨 마커를 찍는다 (뒤로 돌아가면 숨긴다)
   const marker = useMemo(() => {
@@ -314,11 +362,11 @@ export default function Body3DView({
 
   return (
     <View style={styles.root}>
-      <View style={styles.canvasWrap} onLayout={onLayout} {...pan.panHandlers}>
+      <View style={styles.canvasWrap} onLayout={onLayout} {...(rotatable ? pan.panHandlers : null)}>
         {camera && (
           <Canvas style={StyleSheet.absoluteFill}>
             {buckets.map((b) => (
-              <Path key={b.key} path={b.path} color={b.color} />
+              <Path key={b.key} path={b.path} color={colorOf(b)} />
             ))}
           </Canvas>
         )}

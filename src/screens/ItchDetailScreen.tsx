@@ -52,7 +52,7 @@ export default function ItchDetailScreen({
           data={series.map((s) => ({ date: s.date, value: s.itch }))}
           maxValue={10}
           color={AppColors.greenTop}
-          emptyText="아직 검사 기록이 없어요."
+          emptyText="아직 기록이 없어요."
         />
       </View>
 

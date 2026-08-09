@@ -2,46 +2,32 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  monitoringColors as mc, monitoringCard, sleepBand, itchBand, skinConditionInfo, symptomBand, DISPLAY_SCALE,
+  monitoringColors as mc, monitoringCard, DISPLAY_SCALE,
   SKIN_SEGMENTS, ITCH_SEGMENTS, SLEEP_SEGMENTS, SYMPTOM_SEGMENTS_BASE, SYMPTOMS, CHART_SERIES,
 } from '../theme';
 import { useFolder, dayCount } from '../store';
 import LesionThumb from '../components/LesionThumb';
-import ScaleBar, { ScaleAxis } from '../components/ScaleBar';
 import PhotoZoomModal from '../components/PhotoZoomModal';
+import { MetricCard, MetricRow, EmptyMetricCard } from '../../components/MetricCard';
+import UsedProductsCard from '../../components/UsedProductsCard';
+import { useProfile } from '../../context/ProfileContext';
+import { plainSiteLabel } from '../../models';
 
 const PAGE_PAD = 16;
 const PHOTO_GAP = 10;
 const PHOTO_SIZE = 96; // 휴대폰 화면 기준 작은 크기 — 두 장이 카드 하나 안에 나란히 들어간다
+
+const SYMPTOM_ORDER = ['redness', 'bumps', 'scratch', 'thickening'];
 
 function shortDate(dateKey) {
   const [y, m, d] = dateKey.split('-');
   return `${y}.${parseInt(m)}.${parseInt(d)}`;
 }
 
-/**
- * 세부 증상 하나 — 라벨/힌트 옆에 값(x.x/100)과 다른 지표와 같은 공용 4단계 이름을 보여주고,
- * 그 아래는 막대만(minimal) 그린다 — 눈금/숫자/라벨은 위의 ScaleAxis가 한 번만 보여준다.
- */
-function SymptomRow({ symptomKey, rawValue }) {
-  const meta = SYMPTOMS[symptomKey];
-  const value = DISPLAY_SCALE.symptom(rawValue);
-  const band = symptomBand(value);
-  return (
-    <View style={styles.symptomRow}>
-      <View style={styles.symptomHeadRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.symptomLabel}>{meta.label}</Text>
-          <Text style={styles.symptomHint}>{meta.hint}</Text>
-        </View>
-        <View style={{ alignItems: 'flex-end' }}>
-          <Text style={styles.symptomValue}>{value.toFixed(1)}<Text style={styles.symptomValueUnit}>/100</Text></Text>
-          <Text style={[styles.symptomBandText, { color: band.color }]}>{band.ko}</Text>
-        </View>
-      </View>
-      <ScaleBar value={value} segments={SYMPTOM_SEGMENTS_BASE} minimal />
-    </View>
-  );
+/** 기록의 날짜 키("2026-08-05")를 Date로 — "사용한 제품"이 그날의 제품 목록을 찾는 데 쓴다 */
+function toDate(dateKey) {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return new Date(y, m - 1, d);
 }
 
 /** 값이 오른 건 빨강, 내린 건 파랑으로만 표시한다 — 지표별로 오르는 게 좋은지 나쁜지는 따지지 않는다 */
@@ -103,6 +89,13 @@ function BaselineDatePickerSheet({ visible, records, selectedId, onSelect, onClo
   );
 }
 
+/**
+ * 경과 관찰 상세 결과 — 하루치 기록 하나를 자세히 본다.
+ *
+ * 지표 카드(피부 종합 상태 · 증상 4종 · 가려움 · 수면 점수)는 피부 촬영 분석 결과 화면과 **같은**
+ * 컴포넌트(MetricCard)를 쓴다. 같은 값을 두 화면에서 다른 모양으로 보여주면 어느 쪽이 맞는지
+ * 헷갈리기 때문이다.
+ */
 export default function MonitoringDetailScreen({ navigation, route }) {
   const { folderId, recordId } = route.params || {};
   const folder = useFolder(folderId);
@@ -113,6 +106,8 @@ export default function MonitoringDetailScreen({ navigation, route }) {
   // 위에서 선언해야 훅 호출 순서가 렌더마다 항상 같다.
   const [baselineId, setBaselineId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // 수면 점수는 스마트워치(Samsung Health) 연동으로 들어오는 값이라, 미연동이면 "미기재"로 둔다
+  const { healthConnected } = useProfile();
 
   if (!folder) {
     return <SafeAreaView style={styles.container}><Text style={{ padding: 20, color: mc.sub }}>폴더를 찾을 수 없습니다.</Text></SafeAreaView>;
@@ -130,9 +125,6 @@ export default function MonitoringDetailScreen({ navigation, route }) {
 
   const skinValue = DISPLAY_SCALE.iga(record.iga); // 그래프·요약 박스와 같은 0~100 표시값
   const itchValue = DISPLAY_SCALE.itch(record.itchVas);
-  const sleep = sleepBand(record.sleepScore);
-  const itch = itchBand(itchValue);
-  const skin = skinConditionInfo(skinValue);
 
   const openZoom = (page) => { setZoomPage(page); setZoomRecord(record); };
 
@@ -142,8 +134,8 @@ export default function MonitoringDetailScreen({ navigation, route }) {
         <TouchableOpacity onPress={() => navigation.goBack()} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Text style={{ fontSize: 20, color: mc.ink }}>‹</Text>
           <View>
-            <Text style={styles.topBarTitle}>{shortDate(record.date)}</Text>
-            <Text style={styles.topBarSub} numberOfLines={1}>{folder.name}</Text>
+            <Text style={styles.topBarTitle}>{shortDate(record.date)} 상세 결과</Text>
+            <Text style={styles.topBarSub} numberOfLines={1}>{plainSiteLabel(folder.name)}</Text>
           </View>
         </TouchableOpacity>
         <View style={styles.dayBadge}>
@@ -153,8 +145,8 @@ export default function MonitoringDetailScreen({ navigation, route }) {
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: PAGE_PAD, gap: 12, paddingBottom: 24 }}>
 
-        {/* 촬영 사진 — 원본과 병변 마스크 오버레이를 작은 박스 하나 안에 나란히 보여준다. 탭하면
-            그 이미지가 바로 보이는 페이지로 크게 열린다(원본 탭 → 사진 페이지, 오버레이 탭 → overlay 페이지). */}
+        {/* 촬영 사진 — 원본과 증상 부위 표시를 작은 박스 하나 안에 나란히 보여준다. 탭하면
+            그 이미지가 바로 보이는 페이지로 크게 열린다. */}
         <View style={[monitoringCard(), styles.photoCard]}>
           <View style={styles.photoRow}>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(0)}>
@@ -163,50 +155,40 @@ export default function MonitoringDetailScreen({ navigation, route }) {
             </TouchableOpacity>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(1)}>
               <LesionThumb photo={record.photo} areaPct={record.lesionAreaPct} seed={record.seed} mode="overlay" size={PHOTO_SIZE} />
-              <Text style={styles.photoCaption}>마스크 오버레이 이미지</Text>
+              <Text style={styles.photoCaption}>증상 부위 표시</Text>
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* 1) 피부 종합 상태 — 전체 점수 스케일 바 1개 + 세부 증상 4개. 세부 증상은 눈금/기준선이
-            똑같이 반복되면 공간만 차지하므로, ScaleAxis(눈금+기준선)를 맨 위에 한 번만 두고
-            그 아래 4개는 막대만(minimal) 그린다. */}
-        <View style={[monitoringCard(), styles.card]}>
-          <Text style={styles.cardLabel}>피부 종합 상태</Text>
-          <View style={styles.metricHeadRow}>
-            <Text style={styles.metricBig}>{skinValue.toFixed(1)}<Text style={styles.metricUnit}>/100</Text></Text>
-            <Text style={[styles.metricSub, { color: skin.color }]}>{skin.ko}</Text>
-          </View>
-          <ScaleBar value={skinValue} segments={SKIN_SEGMENTS} />
+        {/* 1) 피부 종합 상태 */}
+        <MetricCard label="피부 종합 상태" value={skinValue} segments={SKIN_SEGMENTS} />
 
-          <View style={styles.symptomDivider} />
-          <Text style={styles.symptomSectionLabel}>세부 증상</Text>
-          <ScaleAxis segments={SYMPTOM_SEGMENTS_BASE} />
-          <SymptomRow symptomKey="redness" rawValue={record.redness} />
-          <SymptomRow symptomKey="bumps" rawValue={record.bumps} />
-          <SymptomRow symptomKey="scratch" rawValue={record.scratch} />
-          <SymptomRow symptomKey="thickening" rawValue={record.thickening} />
+        {/* 2) 4가지 증상 */}
+        <View style={[monitoringCard(), styles.card]}>
+          <Text style={styles.cardLabel}>4가지 증상</Text>
+          {SYMPTOM_ORDER.map((key, i) => (
+            <MetricRow
+              key={key}
+              label={SYMPTOMS[key].label}
+              value={DISPLAY_SCALE.symptom(record[key])}
+              segments={SYMPTOM_SEGMENTS_BASE}
+              first={i === 0}
+            />
+          ))}
         </View>
 
-        {/* 2) 가려움 문진 (VAS 0~10 × 10 = 0~100 표시값) */}
-        <View style={[monitoringCard(), styles.card]}>
-          <Text style={styles.cardLabel}>가려움 (VAS)</Text>
-          <View style={styles.metricHeadRow}>
-            <Text style={styles.metricBig}>{itchValue}<Text style={styles.metricUnit}>/100</Text></Text>
-            <Text style={[styles.metricSub, { color: itch.color }]}>{itch.ko}</Text>
-          </View>
-          <ScaleBar value={itchValue} segments={ITCH_SEGMENTS} />
-        </View>
+        {/* 3) 가려움 문진 (VAS 0~10 × 10 = 0~100 표시값) */}
+        <MetricCard label="가려움" value={itchValue} segments={ITCH_SEGMENTS} />
 
-        {/* 3) 수면 점수 (삼성헬스) */}
-        <View style={[monitoringCard(), styles.card]}>
-          <Text style={styles.cardLabel}>수면 점수</Text>
-          <View style={styles.metricHeadRow}>
-            <Text style={styles.metricBig}>{record.sleepScore}<Text style={styles.metricUnit}>/100</Text></Text>
-            <Text style={[styles.metricSub, { color: sleep.color }]}>{sleep.ko}</Text>
-          </View>
-          <ScaleBar value={record.sleepScore} segments={SLEEP_SEGMENTS} />
-        </View>
+        {/* 4) 수면 점수 (삼성헬스) — 스마트워치를 연동하지 않았으면 점수 대신 "미기재" */}
+        {healthConnected ? (
+          <MetricCard label="수면 점수" value={record.sleepScore} segments={SLEEP_SEGMENTS} />
+        ) : (
+          <EmptyMetricCard label="수면 점수" text="미기재" />
+        )}
+
+        {/* 5) 사용한 제품 — 루틴 탭의 <사용 제품>과 연동 */}
+        <UsedProductsCard date={toDate(record.date)} />
 
         {/* 경과 비교 — 도착점은 지금 보고 있는 이 기록으로 고정, 시작점(기준 날짜)은 아래 버튼을
             눌러 뜨는 목록에서 골라 바꿀 수 있다. */}
@@ -227,8 +209,9 @@ export default function MonitoringDetailScreen({ navigation, route }) {
               </Text>
               <CompareRow label="피부 종합" first={DISPLAY_SCALE.iga(baseline.iga)} latest={DISPLAY_SCALE.iga(record.iga)} unit="/100" color={CHART_SERIES.skin.color} />
               <CompareRow label="가려움" first={DISPLAY_SCALE.itch(baseline.itchVas)} latest={DISPLAY_SCALE.itch(record.itchVas)} unit="/100" color={CHART_SERIES.itch.color} />
-              <CompareRow label="수면" first={baseline.sleepScore} latest={record.sleepScore} unit="점" color={CHART_SERIES.sleep.color} />
-              <CompareRow label="병변 면적" first={baseline.lesionAreaPct} latest={record.lesionAreaPct} unit="%" color={mc.warn} />
+              {healthConnected && (
+                <CompareRow label="수면" first={baseline.sleepScore} latest={record.sleepScore} unit="점" color={CHART_SERIES.sleep.color} />
+              )}
             </>
           ) : (
             <Text style={styles.metricFoot}>비교할 다른 기록이 아직 없습니다.</Text>
@@ -266,22 +249,8 @@ const styles = StyleSheet.create({
   photoCaption: { fontSize: 10.5, color: mc.sub, marginTop: 6, textAlign: 'center' },
 
   card: { padding: 16 },
-  cardLabel: { fontSize: 17, fontWeight: '800', color: mc.ink, marginBottom: 12 },
-  metricHeadRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
-  metricBig: { fontSize: 28, fontWeight: '800', color: mc.ink },
-  metricUnit: { fontSize: 15, fontWeight: '600', color: mc.sub },
-  metricSub: { fontSize: 12, fontWeight: '800', marginBottom: 4, textAlign: 'right', flexShrink: 1, marginLeft: 8 },
+  cardLabel: { fontSize: 16, fontWeight: '800', color: mc.ink, marginBottom: 12 },
   metricFoot: { fontSize: 11, color: mc.sub, marginTop: 10, lineHeight: 16 },
-
-  symptomDivider: { height: 1, backgroundColor: mc.line, marginTop: 16, marginBottom: 12 },
-  symptomSectionLabel: { fontSize: 12.5, color: mc.ink, fontWeight: '700', marginBottom: 10 },
-  symptomRow: { marginTop: 12 },
-  symptomHeadRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6 },
-  symptomLabel: { fontSize: 12.5, fontWeight: '700', color: mc.ink },
-  symptomHint: { fontSize: 10, color: mc.sub, marginTop: 1 },
-  symptomValue: { fontSize: 14, fontWeight: '800', color: mc.ink },
-  symptomValueUnit: { fontSize: 10, fontWeight: '600', color: mc.sub },
-  symptomBandText: { fontSize: 10.5, fontWeight: '800', marginTop: 1 },
 
   compareSubLabel: { fontSize: 12, color: mc.sub, fontWeight: '700', marginBottom: 8 },
   baselineSelectRow: {

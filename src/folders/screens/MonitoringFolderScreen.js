@@ -1,23 +1,34 @@
 import React, { useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { monitoringColors as mc, monitoringCard, sleepBand, itchBand, skinConditionInfo, DISPLAY_SCALE } from '../theme';
-import { useFolder, dayCount, addRecord } from '../store';
-import { useMonitoring } from '../../context/MonitoringContext';
-import MonitorCaptureScreen from '../../screens/MonitorCaptureScreen';
+import {
+  monitoringColors as mc, monitoringCard, sleepBand, itchBand, skinConditionInfo, DISPLAY_SCALE,
+  SKIN_SEGMENTS, ITCH_SEGMENTS, SLEEP_SEGMENTS, SYMPTOM_SEGMENTS_BASE, SYMPTOMS,
+} from '../theme';
+import { useFolder, dayCount } from '../store';
+import { useProfile } from '../../context/ProfileContext';
+import { plainSiteLabel } from '../../models';
+import { MetricCard, MetricRow, EmptyMetricCard } from '../../components/MetricCard';
+import UsedProductsCard from '../../components/UsedProductsCard';
 import TrendChart, {
   TrendChartLegend, TrendChartYAxis, chartContentWidth, POINT_W, Y_AXIS_W,
 } from '../components/TrendChart';
 import LesionThumb from '../components/LesionThumb';
 import PhotoZoomModal from '../components/PhotoZoomModal';
 
-// 이 화면은 위아래로 스크롤하지 않는다 — 요약 박스·사진 카드·기록 버튼은 내용에 맞는 고정
-// 높이를 쓰고, 그래프 카드만 flex:1로 "남는 공간을 전부" 차지한다. 그래프 SVG는 픽셀 높이가
-// 필요해서(y축 눈금 위치 계산) flex만으로는 안 되고, 실제로 얼마나 남았는지 onLayout으로 재서
-// 그 값을 그대로 그래프 높이로 쓴다 — 미리 정해둔 두 숫자를 더하는 방식(예전 방식)이 아니라
-// "차지한 만큼 그대로" 재는 것이라 다른 요소 크기가 바뀌어도 항상 정확하다.
-const GRAPH_H_DEFAULT = 190; // 첫 렌더(아직 실측 전) 임시값
+// 상세 결과와 사용한 제품이 아래에 붙으면서 한 화면에 다 들어가지 않게 되어, 페이지 전체를
+// 세로로 스크롤한다. 그래프 SVG는 픽셀 높이가 필요해서(y축 눈금 위치 계산) flex로 늘릴 수 없고,
+// 스크롤 안에서는 "남는 공간"이라는 것도 없으므로 그래프 카드에 고정 높이를 준다.
+const GRAPH_ROW_H = 250; // 날짜 칸 줄 + 그래프가 함께 차지하는 높이
+const GRAPH_H_DEFAULT = GRAPH_ROW_H - 60;
 const PHOTO_SIZE = 110;
+const SYMPTOM_ORDER = ['redness', 'bumps', 'scratch', 'thickening'];
+
+/** 기록의 날짜 키("2026-08-05")를 Date로 — "사용한 제품"이 그날의 제품 목록을 찾는 데 쓴다 */
+function toDate(dateKey) {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
 
 // 날짜 칸의 폭 — 그래프 포인트 폭(POINT_W)과 똑같이 맞춰서 같은 가로 스크롤 안에서 날짜 칸과
 // 그래프 데이터가 항상 같은 x 위치에 정렬된다. 높이는 이 칸이 그래프 위에 얹히는 고정 줄 높이.
@@ -75,9 +86,10 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   const folder = useFolder(folderId);
   const [zoomRecord, setZoomRecord] = useState(null);
   const [zoomPage, setZoomPage] = useState(0);
-  // true면 이 화면 대신 가이드 촬영 화면(MonitorCaptureScreen)을 전체 화면으로 띄운다
-  const [capturing, setCapturing] = useState(false);
-  const { findTarget } = useMonitoring();
+  // "피부 상태 상세 결과"를 펼쳐 뒀는지 — 기본은 접힘. 그래프까지만 보러 들어오는 경우가
+  // 많아서, 지표 카드 네 장을 처음부터 펼쳐 두면 사진·그래프가 화면 밖으로 밀려난다.
+  const [detailOpen, setDetailOpen] = useState(false);
+  const { healthConnected } = useProfile();
   // 날짜 칸 줄과 그래프가 같은 가로 스크롤 하나를 공유한다(아래 참고) — 처음 열렸을 때(또는 새로
   // 촬영해 기록이 늘었을 때) 오른쪽 끝(오늘)으로 자동 스크롤하기 위한 참조.
   const scrollRef = useRef(null);
@@ -109,7 +121,8 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   const selectedRecord = records.find((r) => r.id === selectedId) || records[records.length - 1];
   const skinDisplay = DISPLAY_SCALE.iga(selectedRecord.iga);
   const itchDisplay = DISPLAY_SCALE.itch(selectedRecord.itchVas);
-  const sleep = sleepBand(selectedRecord.sleepScore);
+  // 수면 점수는 스마트워치(Samsung Health) 연동 값이라, 미연동이면 "미기재"로 비워 둔다
+  const sleep = healthConnected ? sleepBand(selectedRecord.sleepScore) : null;
   const itch = itchBand(itchDisplay);
   const skin = skinConditionInfo(skinDisplay); // 그래프와 같은 0~100 표시값 기준
 
@@ -124,53 +137,31 @@ export default function MonitoringFolderScreen({ navigation, route }) {
 
   const openZoom = (page) => { setZoomPage(page); setZoomRecord(selectedRecord); };
 
-  /**
-   * "오늘의 피부 상태 기록"은 신규 등록 때와 똑같은 가이드 촬영을 쓴다 — 같은 자리를 계속
-   * 비교하려면 매번 같은 구도·같은 색 기준으로 찍혀야 하므로, 일반 카메라가 아니라 기준 사진에
-   * 맞춰 자동 셔터·정합·색보정까지 하는 MonitorCaptureScreen을 그대로 띄운다.
-   * 그 화면은 대상(MonitorTarget)을 요구하므로 폴더에 적힌 targetId로 찾아 넘긴다.
-   */
-  const target = folder.targetId ? findTarget(folder.targetId) : undefined;
-
-  if (capturing && target) {
-    return (
-      <MonitorCaptureScreen
-        target={target}
-        onCancel={() => setCapturing(false)}
-        onComplete={(processedUri) => {
-          // 후처리까지 끝난 사진을 오늘 기록으로 폴더에 넣는다 (기준 사진 갱신은 MonitorCaptureScreen이 한다)
-          const record = addRecord(folderId, { uri: processedUri });
-          setCapturing(false);
-          if (record) {
-            setSelectedId(record.id);
-            scrollRef.current?.scrollToEnd({ animated: true });
-          }
-        }}
-      />
-    );
-  }
-
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
           <Text style={{ fontSize: 20, color: mc.ink }}>‹</Text>
-          <Text style={styles.topBarTitle} numberOfLines={1}>{folder.name}</Text>
+          <Text style={styles.topBarTitle} numberOfLines={1}>{plainSiteLabel(folder.name)}</Text>
         </TouchableOpacity>
         <View style={styles.dayBadge}>
           <Text style={styles.dayBadgeText}>D+{dayCount(folder)}</Text>
         </View>
       </View>
 
-      {/* 화면 자체는 위아래로 스크롤하지 않는다 — 요약 박스·사진 카드·기록 버튼은 고정 높이,
-          그래프 카드(flex:1)만 남는 공간을 전부 차지한다. */}
-      <View style={styles.body}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.body}>
         {/* 그래프에서 선택된 날짜의 값을 보여주는 요약 박스 3개 — 그래프 포인트를 탭하면 함께 바뀐다.
             세 지표 모두 DISPLAY_SCALE로 0~100 표시값으로 맞춰서 같은 축·같은 기준으로 비교할 수 있다. */}
         <View style={styles.summaryRow}>
           <SummaryBox label="피부 종합 상태" value={skinDisplay.toFixed(1)} unit="/100" pillText={skin.ko} pillColor={skin.color} />
           <SummaryBox label="가려움" value={itchDisplay} unit="/100" pillText={itch.ko} pillColor={itch.color} />
-          <SummaryBox label="수면 점수" value={selectedRecord.sleepScore} unit="/100" pillText={sleep.ko} pillColor={sleep.color} />
+          <SummaryBox
+            label="수면 점수"
+            value={sleep ? selectedRecord.sleepScore : '-'}
+            unit={sleep ? '/100' : ''}
+            pillText={sleep ? sleep.ko : '미기재'}
+            pillColor={sleep ? sleep.color : mc.navInactive}
+          />
         </View>
 
         {/* 날짜 + 변화 추이 그래프를 한 카드에 합쳤다. 맨 위에 촬영 기간 전체(첫 기록 ~ 마지막
@@ -179,7 +170,7 @@ export default function MonitoringFolderScreen({ navigation, route }) {
             선택된 날짜의 폭 전체가 초록 띠(그래프)·초록 배지(날짜 칸)로 함께 강조되고, 위 요약
             박스 값도 갱신된다. 그래프 포인트를 두 번(더블탭) 탭하면 바로 그 기록의 상세 결과로
             넘어간다. "변화 추이" 제목·촬영 횟수·범례는 그래프 아래에 둔다. */}
-        <View style={[monitoringCard(), styles.card, { flex: 1 }]}>
+        <View style={[monitoringCard(), styles.card]}>
           <View style={styles.dateStripHeader}>
             <Text style={{ fontSize: 15 }}>📅</Text>
             <Text style={styles.dateStripRange}>
@@ -230,15 +221,11 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           <TrendChartLegend />
         </View>
 
-        {/* 선택된 날짜의 촬영 이미지 — 제목 줄 오른쪽에 그 날짜의 병변 면적(%)을 적고(사진 크기에
-            영향 없이), 그 아래 원본과 병변 마스크 오버레이를 나란히 보여준다. 사진을 탭하면 크게
-            확대해서 볼 수 있다(원본 탭 → 사진 페이지, 오버레이 탭 → overlay 페이지). */}
+        {/* 선택된 날짜의 촬영 이미지 — 원본과 병변 마스크 오버레이를 나란히 보여준다. 사진을 탭하면
+            크게 확대해서 볼 수 있다(원본 탭 → 사진 페이지, 오버레이 탭 → overlay 페이지). */}
         <View style={[monitoringCard(), styles.photoCard]}>
           <View style={styles.photoCardHeader}>
             <Text style={styles.photoCardTitle}>{fmtFull(selectedRecord.date)} 촬영</Text>
-            <Text style={styles.photoCardLesion}>
-              병변 면적 <Text style={styles.photoCardLesionValue}>{selectedRecord.lesionAreaPct.toFixed(1)}%</Text>
-            </Text>
           </View>
           <View style={styles.photoRow}>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(0)}>
@@ -252,17 +239,49 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           </View>
         </View>
 
+        {/* 선택된 날짜의 지표 네 가지 — 접었다 펼 수 있다. 카드가 길어서 기본은 접어 둔다. */}
         <TouchableOpacity
-          style={[styles.recordBtn, !target && styles.recordBtnDisabled]}
+          style={[monitoringCard(), styles.detailToggle]}
           activeOpacity={0.85}
-          onPress={() => setCapturing(true)}
-          disabled={!target}
+          onPress={() => setDetailOpen((v) => !v)}
         >
-          <Text style={[styles.recordBtnText, !target && styles.recordBtnTextDisabled]}>
-            {target ? '📷 오늘의 피부 상태 기록' : '등록된 촬영 자리가 없어요'}
-          </Text>
+          <Text style={styles.detailToggleTitle}>피부 상태 상세 결과</Text>
+          <Text style={styles.detailToggleDate}>{fmtFull(selectedRecord.date)}</Text>
+          <Text style={styles.detailToggleChevron}>{detailOpen ? '⌃' : '⌄'}</Text>
         </TouchableOpacity>
-      </View>
+
+        {detailOpen && (
+          <>
+            {/* 상세 결과 화면과 같은 카드(MetricCard)를 쓴다 — 같은 값을 두 화면에서 다른 모양으로
+                보여주면 어느 쪽이 맞는지 헷갈린다. */}
+            <MetricCard label="피부 종합 상태" value={skinDisplay} segments={SKIN_SEGMENTS} />
+
+            <View style={[monitoringCard(), styles.metricCard]}>
+              <Text style={styles.metricCardLabel}>4가지 증상</Text>
+              {SYMPTOM_ORDER.map((key, i) => (
+                <MetricRow
+                  key={key}
+                  label={SYMPTOMS[key].label}
+                  value={DISPLAY_SCALE.symptom(selectedRecord[key])}
+                  segments={SYMPTOM_SEGMENTS_BASE}
+                  first={i === 0}
+                />
+              ))}
+            </View>
+
+            <MetricCard label="가려움" value={itchDisplay} segments={ITCH_SEGMENTS} />
+
+            {healthConnected ? (
+              <MetricCard label="수면 점수" value={selectedRecord.sleepScore} segments={SLEEP_SEGMENTS} />
+            ) : (
+              <EmptyMetricCard label="수면 점수" text="미기재" />
+            )}
+
+            {/* 그날 쓴 제품 — 루틴 탭의 <사용 제품>과 연동 */}
+            <UsedProductsCard date={toDate(selectedRecord.date)} />
+          </>
+        )}
+      </ScrollView>
 
       <PhotoZoomModal visible={!!zoomRecord} record={zoomRecord} initialPage={zoomPage} onClose={() => setZoomRecord(null)} />
     </SafeAreaView>
@@ -279,7 +298,7 @@ const styles = StyleSheet.create({
   topBarTitle: { fontSize: 15, fontWeight: '700', color: mc.ink, flexShrink: 1 },
   dayBadge: { backgroundColor: mc.greenBody, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   dayBadgeText: { fontSize: 12, color: mc.greenDeep, fontWeight: '800' },
-  body: { flex: 1, padding: 12, gap: 12 },
+  body: { padding: 12, gap: 12, paddingBottom: 24 },
   summaryRow: { flexDirection: 'row', gap: 8 },
   summaryBox: {
     flex: 1, paddingVertical: 12, paddingHorizontal: 8,
@@ -306,24 +325,21 @@ const styles = StyleSheet.create({
   cardHeadRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 6, marginTop: 14 },
   cardTitle: { fontSize: 14, fontWeight: '800', color: mc.ink },
   cardSub: { fontSize: 11, color: mc.sub, fontWeight: '600' },
-  graphRow: { flex: 1, flexDirection: 'row', marginTop: 10 },
+  graphRow: { height: GRAPH_ROW_H, flexDirection: 'row', marginTop: 10 },
   axisCol: { width: Y_AXIS_W },
   graphRegion: { flex: 1 },
 
   photoCard: { padding: 14 },
   photoCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   photoCardTitle: { fontSize: 13, fontWeight: '700', color: mc.sub },
-  photoCardLesion: { fontSize: 12, fontWeight: '600', color: mc.sub },
-  photoCardLesionValue: { fontSize: 13, fontWeight: '800', color: mc.ink },
   photoRow: { flexDirection: 'row', justifyContent: 'center', gap: 14 },
   photoCol: { alignItems: 'center' },
   photoCaption: { fontSize: 10.5, color: mc.sub, marginTop: 6, textAlign: 'center' },
 
-  recordBtn: {
-    height: 50, borderRadius: 12, backgroundColor: mc.greenTop,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  recordBtnText: { fontSize: 15, fontWeight: '800', color: mc.greenDeep },
-  recordBtnDisabled: { backgroundColor: mc.line },
-  recordBtnTextDisabled: { color: mc.sub },
+  detailToggle: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16, gap: 8 },
+  detailToggleTitle: { fontSize: 14, fontWeight: '800', color: mc.ink, flex: 1 },
+  detailToggleDate: { fontSize: 12, color: mc.sub, fontWeight: '600' },
+  detailToggleChevron: { fontSize: 16, color: mc.sub, fontWeight: '800', width: 14, textAlign: 'center' },
+  metricCard: { padding: 16 },
+  metricCardLabel: { fontSize: 16, fontWeight: '800', color: mc.ink, marginBottom: 12 },
 });

@@ -1,17 +1,50 @@
 import { AppColors } from './theme';
 
-/** 루틴 — 실제 앱에서는 서버/로컬 저장소에 저장 */
+/**
+ * 케어 항목 — 루틴 화면의 두 갈래("일상 루틴" / "사용 제품")를 같은 모양으로 다룬다.
+ *
+ * 둘은 사용자가 보기엔 다른 목록이지만 (이름 · 실행 시각 · PUSH 알람 · 오늘 했는지)를 공유해서,
+ * 홈의 "오늘의 피부 케어"는 둘을 시각 순으로 한 줄에 섞어 보여준다. 제품만 "사용 주기"를
+ * 추가로 갖는다 — 매일 쓰는 보습제와 격일로 가는 음압 패치를 한 목록에서 구분해야 하기 때문이다.
+ */
+export type CareKind = 'routine' | 'product';
+
 export interface Routine {
   id: number;
   name: string;
-  time: string; // "HH:mm" — 정렬 기준. 화면에는 freqLabel이 있으면 그것을 대신 표시한다
+  time: string; // "HH:mm" — 목록 정렬 기준
   done: boolean;
-  /** 시각 대신 표시할 문구(예: "매일", "격일"). 빈 문자열이면 아무것도 표시하지 않는다.
-   *  undefined면 기존처럼 time을 표시한다(사용자가 직접 추가한 루틴용). */
-  freqLabel?: string;
+  /** PUSH 알람 수신 여부 */
+  push: boolean;
 }
 
-/** 신체 영역 — 촬영 전 사용자가 표시한 병변 위치를 6개 구역으로 단순화 */
+/** 사용 제품 — 루틴에 "사용 주기(일)"가 붙은 것 */
+export interface CareProduct extends Routine {
+  /** 며칠에 한 번 쓰는지 (1 = 매일, 2 = 격일 …) */
+  cycleDays: number;
+}
+
+/** 화면에 뿌릴 때 쓰는 합본 항목 — 루틴/제품 어느 쪽에서 왔는지 kind로 구분한다 */
+export interface CareItem extends Routine {
+  kind: CareKind;
+  /** 제품일 때만 채워진다 */
+  cycleDays?: number;
+  /** 목록 key 겸 토글 대상 식별자 ("product:3") — id는 종류별로만 유일하기 때문 */
+  key: string;
+  /** 그날 쓰는 항목인지 — 주기가 맞지 않는 제품은 false (루틴은 항상 true) */
+  due: boolean;
+}
+
+export const careItemKey = (kind: CareKind, id: number): string => `${kind}:${id}`;
+
+/** 사용 주기 라벨 — 1일이면 "매일", 2일이면 "격일", 그 외엔 "N일마다" */
+export function cycleLabel(cycleDays: number): string {
+  if (cycleDays <= 1) return '매일';
+  if (cycleDays === 2) return '격일';
+  return `${cycleDays}일마다`;
+}
+
+/** 신체 영역 — 촬영 전 사용자가 표시한 증상 위치를 6개 구역으로 단순화 */
 export type BodyRegion = 'head' | 'leftArm' | 'rightArm' | 'torso' | 'leftLeg' | 'rightLeg';
 
 export const BODY_REGION_LABELS: Record<BodyRegion, string> = {
@@ -25,7 +58,7 @@ export const BODY_REGION_LABELS: Record<BodyRegion, string> = {
 
 export const BODY_REGIONS: BodyRegion[] = ['head', 'leftArm', 'rightArm', 'torso', 'leftLeg', 'rightLeg'];
 
-/** 검사 기록 — 실제로는 카메라 분석 결과가 누적됨 */
+/** 촬영 기록 — 실제로는 카메라 분석 결과가 누적됨 */
 export interface SkinRecord {
   date: Date;
   disease: string;
@@ -39,16 +72,17 @@ export interface SkinRecord {
   confidence?: number;
 }
 
-/** 주변 병원 */
-export interface Hospital {
-  name: string;
-  dist: string;
-  addr: string;
-  open: string;
-  rating: number;
+/**
+ * 목록에 보여줄 부위 이름에서 좌우 구분을 뗀다 (예: "왼쪽 팔오금" → "팔오금").
+ *
+ * 좌우는 촬영할 때(3D에서 자리를 고를 때) 필요하지만, 며칠 뒤 목록에서 "좌측 팔 / 우측 팔"을
+ * 보면 어느 쪽이었는지 기억하지 못한다 — 그래서 화면에 뿌릴 때만 떼고 데이터는 그대로 둔다.
+ */
+export function plainSiteLabel(label: string): string {
+  return label.replace(/^(왼쪽|오른쪽|좌측|우측)\s*/, '');
 }
 
-/** 홈 상단 카드에 표시되는 최근 상태 (질환명 · 병변 중증도) */
+/** 홈 상단 카드에 표시되는 최근 상태 (질환명 · 증상 중증도) */
 export interface SkinStatus {
   disease: string;
   sev: number;
@@ -73,37 +107,34 @@ export const sevOf = (s: number): Severity => kSeverity[s] ?? kSeverity[1];
 
 export const kUserName = '임경택';
 
-/** 격일로 반복되는 음압 패치 루틴의 id — 날짜에 따라 이름/문구가 자동으로 바뀐다 */
-export const PATCH_ROUTINE_ID = 3;
-
+/** 일상 루틴 시드 — 사용자가 직접 추가/삭제할 수 있다 */
 export const initialRoutines = (): Routine[] => [
-  { id: 1, name: '병변 상태 사진 찍기', time: '09:00', done: false, freqLabel: '' },
-  { id: 2, name: '보습제 바르기 (BT 4 Complex)', time: '09:05', done: false, freqLabel: '매일' },
-  { id: PATCH_ROUTINE_ID, name: '음압 패치 붙이기', time: '09:10', done: false, freqLabel: '격일' },
+  { id: 4, name: '피부 상태 사진찍기', time: '09:00', done: false, push: true },
+  { id: 1, name: '손톱 짧게 깎기', time: '12:00', done: false, push: true },
+  { id: 2, name: '물 마시기', time: '14:00', done: false, push: true },
+  { id: 3, name: '미지근한 물로 샤워하기', time: '18:00', done: false, push: false },
 ];
 
-/** 오늘이 음압 패치를 붙이는 날인지 — 날짜 기준으로 자동 격일 판정 */
-export function isPatchDay(date: Date = new Date()): boolean {
-  const dayIndex = Math.floor(
-    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000,
-  );
-  return dayIndex % 2 === 0;
-}
-
-/** 음압 패치 루틴은 격일로 이름이 바뀐다 — 오늘 날짜를 기준으로 표시용 이름을 계산해 덮어씌운다 */
-export function withPatchDayDisplay(routines: Routine[], date: Date = new Date()): Routine[] {
-  if (isPatchDay(date)) return routines;
-  return routines.map((r) =>
-    r.id === PATCH_ROUTINE_ID ? { ...r, name: '음압 패치 휴식일 (내일 다시 케어해요!)' } : r,
-  );
-}
-
-export const seedHospitals: Hospital[] = [
-  { name: '맑은피부과의원', dist: '320m', rating: 4.8, addr: '수원시 영통구 매탄로 12', open: '진료 중' },
-  { name: '연세서울피부과', dist: '540m', rating: 4.6, addr: '수원시 영통구 영통로 88', open: '진료 중' },
-  { name: '굿모닝피부과의원', dist: '1.1km', rating: 4.5, addr: '수원시 팔달구 인계로 30', open: '19:00 마감' },
-  { name: '하늘피부과', dist: '1.4km', rating: 4.3, addr: '수원시 영통구 광교로 5', open: '진료 마감' },
+/** 사용 제품 시드 — 상세 결과의 "사용한 제품"도 이 목록에서 나온다 */
+export const initialProducts = (): CareProduct[] => [
+  { id: 1, name: 'BT4 Complex', time: '12:00', done: false, push: true, cycleDays: 1 },
+  { id: 2, name: '음압 패치', time: '14:00', done: false, push: true, cycleDays: 2 },
+  { id: 3, name: '보습제', time: '18:00', done: false, push: false, cycleDays: 1 },
 ];
+
+/** 1970-01-01부터 며칠째인지 — 사용 주기 판정의 기준축 */
+function epochDay(date: Date): number {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000);
+}
+
+/**
+ * 그 날짜가 이 제품을 쓰는 날인지 — 주기(cycleDays)로 자동 판정한다.
+ * 달력상의 절대 날짜를 기준으로 나눠서, 어제/내일을 넘겨봐도 판정이 흔들리지 않는다.
+ */
+export function isCycleDay(cycleDays: number, date: Date = new Date()): boolean {
+  if (cycleDays <= 1) return true;
+  return epochDay(date) % cycleDays === 0;
+}
 
 export const recordKey = (d: Date): string => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 

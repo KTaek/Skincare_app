@@ -6,20 +6,19 @@ import { DISPLAY_SCALE } from '../folders/theme';
 export type SymptomRecordKey = 'redness' | 'bumps' | 'scratch' | 'thickening';
 
 /**
- * 결과 화면의 "세부 지표" 4종.
+ * 결과 화면의 "4가지 증상".
  *
- * 제목은 슬라이드 지시대로 의학 용어(홍반/구진/찰상/태선화)를 쓰고, 모니터링 상세 화면이 쓰던
- * 일상어를 힌트로 남겨 둘이 같은 지표임을 알 수 있게 한다. recordKey는 같은 값을 모니터링 폴더
- * 기록으로 옮길 때 쓰는 필드 이름이다.
+ * 의학 용어(홍반/구진/찰상/태선화)는 쓰지 않는다 — 환자가 자기 피부를 보고 바로 맞춰볼 수 있는
+ * 일상어만 남긴다. recordKey는 같은 값을 경과 관찰 폴더 기록으로 옮길 때 쓰는 필드 이름이다.
  */
-export const SIGN_DISPLAY: Record<SignKey, { label: string; hint: string; recordKey: SymptomRecordKey }> = {
-  erythema: { label: '홍반', hint: '피부 붉기', recordKey: 'redness' },
-  papulation: { label: '구진', hint: '오돌토돌함', recordKey: 'bumps' },
-  excoriation: { label: '찰상', hint: '긁은 상처', recordKey: 'scratch' },
-  lichenification: { label: '태선화', hint: '피부 두꺼워짐', recordKey: 'thickening' },
+export const SIGN_DISPLAY: Record<SignKey, { label: string; recordKey: SymptomRecordKey }> = {
+  erythema: { label: '피부 붉기', recordKey: 'redness' },
+  papulation: { label: '오돌토돌함', recordKey: 'bumps' },
+  excoriation: { label: '긁은 상처', recordKey: 'scratch' },
+  lichenification: { label: '피부 두꺼워짐', recordKey: 'thickening' },
 };
 
-/** 화면에 그리는 순서 — 슬라이드의 "홍반/구진/찰상/태선화" 순서 그대로 */
+/** 화면에 그리는 순서 */
 export const SIGN_ORDER: SignKey[] = ['erythema', 'papulation', 'excoriation', 'lichenification'];
 
 /**
@@ -41,12 +40,12 @@ export function itchDisplayValue(vas: number): number {
   return DISPLAY_SCALE.itch(vas);
 }
 
-/** 병변 bbox가 사진에서 차지하는 면적 비율(%) — 모니터링 기록의 lesionAreaPct 자리에 들어간다 */
+/**
+ * 증상 부위가 사진에서 차지하는 면적 비율(%) — 경과 관찰 기록의 lesionAreaPct 자리에 들어간다.
+ * 분할 마스크의 실제 픽셀 넓이를 쓴다 (bbox 넓이는 길게 번진 증상을 크게 부풀린다).
+ */
 export function lesionAreaPct(result: LocalAnalysisResult): number {
-  const { bbox } = result;
-  const total = bbox.imageWidth * bbox.imageHeight;
-  if (!total) return 0;
-  return Math.round(((bbox.width * bbox.height) / total) * 1000) / 10;
+  return result.maskAreaPct;
 }
 
 /**

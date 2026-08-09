@@ -1,12 +1,12 @@
 import { loadTensorflowModel, type TensorflowModel } from 'react-native-fast-tflite';
-import { extractNormalizedRGB, loadSkImage } from './skiaPixels';
+import { extractNormalizedRGB, withSkImage } from './skiaPixels';
 import meta from '../../assets/models/disease_labels.json';
 
 /**
  * 질환 분류 모델 (EfficientNet-B0, 512px, 6-way).
  *
- * 학습 체크포인트: classification_disease/runs/old/dis_effb0_r512_both/best.pt
- * 변환:           tools/export_disease_tflite.py (PyTorch → ONNX → onnx2tf → TFLite)
+ * 학습 체크포인트: cls_dis_512.pt
+ * 변환:           tools/export_models.py (PyTorch → ONNX → onnx2tf → TFLite)
  * 전처리 규약:    Resize(512,512) → ImageNet 정규화 (학습 시 eval 변환과 동일)
  *
  * 입출력은 float32 다. 입출력까지 float16 인 모델은 TFLite CPU 커널이 CONV_2D 를 준비하지 못해
@@ -30,7 +30,7 @@ let modelPromise: Promise<TensorflowModel> | null = null;
 
 function getModel(): Promise<TensorflowModel> {
   if (!modelPromise) {
-    modelPromise = loadTensorflowModel(require('../../assets/models/disease_model_float32.tflite'), []);
+    modelPromise = loadTensorflowModel(require('../../assets/models/disease_cls_512.tflite'), []);
   }
   return modelPromise;
 }
@@ -49,15 +49,22 @@ const softmax = (logits: Float32Array): number[] => {
   return exps.map((v) => v / sum);
 };
 
-/** 사진 한 장 → 질환 확률 (높은 순). 정상 클래스도 그대로 포함해 돌려준다. */
-export async function classifyDisease(uri: string): Promise<DiseasePrediction[]> {
-  const image = await loadSkImage(uri);
-  const input = extractNormalizedRGB(
-    image,
-    { x: 0, y: 0, width: image.width(), height: image.height() },
-    IMG_SIZE,
-    meta.mean,
-    meta.std,
+/**
+ * 사진 한 장 → 질환 확률 (높은 순). 정상 클래스도 그대로 포함해 돌려준다.
+ *
+ * colorGain은 촬영 후처리가 계산한 조명 보정값이다. 이 모델은 크롭 없이 프레임 전체를 먹으므로
+ * 조명 차이의 영향을 가장 크게 받는다.
+ */
+export async function classifyDisease(uri: string, colorGain?: readonly number[]): Promise<DiseasePrediction[]> {
+  const input = await withSkImage(uri, (image) =>
+    extractNormalizedRGB(
+      image,
+      { x: 0, y: 0, width: image.width(), height: image.height() },
+      IMG_SIZE,
+      meta.mean,
+      meta.std,
+      colorGain,
+    ),
   );
   const model = await getModel();
   // 입출력 모두 float32 — 버퍼를 그대로 주고받는다 (float16 변환 없음)

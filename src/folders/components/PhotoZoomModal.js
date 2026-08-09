@@ -1,6 +1,6 @@
 /**
  * 사진 확대 보기 — 어두운 배경 위에 크게 띄우는 톤을 쓴다.
- * 좌우로 넘기면 "사진" ↔ "병변 마스크 overlay(윤곽만)" 두 페이지를 전환한다.
+ * 좌우로 넘기면 "사진" ↔ "증상 부위 표시(윤곽만)" 두 페이지를 전환한다.
  * 상세 결과 화면에서 원본/오버레이 썸네일을 나란히 두고 각각 탭하면, 탭한 쪽 페이지가 바로
  * 보이도록 initialPage로 열 페이지를 지정할 수 있다(기본은 0=사진).
  *
@@ -18,7 +18,7 @@ import LesionThumb from './LesionThumb';
 
 const PAGES = [
   { mode: 'photo', label: '사진' },
-  { mode: 'overlay', label: '병변 마스크 overlay (윤곽만)' },
+  { mode: 'overlay', label: '증상 부위 표시 (윤곽만)' },
 ];
 
 const PAGE_PADDING = 64; // 사진 좌우/상하 여백 — 이만큼을 뺀 정사각형으로 사진을 보여준다
@@ -89,7 +89,7 @@ export default function PhotoZoomModal({ visible, record, initialPage = 0, onClo
         <View style={styles.caption} pointerEvents="none">
           <Text style={styles.captionText}>{PAGES[page].label}</Text>
           <Text style={styles.captionHint}>
-            {page === 0 ? '오른쪽으로 넘기면 병변 마스크 overlay를 볼 수 있어요' : '화면을 탭하면 닫힙니다'}
+            {page === 0 ? '오른쪽으로 넘기면 증상 부위 표시를 볼 수 있어요' : '화면을 탭하면 닫힙니다'}
           </Text>
         </View>
 

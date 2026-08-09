@@ -68,7 +68,7 @@
     ]
   },
   "img_size_seg": 512,
-  "img_size_cls": 224,
+  "img_size_cls": 384,
   "mask_threshold": 0.5,
   "crop_margin": 0.15,
   "min_crop_ratio": 0.1,
@@ -83,8 +83,15 @@
     0.224,
     0.225
   ],
-  "seg_input": "image: (1,3,H,W) RGB, 0-1 스케일, imagenet mean/std로 정규화 후 float32",
-  "seg_output": "mask_prob: (1,1,H,W) sigmoid 확률 (threshold는 앱에서 mask_threshold로 적용)",
-  "cls_input": "image: (1,3,224,224) - Stage1 mask로 만든 bbox로 원본을 crop_margin만큼 확장해 crop 후 resize, 동일 정규화",
-  "cls_output": "각 sign마다 (1,num_grades) logits. argmax 또는 DEX(softmax 기대값 -> threshold)로 등급 산출."
+  "cls_output_order": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "seg_input": "image: (1,H,W,3) RGB, 0-1 스케일, imagenet mean/std 정규화 후 float32",
+  "seg_output": "mask_prob: (1,H,W,1) sigmoid 확률 (임계값은 앱에서 mask_threshold로 적용)",
+  "cls_input": "image: (1,384,384,3) - 분할 마스크 bbox를 crop_margin만큼 넓혀 crop 후 resize, 동일 정규화",
+  "cls_output": "헤드마다 (1,num_grades) logits. DEX(softmax 기대값 → threshold)로 등급 산출."
 }

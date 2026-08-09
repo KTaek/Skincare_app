@@ -262,6 +262,94 @@ export const findSpot = (spotId: string): BodySpot | undefined =>
   (Object.values(SPOTS_OF_GROUP) as BodySpot[][]).flat().find((s) => s.id === spotId);
 
 /**
+ * 촬영 지점 id로 3D에서 칠할 부위들을 찾는다.
+ * 지금 등록 흐름이 만드는 id는 네 덩어리("coarse:arm" 등)라 아래쪽 COARSE_SPOTS에서,
+ * 예전의 세밀한 지점("leftElbow:fossa" 등)은 SPOTS_OF_GROUP에서 나온다.
+ */
+export function partsOfSpotId(spotId: string): BodyPartId[] | undefined {
+  if (spotId.startsWith('coarse:')) return PARTS_OF_COARSE[spotId.slice(7) as CoarseGroupId];
+  return findSpot(spotId)?.highlight;
+}
+
+/* ------------------------------------------------------------------
+ * 신규 증상 기록의 부위 선택은 이 네 덩어리만 쓴다.
+ *
+ * 위의 세밀한 그룹/지점(상완 앞·팔오금·손등 …)은 3D 메시가 원래 들고 있는 태그이고, 실제로
+ * 사용자가 고르는 단위는 머리 · 몸통 · 팔 · 다리 넷뿐이다. 좌우도 나누지 않는다 — 며칠 뒤
+ * 목록에서 "좌측 팔 / 우측 팔"을 보면 어느 쪽이었는지 기억하지 못하기 때문이다.
+ * ------------------------------------------------------------------ */
+
+export type CoarseGroupId = 'head' | 'torso' | 'arm' | 'leg';
+
+export const COARSE_GROUPS: CoarseGroupId[] = ['head', 'torso', 'arm', 'leg'];
+
+/** 기록에 남는 짧은 이름 */
+export const COARSE_LABELS: Record<CoarseGroupId, string> = {
+  head: '머리',
+  torso: '몸통',
+  arm: '팔',
+  leg: '다리',
+};
+
+/** 선택 화면에서만 덧붙이는 설명 — 어디까지 이 덩어리인지 알려준다 */
+export const COARSE_HINTS: Record<CoarseGroupId, string | undefined> = {
+  head: '얼굴/목',
+  torso: '가슴/복부/등/허리/엉덩이',
+  arm: undefined,
+  leg: undefined,
+};
+
+/** 선택 화면에 그대로 쓰는 표시용 이름 (예: "머리 (얼굴/목)") */
+export function coarseDisplayName(group: CoarseGroupId): string {
+  const hint = COARSE_HINTS[group];
+  return hint ? `${COARSE_LABELS[group]} (${hint})` : COARSE_LABELS[group];
+}
+
+/** 3D 메시의 부위 태그 → 네 덩어리 */
+export const COARSE_OF_PART: Record<BodyPartId, CoarseGroupId> = {
+  head: 'head',
+  neck: 'head',
+  chest: 'torso',
+  abdomen: 'torso',
+  leftUpperArm: 'arm',
+  leftElbow: 'arm',
+  leftForearm: 'arm',
+  leftHand: 'arm',
+  rightUpperArm: 'arm',
+  rightElbow: 'arm',
+  rightForearm: 'arm',
+  rightHand: 'arm',
+  leftThigh: 'leg',
+  leftKnee: 'leg',
+  leftShank: 'leg',
+  leftFoot: 'leg',
+  rightThigh: 'leg',
+  rightKnee: 'leg',
+  rightShank: 'leg',
+  rightFoot: 'leg',
+};
+
+/** 덩어리에 속한 메시 부위들 — 3D에서 통째로 강조할 때 쓴다 */
+export const PARTS_OF_COARSE: Record<CoarseGroupId, BodyPartId[]> = (() => {
+  const out = { head: [], torso: [], arm: [], leg: [] } as Record<CoarseGroupId, BodyPartId[]>;
+  (Object.keys(COARSE_OF_PART) as BodyPartId[]).forEach((part) => out[COARSE_OF_PART[part]].push(part));
+  return out;
+})();
+
+/**
+ * 덩어리 하나에 촬영 자리(BodySpot) 하나를 대응시킨다.
+ *
+ * 세부 면(앞/뒤)을 더 이상 고르지 않으므로 자리도 덩어리마다 하나면 된다. part는 그 덩어리를
+ * 대표하는 메시 부위로 두는데, 기존 6구역 기록 체계(PART_TO_REGION)로 환산할 때만 쓰인다.
+ */
+export const COARSE_SPOTS: Record<CoarseGroupId, BodySpot> = {
+  head: { id: 'coarse:head', label: '머리', group: 'head', part: 'head', facing: 'front', view: FRONT, highlight: PARTS_OF_COARSE.head, row: 0 },
+  torso: { id: 'coarse:torso', label: '몸통', group: 'torso', part: 'chest', facing: 'front', view: FRONT, highlight: PARTS_OF_COARSE.torso, row: 0 },
+  arm: { id: 'coarse:arm', label: '팔', group: 'rightUpperArm', part: 'rightUpperArm', facing: 'front', view: FRONT, highlight: PARTS_OF_COARSE.arm, row: 0 },
+  leg: { id: 'coarse:leg', label: '다리', group: 'rightThigh', part: 'rightThigh', facing: 'front', view: FRONT, highlight: PARTS_OF_COARSE.leg, row: 0 },
+};
+
+/**
  * 세부 선택 화면에서 함께 보여줄 인접 부위.
  * 부위 하나만 떼어 놓으면 원통 하나라 어디인지 알 수 없어서, 이어지는 부위를 붙여 방향을 알려준다.
  */

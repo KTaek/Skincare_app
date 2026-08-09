@@ -8,13 +8,13 @@ import { useLeaveGuard } from '../context/LeaveGuardContext';
 
 type IconName = React.ComponentProps<typeof MaterialIcons>['name'];
 
-// 라우트 이름 → (아이콘, 라벨). main.dart의 _items 순서/내용과 동일
+// 라우트 이름 → (아이콘, 라벨)
 const TABS: Record<string, { icon: IconName; label: string }> = {
   Home: { icon: 'home', label: '홈' },
+  Camera: { icon: 'photo-camera', label: '피부 촬영' },
   Records: { icon: 'calendar-today', label: '기록' },
-  Camera: { icon: 'photo-camera', label: '카메라' },
-  WholeBody: { icon: 'accessibility-new', label: '전신결과' },
-  Hospital: { icon: 'location-on', label: '주변 병원' },
+  Routine: { icon: 'checklist', label: '루틴' },
+  Profile: { icon: 'person', label: '마이페이지' },
 };
 
 export default function BottomNav({ state, navigation }: BottomTabBarProps) {
