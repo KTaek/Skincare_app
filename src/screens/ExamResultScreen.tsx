@@ -22,6 +22,8 @@ import {
   SYMPTOM_SEGMENTS_BASE,
 } from '../folders/theme';
 import { folderNameOf } from '../folders/targets';
+import { getFolder } from '../folders/store';
+import { areaTrendOf, fmtPct, LOD, verdictOf } from '../folders/areaTrend';
 import { plainSiteLabel } from '../models';
 import { GRADE_NAMES_KO } from '../ai/labels';
 import type { LocalAnalysisResult } from '../ai/analyzeLocal';
@@ -135,6 +137,20 @@ export default function ExamResultScreen({
         />
 
         <SymptomCard analysis={analysis} />
+
+        {/*
+          병변 넓이 변화 — 이어서 기록에서 폴더에 이번 기록이 들어간 뒤에만 나온다.
+
+          여기 두는 이유: 확인 화면에서 "넓이도 기록돼요"라고 해 놓고 결과 화면에서 아무 말이
+          없으면, 사용자는 관심이 가장 높은 순간(방금 찍고 결과를 볼 때)에 그 값을 못 본다.
+          폴더까지 들어가야 보이는 건 너무 멀다.
+
+          계산은 폴더 화면의 카드와 **같은 모듈**(folders/areaTrend)을 쓴다. 두 화면이 따로
+          계산하면 언젠가 어긋나고, 그때 사용자는 어느 쪽을 믿어야 할지 알 수 없다.
+        */}
+        {isFollowUp && linkedFolder && (
+          <AreaChangeCard folderId={linkedFolder.id} eligible={session.areaEligible} />
+        )}
 
         {/* 판정 단위가 둘 이상이거나 제외된 덩어리가 있을 때만 — 하나면 위 카드가 곧 그 하나다 */}
         {(analysis.local.regions.length > 1 || analysis.local.droppedRegions > 0) && (
@@ -257,6 +273,76 @@ function PhotoZoom({ uri, label, onClose }: { uri: string; label: string; onClos
 }
 
 /** 촬영·후처리 신뢰도 배지 — 낮은 기록은 추세에서 가중치를 낮춰야 하므로 결과에도 계속 달고 다닌다 */
+/**
+ * 이번 촬영의 병변 넓이가 첫 촬영 대비 얼마나 달라졌는지 한 줄로.
+ *
+ * 폴더의 AreaTrendCard와 같은 계산(folders/areaTrend)을 쓰고, 여기서는 그래프 없이 숫자와
+ * 판정만 보여준다 — 결과 화면은 "오늘 어땠나"를 훑는 자리이고, 흐름을 보는 것은 폴더의 일이다.
+ *
+ * 네 가지 상태를 모두 말한다. 잰 경우만 말하면 나머지 셋에서 화면이 조용해지는데,
+ * 사용자는 그때 "아직 계산 중인가", "기능이 없나"를 알 수 없다.
+ */
+function AreaChangeCard({
+  folderId,
+  eligible,
+}: {
+  folderId: string;
+  /** 촬영 시점에 판단한 이번 장의 측정 자격 — 못 쟀으면 그 이유가 들어 있다 */
+  eligible?: { ok: boolean; reason?: string };
+}) {
+  // 이 화면이 뜨기 전에 recordExam이 이미 오늘 기록을 넣어 두었다 — 그래서 마지막 회차가 이번 촬영이다
+  const trend = areaTrendOf(getFolder(folderId)?.records ?? []);
+
+  const body = () => {
+    if (eligible && !eligible.ok) {
+      return (
+        <>
+          <Text style={styles.areaNote}>이번 사진은 넓이를 재지 못했어요 — {eligible.reason}</Text>
+          <Text style={styles.areaNote}>위 등급·증상 결과는 그대로 기록됐어요.</Text>
+        </>
+      );
+    }
+    if (!trend) return <Text style={styles.areaNote}>아직 넓이를 잰 촬영이 없어요.</Text>;
+    if (trend.baselineOnly) {
+      return (
+        <Text style={styles.areaNote}>
+          기준이 되는 첫 촬영이 기록됐어요. 다음에 같은 자리를 한 번 더 찍으면 변화가 보여요.
+        </Text>
+      );
+    }
+
+    const { delta } = trend.latest;
+    const verdict = verdictOf(delta);
+    return (
+      <>
+        <View style={styles.areaRow}>
+          <Text style={styles.areaValue}>{fmtPct(delta)}</Text>
+          <View style={[styles.areaPill, { backgroundColor: verdict.color }]}>
+            <Text style={[styles.areaPillText, verdict.lightBg && { color: mc.ink }]}>{verdict.ko}</Text>
+          </View>
+        </View>
+        {/* 띠 안이면 왜 방향을 말하지 않는지 밝힌다 — 안 그러면 "±30%는 왜 변화가 아니지"가 된다 */}
+        <Text style={styles.areaNote}>
+          {verdict.tone === 'same'
+            ? `${fmtPct(-LOD)} ~ ${fmtPct(LOD)} 안의 움직임은 측정 오차와 구분되지 않아 변화로 보지 않아요.`
+            : '촬영 거리와 상관없이 얼굴 크기를 기준으로 잰 값이에요.'}
+        </Text>
+      </>
+    );
+  };
+
+  return (
+    <View style={[monitoringCard(), styles.card]}>
+      <View style={styles.areaHead}>
+        <Text style={styles.cardLabel}>병변 넓이 변화</Text>
+        <Text style={styles.areaSub}>첫 촬영 대비</Text>
+      </View>
+      {body()}
+    </View>
+  );
+}
+
+
 function ConfidencePill({ score, tier }: { score: number; tier: 'high' | 'medium' | 'low' }) {
   const color = tier === 'high' ? mc.sev1 : tier === 'medium' ? mc.sev2 : mc.sev3;
   return (
@@ -819,6 +905,13 @@ const styles = StyleSheet.create({
   },
   openFolderText: { fontSize: 13.5, fontWeight: '800', color: AppColors.greenMuted },
 
+  areaHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+  areaSub: { fontSize: 12, color: mc.sub },
+  areaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
+  areaValue: { fontSize: 26, fontWeight: '800', color: mc.ink },
+  areaPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  areaPillText: { fontSize: 12, fontWeight: '700', color: '#FFFFFF' },
+  areaNote: { marginTop: 8, fontSize: 12, color: mc.sub, lineHeight: 18 },
   warnText: { fontSize: 12.5, color: mc.ink, lineHeight: 19 },
 
   footer: { paddingHorizontal: 16, paddingBottom: 18, paddingTop: 10, backgroundColor: mc.bg },

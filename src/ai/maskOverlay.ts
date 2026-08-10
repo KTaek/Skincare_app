@@ -51,6 +51,9 @@ const JPEG_QUALITY = 85;
  * @param mask      maskSize×maskSize 확률 마스크
  * @param threshold 이 값을 넘는 픽셀만 칠한다 (bbox·면적 계산과 같은 임계값을 써야 한다)
  * @param regionOf  픽셀 → 판정 단위 번호 (-1은 판정에서 제외된 덩어리). null이면 전부 0번 색.
+ * @param region    분할이 실제로 본 영역 (원본 픽셀). 얼굴 자리에서는 사진 일부(얼굴 관심영역)만
+ *                  분할하므로, 마스크를 사진 전체에 늘리면 병변이 엉뚱한 자리에 칠해진다.
+ *                  생략하면 예전처럼 사진 전체에 늘린다.
  * @returns `data:image/jpeg;base64,...` — 만들지 못하면 null
  */
 export function renderMaskOverlay(
@@ -59,6 +62,7 @@ export function renderMaskOverlay(
   maskSize: number,
   threshold: number,
   regionOf: Int32Array | null = null,
+  region?: { x: number; y: number; width: number; height: number },
 ): string | null {
   const origW = image.width();
   const origH = image.height();
@@ -79,6 +83,10 @@ export function renderMaskOverlay(
     if (!surface) return null;
 
     const dest = { x: 0, y: 0, width: outW, height: outH };
+    // 마스크를 얹을 자리 — 분할이 본 영역을 축소본 좌표로 옮긴 것이다 (없으면 사진 전체)
+    const maskDest = region
+      ? { x: region.x * scale, y: region.y * scale, width: region.width * scale, height: region.height * scale }
+      : dest;
     const maskSrc = { x: 0, y: 0, width: maskSize, height: maskSize };
 
     let snapshot: SkImage | null = null;
@@ -86,12 +94,12 @@ export function renderMaskOverlay(
       const canvas = surface.getCanvas();
       canvas.drawImageRect(image, { x: 0, y: 0, width: origW, height: origH }, dest, Skia.Paint());
 
-      // 마스크 전체를 사진 전체에 맞춰 늘린다 — seg 입력이 그 반대 방향의 같은 변환이었다.
+      // 마스크 전체를 분할이 본 영역에 맞춰 늘린다 — seg 입력이 그 반대 방향의 같은 변환이었다.
       // 면은 paint 알파로 투명하게, 테두리는 그 위에 불투명하게 얹는다.
       const fillPaint = Skia.Paint();
       fillPaint.setAlphaf(OVERLAY_ALPHA);
-      canvas.drawImageRect(fill.image, maskSrc, dest, fillPaint);
-      canvas.drawImageRect(line.image, maskSrc, dest, Skia.Paint());
+      canvas.drawImageRect(fill.image, maskSrc, maskDest, fillPaint);
+      canvas.drawImageRect(line.image, maskSrc, maskDest, Skia.Paint());
       surface.flush();
 
       snapshot = surface.makeImageSnapshot();

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { SkImage } from '@shopify/react-native-skia';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,7 +10,7 @@ import { useMonitoring } from '../context/MonitoringContext';
 import { withSkImage } from '../ai/skiaPixels';
 import { useImageAspect } from '../components/imageAspect';
 import { normalizeOrientation } from '../ai/imageOrientation';
-import { evaluateFrame, GATE, measureImageQuality } from '../monitoring/frameQuality';
+import { evaluateAreaEligibility, evaluateFrame, GATE, measureImageQuality } from '../monitoring/frameQuality';
 import { useCaptureVoice } from '../monitoring/captureVoice';
 import {
   baselineFromCapture,
@@ -19,12 +20,19 @@ import {
   scoreConfidence,
 } from '../monitoring/postProcess';
 import {
+  Baseline,
   ColorNormalization,
   FrameEvaluation,
   MonitorSession,
   MonitorTarget,
   SessionConfidence,
 } from '../monitoring/types';
+import { detectFace, isFaceDetectionAvailable, preloadFaceModel } from '../ai/faceDetector';
+import { faceFrameOfDetection, faceRoiOf, type FaceFrame, type FaceFraming } from '../ai/faceFrame';
+import { buildFaceGhost, type FaceGhost } from '../ai/faceGhost';
+import FaceGuideOverlay from '../components/FaceGuideOverlay';
+import { supportsAreaTracking } from '../monitoring/bodyParts';
+import { getFolderByTarget } from '../folders/store';
 import { DUMP_RESULTS, makeDumpBaseline, makeDumpConfidence } from '../exam/dumpAnalysis';
 
 /** 필수 조건이 충족된 뒤, 더 나은 프레임을 노리며 기다리는 시간 */
@@ -59,6 +67,66 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
   });
 }
 
+/**
+ * 프레임 한 장을 재는 한 자리 — 얼굴 검출 → 관심영역 → 품질 측정 → 판정 순서다.
+ *
+ * 이 순서인 이유: 얼굴 자리에서는 품질도 **분석에 실제로 들어갈 영역**에서 재야 하기 때문이다.
+ * 프레임 전체로 재면 뒤쪽 창문이 하얗게 날아갔다는 이유로 노출 게이트가 막고, 배경이 넓다는
+ * 이유로 피부 게이트가 영영 안 열린다 — 정작 분석에 들어가는 것은 얼굴뿐인데도.
+ *
+ * 얼굴을 못 찾으면 관심영역 없이 예전 그대로 프레임 전체를 재고, 정렬 판정만 "얼굴 없음"이 된다.
+ */
+async function analyzeFrame(
+  image: SkImage,
+  faceMode: boolean,
+  baseline?: Baseline,
+  prevSignature?: Float32Array | null,
+  /** 화면에 깔린 지난 사진의 구도 — 이번 촬영이 겨냥할 목표다 (없으면 표준 프레이밍) */
+  framing?: FaceFraming,
+): Promise<{ evaluation: FrameEvaluation; face: FaceFrame | null; width: number; height: number }> {
+  const width = image.width();
+  const height = image.height();
+
+  const face = faceMode ? faceFrameOfDetection(await detectFace(image)) : null;
+  const roi = face ? faceRoiOf(face, width, height) : undefined;
+
+  const metrics = measureImageQuality(image, { roi });
+  const evaluation = evaluateFrame(
+    metrics,
+    baseline,
+    prevSignature,
+    faceMode
+      ? {
+          frame: face,
+          imageWidth: width,
+          imageHeight: height,
+          framing,
+          // 자세(d/v)는 화면에 깔린 그 사진과 견준다 — 구도와 자세의 기준이 다른 사진이면
+          // "고스트에 맞췄는데 자세가 틀렸다"는 말이 나올 수 있다
+          reference: framing ?? baseline?.face,
+        }
+      : undefined,
+  );
+  return { evaluation, face, width, height };
+}
+
+/**
+ * 이 자리의 경과 관찰 폴더에서 **첫** 촬영 사진.
+ *
+ * 폴더 기록은 앱을 껐다 켜도 남지만 baseline은 메모리에만 있어서(MonitoringContext 주석 참고),
+ * 지난 얼굴을 보여주려면 여기까지 봐야 한다. 그것만 보면 고스트가 거의 뜨지 않는다 — 어제 찍고
+ * 오늘 다시 들어온 사람이 정확히 그 경우다.
+ *
+ * 마지막이 아니라 첫 기록을 쓰는 이유: 이 사진의 구도가 곧 정렬 목표가 되기 때문이다. 매번 직전
+ * 사진을 목표로 삼으면 회차마다 허용 오차(배율 ±20%, 위치 5%)만큼 밀린 구도가 다음 목표가 되어
+ * 구도가 서서히 흘러간다. 목표를 첫 사진 하나로 고정하면 열 번째 촬영도 첫 사진과 견줄 수 있다.
+ *
+ * 폴더가 없거나(첫 촬영) 사진이 없으면 undefined.
+ */
+function baselineFolderPhoto(targetId: string): string | undefined {
+  return getFolderByTarget(targetId)?.records?.[0]?.photo?.uri;
+}
+
 /** 사진이 어디서 왔는지 — 리뷰 화면의 "다시" 버튼이 카메라로 갈지 앨범으로 갈지가 여기서 갈린다 */
 type PhotoSource = 'camera' | 'album';
 
@@ -66,6 +134,8 @@ type PhotoSource = 'camera' | 'album';
 interface Candidate {
   uri: string;
   evaluation: FrameEvaluation | null;
+  /** 이 프레임에서 찾은 얼굴 기하 — 분석 단계가 관심영역과 면적 정규화에 쓴다 */
+  face?: FaceFrame | null;
 }
 
 type Phase = 'preview' | 'processing' | 'review';
@@ -104,9 +174,40 @@ const UNMEASURED_CONFIDENCE: SessionConfidence = {
  * 갤러리에서 고르는 길은 앞 단계(CaptureSourceScreen)에서 갈라진다. source='album'으로 들어오면
  * 카메라를 아예 켜지 않고 앨범만 연다 — 고를 사진에는 가이드가 낄 자리가 없기 때문이다.
  *
- * 기준 사진을 프리뷰에 겹쳐 보여주던 고스트는 걷어냈다 — 반투명하게 깔린 지난 사진이 지금 피부와
- * 섞여 보여서, 정작 무엇을 찍고 있는지 알아보기 어려웠다. 기준 사진은 촬영 뒤 확인 화면에서
- * 나란히 비교하는 쪽이 낫다 (조명 보정의 기준으로는 계속 쓰인다).
+ * ── 얼굴 자리에서만 켜지는 것 ────────────────────────────────────────────
+ *
+ * 얼굴을 찍을 때는 위의 셋에 **정렬**이 더해지고, 프리뷰에 지난 사진의 고스트가 얹힌다.
+ * 목적은 하나다 — 병변 넓이를 회차 간 비교할 수 있게 만드는 것.
+ *
+ * 그 전에 왜 다른 자리에서는 못 하는지부터. 넓이를 비교하려면 "같은 배율로 찍었는가"를 알아야
+ * 하고, 그 기준은 시간에 따라 변하지 않는 것이어야 한다(게이트 원칙 3). 병변 자체는 변하므로
+ * 기준이 될 수 없다 — 예전 구도 게이트가 걷어내진 이유가 그것이다. 얼굴 골격은 변하지 않는다.
+ * 그래서 얼굴에서만, 양눈과 입 세 점을 자로 삼아 넓이를 잰다(ai/faceFrame.ts).
+ *
+ * 정렬 판정은 **자동 셔터만 막고 촬영을 막지 않는다.** 어긋나게 찍힌 사진도 등급 판정에는 아무
+ * 문제가 없다. 그리고 정렬이 어긋났다고 해서 넓이까지 못 쓰게 되는 것도 아니다 — 배율·위치·
+ * 기울기는 넓이를 d·v로 나누는 순간 계산에서 사라지기 때문이다. 넓이를 실제로 못 쓰게 만드는
+ * 것은 자세·해상도·조명뿐이고, 그 판단은 evaluateAreaEligibility가 따로 한다.
+ *
+ * 이 구분 덕분에 **앨범에서 고른 사진도 넓이를 잰다.** 가이드를 볼 기회가 없어 구도는 당연히
+ * 어긋나 있지만, 정면이고 얼굴이 충분히 크고 조명이 비슷하면 그 사진의 넓이는 지난 회차와
+ * 견줄 자격이 있다.
+ *
+ * 고스트는 **첫 촬영 사진을 화면 전체에 반투명하게 깐 것**이다. 사용자는 지금 얼굴을 거기 겹쳐
+ * 맞추기만 하면 된다. 도형으로 "얼굴을 이만큼 크게 여기에 두라"고 말하는 것보다 직접적이고,
+ * 지난번에 어떻게 찍었는지까지 함께 보여준다.
+ *
+ * 여기서 지켜야 하는 것 하나: **화면에 깔린 사진과 게이트의 목표가 같은 사진이어야 한다.**
+ * 정렬 목표(alignTargetFor)는 이 사진에서 잰 구도를 그대로 쓴다 — 화면에는 지난 사진을 깔아
+ * 두고 게이트는 다른 자리를 재면, 눈으로 겹친 바로 그 순간에 판정이 실패한다.
+ *
+ * 목표로 삼는 사진은 항상 **첫 사진**이다. 매번 직전 사진에 맞추면 회차마다 허용 오차만큼 밀린
+ * 구도가 다음 목표가 되어 서서히 흘러간다(drift). 첫 사진에 고정하면 열 번째 촬영도 첫 사진과
+ * 같은 구도다. 첫 촬영에는 맞출 사진이 없으므로 그때만 표준 가이드 도형이 나온다.
+ *
+ * 얼굴 자리에서는 카메라(전/후면)를 기준 사진과 같은 것으로 잠근다. 전면과 후면은 화각이 달라
+ * 같은 거리에서도 원근 왜곡이 다르고 좌우 반전 여부도 제각각이라, 카메라가 바뀌면 고스트가
+ * 맞지 않을 뿐 아니라 넓이 비교 자체가 성립하지 않는다.
  *
  * 후처리는 사진을 다시 쓰지 않는다 — 조명 보정은 게인 숫자로만 남겨 분석 직전 텐서에 적용하고,
  * 사용자가 보는 기록은 찍은 그대로다. 품질 판정이 실패해도 사진은 그대로 살려서 결과로 넘어간다.
@@ -160,6 +261,78 @@ export default function MonitorCaptureScreen({
   /** 음성 안내 — 조용한 곳에서 찍을 때를 위해 끌 수 있다 */
   const [soundOn, setSoundOn] = useState(true);
 
+  const baseline = target.baseline;
+
+  /**
+   * 검출 모델을 쓸 수 없다고 판명됐는지 (웹 미리보기, 번들 누락, 출력 규격 불일치).
+   *
+   * 상태로 들고 있어야 하는 이유: 모델 로딩 실패는 렌더 중이 아니라 나중에 드러난다. 그때
+   * 화면이 다시 그려지지 않으면 얼굴 모드가 켜진 채로 남아 — 검출은 매번 실패하므로 —
+   * "얼굴이 보이지 않아요"만 띄우며 자동 셔터가 영영 열리지 않는다. 기능 하나가 없는 것과
+   * 촬영이 막히는 것은 무게가 전혀 다른 실패다.
+   */
+  const [faceBroken, setFaceBroken] = useState(false);
+
+  /**
+   * 이 자리에서 얼굴 정렬·면적 측정을 켤지.
+   *
+   * 얼굴 자리이면서 검출 모델을 쓸 수 있어야 한다. 모델을 못 불러오면 조용히 예전 그대로
+   * 동작한다 — 얼굴 기능이 없다고 촬영이 막히면 안 된다.
+   */
+  const faceMode = supportsAreaTracking(target.part) && !DUMP_RESULTS && !faceBroken;
+  /**
+   * 프리뷰에 겹칠 지난 사진. 사진 한 장마다 한 번만 만든다.
+   * Baseline에 저장하지 않는 이유: 화면에서만 쓰는 그림이고, 저장해 두면 지난 사진이 바뀔 때
+   * 같이 갱신할 자리를 하나 더 만들게 된다.
+   */
+  const [ghost, setGhost] = useState<FaceGhost | null>(null);
+  /** 마지막 판정 프레임의 크기 — 화면 가이드를 프레임 좌표와 맞추는 데 쓴다 */
+  const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+
+  /**
+   * 기준 사진과 같은 카메라로 잠근다. 전면/후면은 화각이 달라 같은 거리에서도 원근 왜곡이
+   * 다르고, 저장본의 좌우 반전 여부도 제각각이다 — 카메라가 바뀌면 넓이 비교가 성립하지 않는다.
+   */
+  const facingLocked = faceMode && !!baseline?.facing;
+  useEffect(() => {
+    if (facingLocked && baseline?.facing && baseline.facing !== facing) setFacing(baseline.facing);
+  }, [facingLocked, baseline?.facing, facing]);
+
+  // 얼굴 자리에 들어오면 검출 모델을 미리 올려 둔다 — 첫 틱이 모델 로딩을 기다리지 않도록.
+  // 못 올리면 그 자리에서 얼굴 모드를 끈다 (실패를 판정 루프까지 끌고 가지 않는다).
+  useEffect(() => {
+    if (!faceMode) return;
+    preloadFaceModel().then(() => {
+      if (!isFaceDetectionAvailable()) setFaceBroken(true);
+    });
+  }, [faceMode]);
+
+  /**
+   * 고스트로 쓸 지난 사진.
+   *
+   * 기준 세션(baseline)이 있으면 그걸 쓰고, 없으면 폴더의 첫 기록 사진을 쓴다 — 둘 다 "이 자리를
+   * 처음 찍은 사진"이라는 같은 것을 가리킨다(baselineFolderPhoto 주석 참고).
+   *
+   * 이 사진은 화면에 깔리는 그림이면서 **동시에 정렬 목표**다. 둘이 같은 사진이어야 사용자가
+   * 눈으로 겹친 순간에 게이트도 통과한다.
+   */
+  const referenceUri = baseline?.processedUri ?? baselineFolderPhoto(target.id);
+
+  // 지난 사진에서 고스트를 만든다. 실패하면 null로 두고 표준 가이드 도형만 그린다
+  useEffect(() => {
+    if (!faceMode || !referenceUri) {
+      setGhost(null);
+      return;
+    }
+    let alive = true;
+    buildFaceGhost(referenceUri).then((g) => {
+      if (alive) setGhost(g);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [faceMode, referenceUri]);
+
   /**
    * 판정 결과 안내는 화면 대신 소리로 나간다. 매 틱마다 부르지만 같은 말을 반복하지 않도록
    * 거르는 건 useCaptureVoice 쪽이 맡는다.
@@ -175,8 +348,6 @@ export default function MonitorCaptureScreen({
   const busy = useRef(false);
   const cancelled = useRef(false);
   const { addSession } = useMonitoring();
-
-  const baseline = target.baseline;
 
   /**
    * 고른 사진을 이번 세션으로 확정한다. 여기서는 실패할 수 있는 일을 하지 않는다 —
@@ -196,6 +367,11 @@ export default function MonitorCaptureScreen({
           ? scoreConfidence(chosen.evaluation, colorNorm, baseline)
           : UNMEASURED_CONFIDENCE;
 
+      // 넓이를 회차 간 비교해도 되는 촬영인지는 여기서 확정한다 — 정렬·조명은 촬영 시점의
+      // 정보라 나중에 사진만 보고는 알 수 없다. 얼굴 자리가 아니면 아예 판단하지 않는다.
+      const areaEligible =
+        faceMode && chosen.evaluation ? evaluateAreaEligibility(chosen.evaluation, baseline) : undefined;
+
       const created: MonitorSession = {
         id: sessionId,
         targetId: target.id,
@@ -206,6 +382,8 @@ export default function MonitorCaptureScreen({
         confidence,
         softScore: chosen.evaluation?.softScore ?? 0,
         colorNorm,
+        face: chosen.face ?? undefined,
+        areaEligible,
       };
 
       addSession(
@@ -213,13 +391,16 @@ export default function MonitorCaptureScreen({
         DUMP_RESULTS
           ? makeDumpBaseline(sessionId, chosen.uri)
           : chosen.evaluation
-            ? baselineFromCapture(sessionId, chosen.uri, chosen.evaluation.metrics)
+            ? baselineFromCapture(sessionId, chosen.uri, chosen.evaluation.metrics, {
+                face: chosen.face,
+                facing: faceMode ? facing : undefined,
+              })
             : undefined,
       );
       setSession(created);
       setPhase('review');
     },
-    [addSession, baseline, target.id],
+    [addSession, baseline, faceMode, facing, target.id],
   );
 
   /**
@@ -236,9 +417,16 @@ export default function MonitorCaptureScreen({
       // 방향을 먼저 바로잡는다 — 이 uri가 곧 기록 사진이자 분석 입력이다
       const uri = await normalizeOrientation(rawUri);
       let evaluation: FrameEvaluation | null = null;
+      let face: FaceFrame | null = null;
       if (!DUMP_RESULTS) {
         try {
-          evaluation = await withSkImage(uri, (img) => evaluateFrame(measureImageQuality(img), baseline));
+          // 프리뷰가 겨냥한 것과 **같은 목표**로 재야 한다. 이걸 빠뜨리면 고스트에 정확히 맞추고
+          // 직접 셔터를 눌러도 표준 자리를 기준으로 판정돼 "어긋났다"가 된다.
+          const measured = await withSkImage(uri, async (img) =>
+            analyzeFrame(img, faceMode, baseline, null, ghost?.framing),
+          );
+          evaluation = measured.evaluation;
+          face = measured.face;
         } catch (e: any) {
           // 품질을 못 재도 촬영 자체는 살린다 — 다만 왜 못 쟀는지는 남긴다.
           // 앨범 사진은 형식이 제각각(스크린샷·다운로드·특이한 컬러프로파일)이라 여기 걸리기 쉽고,
@@ -248,9 +436,9 @@ export default function MonitorCaptureScreen({
           setMeasureError(msg);
         }
       }
-      finalize({ uri, evaluation });
+      finalize({ uri, evaluation, face });
     },
-    [baseline, finalize],
+    [baseline, faceMode, ghost?.framing, finalize],
   );
 
   const shootNow = useCallback(async () => {
@@ -329,13 +517,21 @@ export default function MonitorCaptureScreen({
         );
         if (!photo || cancelled.current) return;
 
-        // 게이트가 모델을 쓰지 않으므로 여기서는 픽셀만 읽으면 된다 —
-        // 예전에는 매 틱 512×512 세그 추론이 돌았지만 이제 필요 없다
-        const metrics = await withSkImage(photo.uri, (img) => measureImageQuality(img));
+        /*
+          피부·초점·노출 게이트는 모델을 쓰지 않으므로 픽셀만 읽으면 된다 (예전에는 매 틱
+          512×512 세그 추론이 돌았지만 그 게이트는 걷어냈다). 얼굴 자리에서만 128px 얼굴 검출이
+          하나 붙는데, 걷어낸 세그와 비교하면 입력이 16분의 1이라 틱 주기에 부담이 되지 않는다.
+        */
         const prev = prevSig.current;
-        prevSig.current = metrics.signature;
-        const evaluation = evaluateFrame(metrics, baseline, prev);
+        const measured = await withSkImage(photo.uri, (img) =>
+          analyzeFrame(img, faceMode, baseline, prev, ghost?.framing),
+        );
+        const { evaluation } = measured;
+        prevSig.current = evaluation.metrics.signature;
         if (cancelled.current) return;
+        // 모델이 도중에 못 쓰게 됐으면(출력 규격 불일치 등) 여기서 알아채고 얼굴 모드를 끈다
+        if (faceMode && !isFaceDetectionAvailable()) setFaceBroken(true);
+        setFrameSize((s) => (s.w === measured.width && s.h === measured.height ? s : { w: measured.width, h: measured.height }));
         setLive(evaluation);
         setLiveError(null);
 
@@ -343,16 +539,20 @@ export default function MonitorCaptureScreen({
         // 첫 틱만으로 자동 촬영이 나가는 일이 없도록 이번 판은 표시만 하고 넘긴다
         if (!prev) return;
 
-        if (evaluation.hardPass) {
+        // 얼굴 자리에서는 정렬까지 맞아야 셔터가 열린다. 어긋난 채로 자동 촬영이 나가면 그
+        // 사진의 넓이는 추세에서 빠지는데, 사용자는 앱이 알아서 잘 찍었다고 믿게 된다.
+        const ready = evaluation.hardPass && (evaluation.align?.ok ?? true);
+
+        if (ready) {
           missStreak.current = 0;
           setArmed(true);
         } else if (++missStreak.current >= 2) {
           setArmed(false);
         }
 
-        if (evaluation.hardPass && evaluation.softScore >= GATE.autoShutterSoftScore) {
+        if (ready && evaluation.softScore >= GATE.autoShutterSoftScore) {
           if (windowStart.current == null) windowStart.current = Date.now();
-          candidates.current.push({ uri: photo.uri, evaluation });
+          candidates.current.push({ uri: photo.uri, evaluation, face: measured.face });
         }
 
         const started = windowStart.current;
@@ -362,12 +562,21 @@ export default function MonitorCaptureScreen({
         const best = candidates.current.reduce((a, b) => (softOf(b) > softOf(a) ? b : a));
         const windowOver = Date.now() - started >= BEST_FRAME_WINDOW_MS;
         if (softOf(best) >= GATE.excellentSoftScore || windowOver || candidates.current.length >= MAX_CANDIDATES) {
-          cancelled.current = true;
-          setSource('camera');
-          setPhase('processing');
-          // 판정 프레임은 skipProcessing으로 찍어 EXIF 방향이 반영돼 있지 않다.
-          // 채택이 확정된 이 한 장만 바로잡는다 (매 프레임 하면 너무 비싸다).
-          finalize({ ...best, uri: await normalizeOrientation(best.uri) });
+          /*
+            채택된 한 장을 **다른 두 경로(수동 셔터·앨범)와 똑같이** 확정한다.
+
+            예전에는 여기서 방향만 바로잡고(normalizeOrientation) 판정 결과는 틱에서 잰 것을
+            그대로 썼는데, 그게 틀렸다. 판정 프레임은 skipProcessing으로 찍혀 EXIF 방향이 픽셀에
+            반영돼 있지 않다(expo 문서가 "90°·180°·270° 회전 가능"이라고 못박아 두었다). 즉
+            틱에서 잰 얼굴 좌표는 **눕혀진 프레임의 좌표**인데, 기록으로 남는 사진은 바로 세운
+            것이다. 그 얼굴 좌표로 관심영역을 잘라내면 얼굴이 아닌 엉뚱한 자리를 분할하게 되고,
+            거기서 나온 넓이는 아무 의미가 없다.
+
+            그래서 방향을 바로잡은 뒤 **그 사진에서 다시 잰다.** 후보를 고르는 데 쓴 틱 판정은
+            "어느 프레임이 제일 나은가"를 정하는 용도였고, 기록에 남을 판정은 실제로 기록될 그
+            사진에서 나와야 한다. 촬영이 끝난 뒤 한 번 더 재는 값이라 비용도 한 번뿐이다.
+          */
+          await commitPhoto(best.uri, 'camera');
         }
       } catch (e: any) {
         // 한 프레임 실패는 다음 주기에 다시 시도하지만, 조용히 삼키지는 않는다.
@@ -387,7 +596,7 @@ export default function MonitorCaptureScreen({
       cancelled.current = true;
       clearInterval(id);
     };
-  }, [mode, phase, permission?.granted, cameraReady, facing, baseline, finalize]);
+  }, [mode, phase, permission?.granted, cameraReady, facing, baseline, faceMode, ghost?.framing, commitPhoto]);
 
   /** 확인 화면에서 다시 찍기 — 앨범으로 들어왔더라도 여기서는 카메라로 갈아탄다 */
   const retake = () => {
@@ -443,6 +652,16 @@ export default function MonitorCaptureScreen({
         <MaterialIcons name="photo-library" size={40} color="rgba(255,255,255,0.7)" />
         <View style={{ height: 14 }} />
         <Text style={styles.permText}>갤러리에서 사진을 골라주세요</Text>
+        {/*
+          앨범 사진에는 가이드가 없으므로 고르기 전에 조건을 알려준다. 넓이는 얼굴 크기로
+          정규화되니 거리·구도는 상관없다 — 정면이고, 얼굴이 크게 나왔고, 조명이 비슷하면 된다.
+        */}
+        {faceMode && (
+          <Text style={styles.albumHint}>
+            정면을 보고 얼굴이 크게 나온 사진이면{'\n'}병변 넓이 변화도 함께 볼 수 있어요{'\n'}
+            (거리나 구도는 달라도 괜찮아요)
+          </Text>
+        )}
         <View style={{ height: 18 }} />
         <Pressable style={styles.primaryBtn} onPress={pickFromAlbum}>
           <Text style={styles.primaryBtnText}>갤러리 열기</Text>
@@ -495,10 +714,31 @@ export default function MonitorCaptureScreen({
         />
 
         {/*
+          얼굴 자리에서만 나오는 가이드. 사용자가 맞춰야 하는 사각형이 곧 분석에 들어가는
+          영역이고, 정렬 게이트가 겨냥하는 목표도 같은 자리다 — 화면과 판정이 다른 곳을 보면
+          "초록인데 왜 안 찍히지"가 된다.
+        */}
+        {faceMode && (
+          <FaceGuideOverlay
+            imageWidth={frameSize.w}
+            imageHeight={frameSize.h}
+            ghostUri={ghost?.uri}
+            mirrored={facing === 'front'}
+            ok={!!live?.align?.ok}
+          />
+        )}
+
+        {/*
           매 틱 바뀌던 판정 안내는 소리로 옮겼다(useCaptureVoice). 여기는 촬영 내내 그대로인
           한 줄만 남긴다 — 계속 바뀌는 글은 카메라를 대고 있는 자세에서 어차피 읽히지 않는다.
         */}
-        <Text style={styles.hint}>가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요</Text>
+        <Text style={styles.hint}>
+          {!faceMode
+            ? '가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요'
+            : ghost
+              ? '이전 사진(반투명)에 맞춰 같은 구도로 촬영하세요'
+              : '가이드에 얼굴을 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'}
+        </Text>
 
         <Pressable style={styles.closeBtn} onPress={onCancel}>
           <MaterialIcons name="chevron-left" size={24} color="#FFFFFF" />
@@ -522,6 +762,8 @@ export default function MonitorCaptureScreen({
               <GateBar label="피부" value={live?.gauges.skin} ok={live?.hard.skin} />
               <GateBar label="초점" value={live?.gauges.focus} ok={live?.hard.focus} />
               <GateBar label="노출" value={live?.gauges.exposure} ok={live?.hard.exposure} />
+              {/* 정렬은 얼굴 자리에서만 나온다 — 다른 자리에는 맞출 기준(자)이 없다 */}
+              {faceMode && <GateBar label="정렬" value={live?.align?.gauge} ok={live?.align?.ok} />}
             </View>
           </View>
         )}
@@ -534,15 +776,25 @@ export default function MonitorCaptureScreen({
             : '조건이 맞으면 자동으로 찍혀요. 가운데 버튼을 눌러 직접 찍어도 돼요'}
         </Text>
         <View style={styles.bottomRow}>
+          {/*
+            얼굴 자리에서 기준 사진이 이미 있으면 카메라를 바꿀 수 없다. 전면과 후면은 화각이
+            달라 같은 거리에서도 원근 왜곡이 다르고 좌우 반전 여부도 제각각이라, 카메라를 바꾸면
+            넓이 비교가 성립하지 않는다 — 막지 않으면 사용자는 그 사실을 알 길이 없다.
+          */}
           <Pressable
-            style={styles.smallBtn}
+            style={[styles.smallBtn, facingLocked && styles.smallBtnLocked]}
+            disabled={facingLocked}
             onPress={() => {
               // 카메라를 바꾸면 네이티브가 다시 올라온다 — 준비될 때까지 판정을 멈춘다
               setCameraReady(false);
               setFacing((f) => (f === 'back' ? 'front' : 'back'));
             }}
           >
-            <MaterialIcons name="flip-camera-android" size={20} color="#FFFFFF" />
+            <MaterialIcons
+              name={facingLocked ? 'lock' : 'flip-camera-android'}
+              size={20}
+              color={facingLocked ? 'rgba(255,255,255,0.5)' : '#FFFFFF'}
+            />
             <Text style={styles.smallBtnText}>{facing === 'back' ? '후면' : '전면'}</Text>
           </Pressable>
           {/* 조건이 맞으면 앱이 알아서 누르고, 그 전에도 직접 누를 수 있다 */}
@@ -665,6 +917,25 @@ function ReviewView({
             ))}
           </View>
         )}
+
+        {/*
+          넓이를 쟀는지 여부를 양쪽 다 말한다.
+
+          못 쟀을 때만 말하면 사용자는 "말이 없으면 잘 된 것"인지 "원래 안 재는 것"인지 알 수
+          없다. 특히 앨범에서 고른 사진은 가이드를 본 적이 없어서 스스로 판단할 근거가 전혀 없다 —
+          이 사진이 추세에 들어갔는지는 지금 이 화면에서만 알 수 있고, 나중에는 다시 못 고친다.
+        */}
+        {session.areaEligible &&
+          (session.areaEligible.ok ? (
+            <Text style={styles.okText}>병변 넓이도 함께 기록돼요 — 지난 회차와 견줄 수 있어요</Text>
+          ) : (
+            <View style={styles.warnBox}>
+              <Text style={styles.warnText}>• {session.areaEligible.reason}</Text>
+              <Text style={styles.warnText}>
+                • 이 사진의 등급·증상 판정은 그대로 기록돼요. 넓이 변화 그래프에서만 빠집니다.
+              </Text>
+            </View>
+          ))}
         {/* 품질이 낮아도 진행은 막지 않는다 — 권하기만 하고 선택은 사용자에게 맡긴다 */}
         {!confidence.usable && (
           <Text style={styles.rejectText}>
@@ -694,6 +965,13 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#14171C' },
   center: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 },
   permText: { color: '#FFFFFF', fontSize: 15, textAlign: 'center', lineHeight: 22 },
+  albumHint: {
+    marginTop: 12,
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
   primaryBtn: { backgroundColor: AppColors.greenTop, borderRadius: 14, paddingHorizontal: 22, paddingVertical: 13 },
   primaryBtnLight: { backgroundColor: AppColors.greenTop, borderRadius: 14, paddingVertical: 15, alignItems: 'center' },
   primaryBtnText: { fontSize: 15, fontWeight: '700', color: '#16320A' },
@@ -773,6 +1051,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  smallBtnLocked: { backgroundColor: 'rgba(255,255,255,0.07)' },
   smallBtnText: { color: '#FFFFFF', fontSize: 10, fontWeight: '700', marginTop: 2 },
   shutter: {
     width: 74,
@@ -797,6 +1076,7 @@ const styles = StyleSheet.create({
   reviewImage: { width: '100%', borderRadius: 20, backgroundColor: '#14171C', flexShrink: 1 },
   warnBox: { marginTop: 14, backgroundColor: '#FFFFFF', borderRadius: 14, padding: 14 },
   warnText: { fontSize: 13, color: AppColors.ink, lineHeight: 20 },
+  okText: { marginTop: 12, fontSize: 13, fontWeight: '600', color: AppColors.sub, textAlign: 'center' },
   rejectText: { marginTop: 10, fontSize: 13, fontWeight: '700', color: AppColors.sev3, textAlign: 'center' },
   processingTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', textAlign: 'center' },
   processingSub: { color: 'rgba(255,255,255,0.7)', fontSize: 13, textAlign: 'center' },

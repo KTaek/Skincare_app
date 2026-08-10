@@ -72,6 +72,9 @@ export function makeDumpLocalResult(seedKey: string): LocalAnalysisResult {
     bbox,
     // 실제 마스크가 없으니 박스 넓이의 절반쯤을 마스크 넓이로 친다 (박스는 여백을 포함한다)
     maskAreaPct: Math.round(side * side * 50 * 10) / 10,
+    // 얼굴 기준 넓이는 지어내지 않는다 — 얼굴 검출과 분할이 함께 있어야 나오는 값이라,
+    // 그럴듯한 숫자를 넣으면 dump 모드에서 넓이 추이 그래프가 진짜처럼 그려진다
+    faceArea: null,
     // 마스크 오버레이는 지어낼 방법이 없다 — dump 모드에서는 원본 사진만 보인다
     maskUri: null,
     // dump에서는 판정 단위를 하나로만 지어낸다 — 여러 단위는 실제 마스크가 있어야 나온다

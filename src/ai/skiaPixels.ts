@@ -38,6 +38,88 @@ export function readResizedRGBA(image: SkImage, src: SkRect, outW: number, outH:
   );
 }
 
+/** 레터박스 배치 — 원본(의 일부)을 정사각형 안에 종횡비를 지켜 넣었을 때의 배치 정보 */
+export interface Letterbox {
+  /** 정사각형 한 변 */
+  size: number;
+  /** 원본 → 정사각형 배율 */
+  scale: number;
+  /** 정사각형 안에서 그림이 시작하는 좌표 (남는 쪽은 검게 채워진다) */
+  padX: number;
+  padY: number;
+  /** 원본에서 잘라 온 자리 — 좌표를 되돌릴 때 다시 더한다 */
+  srcX: number;
+  srcY: number;
+}
+
+/**
+ * 정사각형 정규화 좌표(0~1) → 원본 픽셀 좌표.
+ * 레터박스로 넣은 모델의 출력을 원본 위에 되돌려 놓을 때 쓴다.
+ */
+export function unletterbox(box: Letterbox, nx: number, ny: number): { x: number; y: number } {
+  return {
+    x: (nx * box.size - box.padX) / box.scale + box.srcX,
+    y: (ny * box.size - box.padY) / box.scale + box.srcY,
+  };
+}
+
+/**
+ * 이미지(또는 그 일부)를 size×size 정사각형에 **종횡비를 지켜** 그려 넣고 픽셀을 읽는다.
+ *
+ * extractNormalizedRGB는 종횡비를 무시하고 눌러 넣는다 — 병변 세그 모델이 학습 때 그렇게 봤기
+ * 때문이다. 얼굴 검출은 사정이 다르다: 눌러 넣으면 얼굴이 가로세로로 찌그러져 검출률이 떨어지고,
+ * 무엇보다 우리가 재려는 값(안간거리·눈-입 거리의 비율)이 그 찌그러짐만큼 왜곡된다. 그 비율이
+ * 곧 자세 게이트의 기준이라, 여기서는 반드시 비율을 지켜야 한다.
+ *
+ * src를 주면 그 부분만 잘라 넣는다 — 얼굴을 한 번 찾은 뒤 그 자리를 크게 다시 보는 데 쓴다.
+ * 남는 여백은 검게 채운다 (BlazeFace가 검은 패딩에 안정적이다).
+ */
+export function readLetterboxRGBA(
+  image: SkImage,
+  size: number,
+  src?: { x: number; y: number; width: number; height: number },
+): { pixels: Uint8Array; box: Letterbox } {
+  const srcX = src?.x ?? 0;
+  const srcY = src?.y ?? 0;
+  const w = src?.width ?? image.width();
+  const h = src?.height ?? image.height();
+  const scale = size / Math.max(w, h);
+  const dw = w * scale;
+  const dh = h * scale;
+  const padX = (size - dw) / 2;
+  const padY = (size - dh) / 2;
+
+  const surface = Skia.Surface.MakeOffscreen(size, size);
+  if (!surface) throw new Error('오프스크린 서피스를 만들지 못했어요 (Skia 네이티브 메모리 부족일 수 있어요)');
+
+  let snapshot: SkImage | null = null;
+  try {
+    const canvas = surface.getCanvas();
+    canvas.clear(Skia.Color('black'));
+    canvas.drawImageRect(
+      image,
+      { x: srcX, y: srcY, width: w, height: h },
+      { x: padX, y: padY, width: dw, height: dh },
+      Skia.Paint(),
+    );
+    surface.flush();
+
+    snapshot = surface.makeImageSnapshot();
+    const pixels = snapshot.readPixels(0, 0, {
+      width: size,
+      height: size,
+      colorType: ColorType.RGBA_8888,
+      alphaType: AlphaType.Unpremul,
+    }) as Uint8Array | null;
+    if (!pixels) throw new Error('픽셀을 읽지 못했어요');
+
+    return { pixels: pixels.slice(), box: { size, scale, padX, padY, srcX, srcY } };
+  } finally {
+    snapshot?.dispose();
+    surface.dispose();
+  }
+}
+
 /** src 영역을 outSize x outSize로 리사이즈해 픽셀을 읽고, 0~1 스케일 후 imagenet mean/std로 정규화한
  * NHWC(RGB) Float32Array를 반환한다. 종횡비를 유지하지 않는 단순 리사이즈로,
  * 파이썬 학습 파이프라인(cv2.resize)과 동일하게 동작한다.

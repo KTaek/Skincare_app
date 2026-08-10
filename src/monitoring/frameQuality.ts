@@ -1,6 +1,18 @@
 import type { SkImage } from '@shopify/react-native-skia';
 import { readResizedRGBA } from '../ai/skiaPixels';
 import { estimateSkin, SKIN_GATE } from './skinMask';
+import {
+  alignTargetFor,
+  evaluateAlign,
+  ALIGN_GATE,
+  faceRoiFits,
+  MIN_FACE_SCALE_PX,
+  type AlignEvaluation,
+  type FaceFrame,
+  type FaceFraming,
+  type PoseReference,
+  type FaceRoi,
+} from '../ai/faceFrame';
 import { Baseline, FrameEvaluation, HardGateKey, ImageQualityMetrics } from './types';
 
 /**
@@ -71,6 +83,14 @@ export const GATE = {
   autoShutterSoftScore: 0.7,
   /** 이 점수를 넘으면 더 좋은 프레임을 기다리지 않고 바로 확정 */
   excellentSoftScore: 0.88,
+  /**
+   * 면적을 회차 간 비교하려 할 때만 요구하는 밝기 차 상한 (기준 세션 대비).
+   *
+   * 평소에는 밝기가 권장 조건(soft)이다 — 조명 보정이 게인으로 흡수하고, 등급 판정은 그 정도
+   * 차이를 견딘다. 면적은 사정이 다르다: 밝기가 달라지면 세그 마스크의 경계가 통째로 밀려서
+   * 병변이 커지거나 작아진 것처럼 보인다. 그 오차는 보정으로 되돌릴 수 없다.
+   */
+  areaBrightnessDelta: 0.1,
 } as const;
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -87,23 +107,34 @@ const STABILITY_FLOOR = 0.8;
  *
  * 지표마다 봐야 할 영역이 다르므로 표본을 두 번 뜬다:
  *
- *   · 노출·피부·밝기 → **프레임 전체**. 질환 분류 모델이 크롭 없이 프레임을 통째로 먹기 때문에,
- *     가운데만 재면 "가운데는 피부, 주변은 카펫"인 프레임을 통과시키게 된다.
+ *   · 노출·피부·밝기 → **분석에 들어갈 영역**. 보통은 프레임 전체다(질환 분류 모델이 크롭 없이
+ *     프레임을 통째로 먹으므로, 가운데만 재면 "가운데는 피부, 주변은 카펫"인 프레임을 통과시킨다).
+ *     얼굴 자리에서는 roi로 얼굴 관심영역이 들어온다 — 그때 분석에 실제로 들어가는 것이 그
+ *     영역이고, 배경 창문이 하얗게 날아갔다고 촬영을 막을 이유가 없기 때문이다.
  *   · 선명도 → **가운데 고정 정사각형**. 한때 병변 bbox를 관심영역으로 썼지만, 병변 크기는
  *     세션마다 변하는 값이라 관심영역까지 같이 변해 선명도를 세션 간 비교할 수 없게 된다.
  *     정상 피부만 찍은 사진에는 bbox가 아예 없기도 하다. 고정 영역이라야 기준이 선다.
+ *
+ * 정지 판정용 지문(signature)만은 roi가 있어도 **항상 프레임 전체**에서 뜬다. 관심영역은 얼굴을
+ * 따라 움직이므로, 그 안에서 지문을 뜨면 폰과 얼굴이 함께 움직일 때 "멈춰 있다"고 오판한다.
  */
 export function measureImageQuality(
   image: SkImage,
-  opts: { sampleSize?: number } = {},
+  opts: { sampleSize?: number; roi?: FaceRoi } = {},
 ): ImageQualityMetrics {
   const sampleSize = opts.sampleSize ?? 160;
   const w = image.width();
   const h = image.height();
   const n = sampleSize * sampleSize;
 
-  // ── 프레임 전체 표본: 노출·피부·밝기 ─────────────────────────────
+  // ── 프레임 전체 표본: 정지 판정용 지문 (+ roi가 없으면 나머지 지표도 여기서) ────
   const full = readResizedRGBA(image, { x: 0, y: 0, width: w, height: h }, sampleSize, sampleSize);
+  const signature = signatureOf(full, sampleSize);
+
+  // ── 분석 영역 표본: 노출·피부·밝기 ─────────────────────────────
+  const region = opts.roi
+    ? readResizedRGBA(image, opts.roi, sampleSize, sampleSize)
+    : full;
 
   let sumY = 0;
   let specular = 0;
@@ -112,14 +143,10 @@ export function measureImageQuality(
   let clipG = 0;
   let clipB = 0;
 
-  // 정지 판정용 지문을 같은 순회에서 누적한다 (SIG_SIZE×SIG_SIZE 블록 평균)
-  const block = sampleSize / SIG_SIZE;
-  const sig = new Float32Array(SIG_SIZE * SIG_SIZE);
-
-  for (let i = 0, p = 0; i < full.length; i += 4, p++) {
-    const r = full[i];
-    const g = full[i + 1];
-    const b = full[i + 2];
+  for (let i = 0; i < region.length; i += 4) {
+    const r = region[i];
+    const g = region[i + 1];
+    const b = region[i + 2];
 
     // 채널별 포화 — 하나라도 255에 붙으면 그 채널의 정보는 사라진 것이다
     if (r >= 250) clipR += 1;
@@ -131,16 +158,12 @@ export function measureImageQuality(
     const y = 0.299 * r + 0.587 * g + 0.114 * b;
     sumY += y;
     if (y <= 8) shadow += 1;
-
-    const sx = Math.min(SIG_SIZE - 1, ((p % sampleSize) / block) | 0);
-    const sy = Math.min(SIG_SIZE - 1, (((p / sampleSize) | 0) / block) | 0);
-    sig[sy * SIG_SIZE + sx] += y;
   }
 
-  const skin = estimateSkin(full, sampleSize, sampleSize);
+  const skin = estimateSkin(region, sampleSize, sampleSize);
 
   return {
-    sharpness: measureSharpness(image, sampleSize),
+    sharpness: measureSharpness(image, sampleSize, opts.roi),
     highlightClip: specular / n,
     channelClip: Math.max(clipR, clipG, clipB) / n,
     shadowClip: shadow / n,
@@ -149,8 +172,21 @@ export function measureImageQuality(
     skinSource: skin.source,
     skinMedians: skin.skinMedians,
     skinCount: skin.skinCount,
-    signature: normalizeSignature(sig),
+    signature,
   };
+}
+
+/** 프레임을 SIG_SIZE×SIG_SIZE 블록 평균으로 뭉갠 정지 판정용 지문 */
+function signatureOf(px: Uint8Array, sampleSize: number): Float32Array {
+  const block = sampleSize / SIG_SIZE;
+  const sig = new Float32Array(SIG_SIZE * SIG_SIZE);
+  for (let i = 0, p = 0; i < px.length; i += 4, p++) {
+    const y = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    const sx = Math.min(SIG_SIZE - 1, ((p % sampleSize) / block) | 0);
+    const sy = Math.min(SIG_SIZE - 1, (((p / sampleSize) | 0) / block) | 0);
+    sig[sy * SIG_SIZE + sx] += y;
+  }
+  return normalizeSignature(sig);
 }
 
 /** 평균 0·크기 1로 맞춰, 두 지문의 내적이 곧 정규화 상관도가 되게 한다 */
@@ -183,12 +219,17 @@ export function frameSimilarity(a?: Float32Array | null, b?: Float32Array | null
  * 생 라플라시안 분산만 보면 "텍스처가 얼마나 많은가"를 재게 되어, 초점이 맞은 매끈한 피부가
  * 흐린 사진과 같은 값으로 나온다. 전체 대비로 나누면 — 흐릴 때는 고주파만 죽고 대비는 남으므로 —
  * 콘텐츠 의존성이 줄어 baseline 없이도 절대 임계값을 쓸 수 있다.
+ *
+ * roi가 있으면 그 안의 가운데를 잰다. 얼굴 촬영에서 화면 정중앙은 코끝인데, 초점이 맞아야 하는
+ * 것은 피부 전체이고 배경이 섞여 들면 값이 흔들린다 — 관심영역 안에서 재야 기준이 같아진다.
  */
-function measureSharpness(image: SkImage, sampleSize: number): number {
-  const w = image.width();
-  const h = image.height();
+function measureSharpness(image: SkImage, sampleSize: number, roi?: FaceRoi): number {
+  const rx = roi?.x ?? 0;
+  const ry = roi?.y ?? 0;
+  const w = roi?.width ?? image.width();
+  const h = roi?.height ?? image.height();
   const side = Math.min(w, h) * FOCUS_ROI;
-  const src = { x: (w - side) / 2, y: (h - side) / 2, width: side, height: side };
+  const src = { x: rx + (w - side) / 2, y: ry + (h - side) / 2, width: side, height: side };
 
   const px = readResizedRGBA(image, src, sampleSize, sampleSize);
   const gray = new Float32Array(sampleSize * sampleSize);
@@ -222,16 +263,34 @@ function measureSharpness(image: SkImage, sampleSize: number): number {
   return lapVar / grayVar;
 }
 
+/** 얼굴 자리를 찍을 때만 넘어오는 정렬 판정 재료 */
+export interface FaceContext {
+  frame: FaceFrame | null;
+  imageWidth: number;
+  imageHeight: number;
+  /**
+   * 화면에 깔린 지난 사진의 구도 — 이번 촬영이 맞춰야 할 목표.
+   * 없으면(첫 촬영) 고정 표준 프레이밍으로 유도한다.
+   */
+  framing?: FaceFraming;
+  /** 자세(d/v) 비교 기준 — 첫 촬영이면 없다 (그때는 코 대칭만으로 정면성을 본다) */
+  reference?: PoseReference;
+}
+
 /**
  * 필수 조건 → 통과/실패, 권장 조건 → 0~1 점수. 기준 세션이 없으면 밝기 항목은 만점 처리한다.
  *
  * prevSignature를 주면 직전 프레임과의 상관도로 "정지 여부"까지 초점 게이트에 포함한다.
  * 사용자에게는 둘 다 "잠깐 멈춰주세요"로 귀결되는 같은 문제라 칩을 따로 만들지 않았다.
+ *
+ * face를 주면(얼굴 자리) 정렬 판정을 함께 낸다. 그 결과는 hard에 들어가지 않는다 —
+ * 자동 셔터와 면적 측정 자격에만 관여하고, 사진의 신뢰도 점수는 건드리지 않는다.
  */
 export function evaluateFrame(
   metrics: ImageQualityMetrics,
   baseline?: Baseline,
   prevSignature?: Float32Array | null,
+  face?: FaceContext,
 ): FrameEvaluation {
   // 피부 게이트 임계값은 추정 출처를 따라간다 — 부정확한 추정기에 높은 임계값을 걸면
   // 멀쩡한 사진을 막게 된다 (skinMask.ts의 SKIN_GATE 주석 참고)
@@ -279,6 +338,8 @@ export function evaluateFrame(
   // (피부)에 무게를 싣고, 후처리가 게인으로 흡수하는 밝기는 최소로 둔다.
   const softScore = soft.sharpness * 0.45 + soft.skin * 0.35 + soft.brightness * 0.2;
 
+  const align = faceAlign(face);
+
   return {
     metrics,
     hard,
@@ -287,8 +348,124 @@ export function evaluateFrame(
     gauges,
     soft,
     softScore,
-    hint: buildHint(hard, soft, metrics, stability),
+    align,
+    face: face?.frame ?? null,
+    frameSize: { width: face?.imageWidth ?? 0, height: face?.imageHeight ?? 0 },
+    hint: buildHint(hard, soft, metrics, stability, align, face),
   };
+}
+
+/**
+ * 얼굴을 못 찾았을 때의 정렬 판정 — 실패지만 "무엇이 나쁘다"가 아니라 "아직 못 봤다"이므로
+ * 막대는 0으로 두고 안내만 다르게 준다.
+ */
+const NO_FACE: AlignEvaluation = {
+  ok: false,
+  gauge: 0,
+  fault: 'scale',
+  hint: '얼굴이 보이지 않아요 — 가이드 안으로 들어와주세요',
+  scaleLn: 0,
+  poseOk: false,
+  poseRef: null,
+};
+
+function faceAlign(face?: FaceContext): AlignEvaluation | null {
+  if (!face) return null;
+  if (!face.frame) return NO_FACE;
+  return evaluateAlign(
+    face.frame,
+    alignTargetFor(face.imageWidth, face.imageHeight, face.framing),
+    face.reference,
+  );
+}
+
+/**
+ * 이번 촬영의 넓이를 회차 간 비교에 써도 되는지.
+ *
+ * **정렬 통과 여부(align.ok)를 그대로 쓰지 않는다.** 정렬 항목 넷 중 배율·위치·기울기는 넓이를
+ * d·v로 나누는 순간 계산에서 사라진다 — 얼굴이 화면 어디에 얼마나 크게 담겼든 몫은 같다.
+ * 그 셋은 촬영을 안내하기 위한 것(해상도를 확보하고 얼굴이 잘리지 않게)이지 측정의 자격이 아니다.
+ *
+ * 그래서 측정을 실제로 망치는 것만 본다:
+ *
+ *   · 얼굴 — 없으면 나눌 자가 없다
+ *   · 자세 — 고개를 돌리거나 숙이면 투영 자체가 바뀌고, 그건 되돌릴 수 없다
+ *   · 해상도 — 배율은 사라져도 픽셀 수는 사라지지 않는다 (앨범 사진에서 주로 걸린다)
+ *   · 조명 — 밝기가 다르면 마스크 경계가 통째로 밀려 병변이 커지거나 작아진 것처럼 보인다
+ *
+ * 이 구분 덕분에 **앨범에서 고른 사진도 넓이를 잴 수 있다.** 가이드를 볼 기회가 없었으니 구도는
+ * 당연히 어긋나 있지만, 정면으로 찍혔고 얼굴이 충분히 크고 조명이 비슷하면 그 사진의 넓이는
+ * 지난 회차와 견줄 자격이 있다. 구도를 이유로 버리면 멀쩡한 측정을 버리는 것이다.
+ *
+ * 자격이 없어도 사진과 등급은 그대로 기록한다 — 빠지는 것은 넓이 추세뿐이다.
+ */
+export function evaluateAreaEligibility(
+  evaluation: FrameEvaluation,
+  baseline?: Baseline,
+): { ok: boolean; reason?: string } {
+  const { width, height } = evaluation.frameSize;
+  const face = evaluation.face;
+
+  /*
+    실패하면 잰 값을 함께 남긴다.
+
+    사용자에게 보여주는 문구는 "무엇을 고쳐야 하는지"만 말해야 해서 숫자가 들어갈 자리가 없다.
+    그런데 임계값 넷(자세·해상도·잘림·조명)이 전부 아직 캘리브레이션 전이라, 실기기에서 왜
+    걸렸는지 숫자를 못 보면 고칠 방향을 정할 수 없다. 개발 콘솔에만 남긴다.
+  */
+  const reject = (reason: string, detail: Record<string, unknown>) => {
+    console.warn('[area] 넓이 측정 제외:', reason, {
+      frame: `${Math.round(width)}×${Math.round(height)}`,
+      ...detail,
+    });
+    return { ok: false, reason };
+  };
+
+  if (!face) {
+    return reject('얼굴을 찾지 못해 넓이를 잴 기준이 없어요', { detected: false });
+  }
+
+  // 잰 값을 한자리에 모아 둔다 — 어느 검사에서 걸리든 같은 숫자를 함께 남기기 위해서다
+  const seen = {
+    s: Math.round(face.s),
+    minS: MIN_FACE_SCALE_PX,
+    roiSide: Math.round(3 * face.s),
+    noseAsym: Math.round(face.noseAsym * 1000) / 1000,
+    // 기준이 있으면 '자기 기준과의 차이', 없으면 느슨한 절대 상한을 본다
+    refNoseAsym: evaluation.align?.poseRef ?? null,
+    maxNoseAsym: evaluation.align?.poseRef == null ? ALIGN_GATE.noseAsymAbs : ALIGN_GATE.noseAsymDelta,
+    poseLn: null as number | null,
+    brightness: Math.round(evaluation.metrics.brightness * 1000) / 1000,
+    baseBrightness: baseline ? Math.round(baseline.brightness * 1000) / 1000 : null,
+  };
+
+  if (face.s < MIN_FACE_SCALE_PX) {
+    return reject('얼굴이 너무 작게 찍혀서 넓이를 정확히 잴 수 없어요', seen);
+  }
+  // 얼굴이 화면 밖으로 걸치면 잘려 나간 쪽의 병변이 통째로 빠지는데 분모(d·v)는 그대로다 —
+  // 병변이 그대로여도 지수만 내려가고, 그건 호전으로 읽힌다. 잘린 채로 재느니 재지 않는다.
+  if (!faceRoiFits(face, width, height)) {
+    return reject('얼굴이 화면 밖으로 잘려서 넓이를 다 셀 수 없어요', {
+      ...seen,
+      // ROI가 화면보다 크면 "너무 가까이", 크기는 맞는데 안 들어오면 "치우침"이다
+      cause: 3 * face.s > Math.min(width, height) ? '너무 가까움 (ROI > 화면 짧은 변)' : '얼굴이 가장자리로 치우침',
+      faceCenter: `${Math.round(face.cx)},${Math.round(face.cy)}`,
+    });
+  }
+  if (evaluation.align && !evaluation.align.poseOk) {
+    return reject('고개가 돌아가거나 숙여진 채로 찍혀서 넓이 비교가 어려워요', {
+      ...seen,
+      maxPoseLn: ALIGN_GATE.poseLn,
+      ratio: Math.round(face.ratio * 1000) / 1000,
+    });
+  }
+  if (baseline && Math.abs(evaluation.metrics.brightness - baseline.brightness) > GATE.areaBrightnessDelta) {
+    return reject('조명이 지난번과 많이 달라 넓이 비교가 어려워요', {
+      ...seen,
+      maxDelta: GATE.areaBrightnessDelta,
+    });
+  }
+  return { ok: true };
 }
 
 /**
@@ -300,7 +477,11 @@ function buildHint(
   soft: FrameEvaluation['soft'],
   metrics: ImageQualityMetrics,
   stability: number,
+  align: AlignEvaluation | null,
+  face?: FaceContext,
 ): string {
+  // 얼굴을 아직 못 찾았으면 다른 어떤 안내도 소용이 없다 — 화면에 얼굴부터 들어와야 한다
+  if (face && !face.frame) return NO_FACE.hint;
   if (!hard.skin) return '조금 더 가까이 — 화면을 피부로 채워주세요';
   if (!hard.focus) {
     if (stability < GATE.stabilityMin) return '움직이고 있어요 — 잠깐 멈춰주세요';
@@ -310,6 +491,8 @@ function buildHint(
     if (metrics.shadowClip > GATE.shadowClipMax) return '너무 어두워요 — 밝은 곳으로 옮겨주세요';
     return '빛이 반사돼요 — 각도를 살짝 바꿔주세요';
   }
+  // 되돌릴 수 없는 것(초점·노출)을 먼저 해결한 뒤에 정렬을 말한다
+  if (align && !align.ok) return align.hint;
   if (soft.skin < 0.5) return '조금만 더 가까이 가면 더 정확해요';
   return '좋아요 — 그대로 유지해주세요';
 }

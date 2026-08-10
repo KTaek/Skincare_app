@@ -46,19 +46,44 @@ export function itchDisplayValue(vas: number): number {
 /**
  * 증상 부위가 사진에서 차지하는 면적 비율(%) — 경과 관찰 기록의 lesionAreaPct 자리에 들어간다.
  * 분할 마스크의 실제 픽셀 넓이를 쓴다 (bbox 넓이는 길게 번진 증상을 크게 부풀린다).
+ *
+ * ⚠️ 이 값은 **회차 간 비교에 쓸 수 없다.** 분모가 "사진"이라 10cm 더 가까이 가면 병변이
+ *    그대로여도 값이 두 배가 된다. 화면에서는 그날 한 장의 크기를 가늠하는 용도로만 쓰고,
+ *    변화 추이는 아래 faceAreaIndex로 본다.
  */
 export function lesionAreaPct(result: LocalAnalysisResult): number {
   return result.maskAreaPct;
 }
 
 /**
+ * 배율이 상쇄된 병변 넓이 지수 — 얼굴 자리에서만 나온다.
+ *
+ * 분모가 얼굴 크기(안간거리 × 눈-입 거리)라 촬영 거리가 달라져도 값이 변하지 않는다.
+ * 얼굴을 못 찾았으면 null이고, 그때 폴더 기록에는 넓이 추이가 남지 않는다 —
+ * 잴 수 없는 것을 0으로 남기면 그래프가 "병변이 사라졌다"고 말하게 된다.
+ */
+export function faceAreaIndex(result: LocalAnalysisResult): number | null {
+  return result.faceArea?.index ?? null;
+}
+
+/**
  * 분석 결과를 모니터링 폴더 기록이 쓰는 스케일(IGA 0~4, 세부 증상 0~10)로 옮긴다.
  * 폴더 화면의 그래프·요약 박스가 이 스케일을 기준으로 그려지므로 여기서 한 번만 환산한다.
+ *
+ * areaUsable은 촬영 시점에만 알 수 있는 정보(정렬·조명)라 분석 결과에 들어 있지 않고,
+ * 부르는 쪽이 세션에서 꺼내 넘긴다.
  */
-export function toFolderMetrics(result: LocalAnalysisResult) {
+export function toFolderMetrics(result: LocalAnalysisResult, areaUsable = true) {
   const symptoms: Record<SymptomRecordKey, number> = { redness: 0, bumps: 0, scratch: 0, thickening: 0 };
   result.signs.forEach((s) => {
     symptoms[SIGN_DISPLAY[s.sign].recordKey] = Math.round(signDisplayValue(s.sign, s.grade)) / 10;
   });
-  return { iga: result.igaGrade, ...symptoms, areaPct: lesionAreaPct(result) };
+  const faceIndex = faceAreaIndex(result);
+  return {
+    iga: result.igaGrade,
+    ...symptoms,
+    areaPct: lesionAreaPct(result),
+    // 어긋나게 찍힌 회차는 값을 남기지 않는다 — 추세선에서 빼는 가장 단순하고 확실한 방법이다
+    faceAreaIndex: areaUsable ? faceIndex : null,
+  };
 }

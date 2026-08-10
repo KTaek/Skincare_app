@@ -7,6 +7,8 @@ import {
 } from '../theme';
 import { useFolder, dayCount } from '../store';
 import { useProfile } from '../../context/ProfileContext';
+import { useMonitoring } from '../../context/MonitoringContext';
+import { supportsAreaTracking } from '../../monitoring/bodyParts';
 import { plainSiteLabel } from '../../models';
 import { MetricCard, MetricRow, EmptyMetricCard } from '../../components/MetricCard';
 import UsedProductsCard from '../../components/UsedProductsCard';
@@ -15,6 +17,7 @@ import TrendChart, {
 } from '../components/TrendChart';
 import LesionThumb from '../components/LesionThumb';
 import PhotoZoomModal from '../components/PhotoZoomModal';
+import AreaTrendCard from '../components/AreaTrendCard';
 
 // 상세 결과와 사용한 제품이 아래에 붙으면서 한 화면에 다 들어가지 않게 되어, 페이지 전체를
 // 세로로 스크롤한다. 그래프 SVG는 픽셀 높이가 필요해서(y축 눈금 위치 계산) flex로 늘릴 수 없고,
@@ -91,6 +94,9 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   // 많아서, 지표 카드 네 장을 처음부터 펼쳐 두면 사진·그래프가 화면 밖으로 밀려난다.
   const [detailOpen, setDetailOpen] = useState(false);
   const { healthConnected } = useProfile();
+  // 이 폴더가 지켜보는 자리가 넓이를 잴 수 있는 곳인지 — 촬영 화면과 같은 판단을 쓴다
+  const { findTarget } = useMonitoring();
+  const areaTrackable = supportsAreaTracking(findTarget(folder?.targetId)?.part ?? 'chest');
   // 날짜 칸 줄과 그래프가 같은 가로 스크롤 하나를 공유한다(아래 참고) — 처음 열렸을 때(또는 새로
   // 촬영해 기록이 늘었을 때) 오른쪽 끝(오늘)으로 자동 스크롤하기 위한 참조.
   const scrollRef = useRef(null);
@@ -99,6 +105,8 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   // 줄 수 있는 높이가 나온다. 화면 아래까지 이 카드가 남는 공간을 전부 채우도록 페이지 자체는
   // 스크롤하지 않는다.
   const [graphRowH, setGraphRowH] = useState(0);
+  // 넓이 카드의 SVG는 픽셀 폭이 필요하다(퍼센트로 그릴 수 없다) — 실제로 차지한 폭을 재서 넘긴다
+  const [cardW, setCardW] = useState(0);
   // 지금 선택된 날짜 — 기본은 가장 최근 기록(맨 오른쪽). 그래프 포인트나 날짜 칸을 탭하면 바뀐다.
   const [selectedId, setSelectedId] = useState(() => {
     const recs = folder?.records;
@@ -220,6 +228,16 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           </View>
           <TrendChartLegend />
         </View>
+
+        {/* 병변 넓이 변화 — 위 결합 그래프와 축을 나눠 둔 이유는 AreaTrendCard 주석 참고.
+            넓이를 잴 수 있는 자리(지금은 얼굴)의 폴더에서만 보여준다. 팔·다리 폴더에 이 카드를
+            띄우면 영영 채워지지 않을 자리를 계속 비워 두게 되고, "찍으면 볼 수 있다"는 안내가
+            그 폴더에서는 거짓말이 된다. */}
+        {areaTrackable && (
+          <View onLayout={(e) => setCardW(e.nativeEvent.layout.width)}>
+            <AreaTrendCard records={records} width={cardW} />
+          </View>
+        )}
 
         {/* 선택된 날짜의 촬영 이미지 — 원본과 병변 마스크 오버레이를 나란히 보여준다. 사진을 탭하면
             크게 확대해서 볼 수 있다(원본 탭 → 사진 페이지, 오버레이 탭 → overlay 페이지). */}

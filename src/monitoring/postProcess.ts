@@ -1,5 +1,5 @@
 import { GATE } from './frameQuality';
-import { SKIN_GATE } from './skinMask';
+import type { FaceFrame } from '../ai/faceFrame';
 import {
   Baseline,
   ColorNormalization,
@@ -65,13 +65,28 @@ export function computeColorNormalization(
   return { gain, applied };
 }
 
-/** 이번 촬영을 이 자리의 기준(baseline)으로 삼는다 — 다음 촬영의 조명 보정이 여기서 나온다 */
-export function baselineFromCapture(sessionId: string, uri: string, metrics: ImageQualityMetrics): Baseline {
+/**
+ * 이번 촬영을 이 자리의 기준(baseline)으로 삼는다 — 다음 촬영의 조명 보정이 여기서 나온다.
+ *
+ * 얼굴 자리에서는 얼굴 기하(d/v 비율)와 어느 카메라로 찍었는지도 함께 남긴다. 그 둘이 다음
+ * 촬영의 자세 게이트와 카메라 잠금의 기준이 된다 — 사람마다 얼굴 비례가 다르므로 자세는
+ * 절대 기준으로 잴 수 없고, 반드시 같은 사람의 첫 사진과 견줘야 한다.
+ */
+export function baselineFromCapture(
+  sessionId: string,
+  uri: string,
+  metrics: ImageQualityMetrics,
+  extra: { face?: FaceFrame | null; facing?: 'front' | 'back' } = {},
+): Baseline {
   return {
     sessionId,
     processedUri: uri,
     skinReference: metrics.skinMedians,
     brightness: metrics.brightness,
+    face: extra.face
+      ? { areaRef: extra.face.areaRef, ratio: extra.face.ratio, noseAsym: extra.face.noseAsym }
+      : undefined,
+    facing: extra.facing,
   };
 }
 
@@ -113,6 +128,10 @@ export function scoreConfidence(
   else if (!hard.exposure) warnings.push('밝은 부분이나 어두운 부분의 색 정보가 날아갔어요');
   else if (breakdown.exposure < 0.4) warnings.push('빛이 날아가거나 어두워 색 정보가 일부 손실됐어요');
   if (breakdown.color < 0.4) warnings.push('조명이 지난번과 많이 달라요 — 보정했지만 오차가 남을 수 있어요');
+  // 정렬은 점수에도 경고에도 넣지 않는다. 구도가 어긋난 것 자체는 아무것도 망치지 않고
+  // (넓이는 d·v로 정규화되므로), 넓이를 정말 못 쓰게 되는 경우는 evaluateAreaEligibility가
+  // 따로 판단해 확인 화면에 그 이유를 그대로 보여준다. 여기서 함께 경고하면 둘이 어긋난다 —
+  // "어긋나게 찍혔다"고 해 놓고 넓이는 멀쩡히 기록되는 일이 생긴다.
 
   // 필수 조건을 하나라도 놓친 촬영은 추세 계산에서 제외한다
   const usable = hardFailed.length === 0 && score >= 35;

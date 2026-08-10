@@ -136,9 +136,12 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
 
         // dump 모드에서는 모델을 부르지 않고 지어낸 값으로 결과 화면을 채운다.
         // 세션 id를 씨앗으로 써서 같은 촬영이면 항상 같은 숫자가 나온다.
+        //
+        // 촬영 때 찾아 둔 얼굴 기하를 함께 넘긴다 — 있으면 분할이 얼굴 관심영역만 보고,
+        // 병변 넓이를 얼굴 크기로 나눈 지수(회차 간 비교가 되는 유일한 넓이)까지 나온다.
         const local = DUMP_RESULTS
           ? makeDumpLocalResult(cap.session.id)
-          : await analyzeLocal(cap.photoUri, { colorGain });
+          : await analyzeLocal(cap.photoUri, { colorGain, face: cap.session.face });
 
         // 진단명을 직접 넣어 둔 자리이거나 이어서 기록이면 질환 분류 모델은 건너뛴다
         const skipDisease = cap.kind === 'followUp' || !!cap.target.diagnosis?.diagnosed;
@@ -167,7 +170,8 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         if (cap.kind === 'followUp' && cap.folderId) {
           recordExam({
             folderId: cap.folderId,
-            ...toFolderMetrics(local),
+            // 가이드와 어긋나게 찍혔으면 넓이만 빼고 나머지는 그대로 남긴다
+            ...toFolderMetrics(local, cap.session.areaEligible?.ok ?? true),
             itchVas: cap.itchVas,
             photoUri: cap.photoUri,
           });
@@ -204,7 +208,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     });
     recordExam({
       folderId: id,
-      ...toFolderMetrics(analysis.local),
+      ...toFolderMetrics(analysis.local, capture.session.areaEligible?.ok ?? true),
       itchVas: capture.itchVas,
       photoUri: capture.photoUri,
     });
