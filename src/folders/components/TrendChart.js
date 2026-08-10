@@ -26,10 +26,13 @@ import Svg, { Polyline, Circle, Line, Rect } from 'react-native-svg';
 import { monitoringColors as mc, CHART_SERIES, DISPLAY_SCALE } from '../theme';
 
 export const MIN_CHART_H = 150; // chartHeight를 안 넘겨줬을 때 쓰는 기본값
-export const POINT_W = 64; // 그래프 점 하나 = 점 아래 날짜/사진 칸과 반드시 같은 폭이어야 정렬됨
+// 그래프 점 하나 = 점 아래 날짜/사진 칸과 반드시 같은 폭이어야 정렬됨. 세로를 키운 만큼 폭은
+// 좁혀서(예전 64) 그래프가, 그리고 선택 시 물드는 띠(아래 selectedIndex Rect)가 길쭉하게 보이게 한다.
+export const POINT_W = 50;
 export const Y_AXIS_W = 34; // 왼쪽 y축 숫자 라벨 칼럼 폭 — 가로 스크롤과 무관하게 고정
-const PAD_TOP = 10;
-const PAD_BOTTOM = 8;
+const PAD_TOP = 16;
+// 아래 여백을 넉넉히 둔다 — 너무 좁으면(예전 8) 가로 스크롤바(웹)가 y=0 선과 겹쳐 잘린 것처럼 보인다.
+const PAD_BOTTOM = 22;
 
 // 0(바닥)은 축 자체가 기준선이라 라벨을 따로 안 그리고, 가로줄 4개를 25 단위로 균등하게 긋는다
 const GRID_VALUES = [100, 75, 50, 25];

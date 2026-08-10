@@ -116,9 +116,14 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
     [allProductsForDate],
   );
 
+  /**
+   * 홈의 "오늘의 피부 케어" 목록 — 사용 제품을 먼저, 일상 루틴을 그 아래에 묶어서 보여준다.
+   * 예전엔 둘을 시각순으로 한 줄에 섞었는데, 그러면 제품 하나 사이사이에 루틴이 끼어들어
+   * "오늘 뭘 발라야 하지"를 한눈에 훑기 어려웠다. 각 묶음 안에서는 여전히 시각순이다
+   * (routinesForOffset/productsForOffset이 이미 시각순으로 정렬해서 준다).
+   */
   const careItemsForOffset = useCallback(
-    (offsetDays: number) =>
-      byTime([...routinesForOffset(offsetDays), ...productsForOffset(offsetDays)]),
+    (offsetDays: number) => [...productsForOffset(offsetDays), ...routinesForOffset(offsetDays)],
     [routinesForOffset, productsForOffset],
   );
 

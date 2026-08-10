@@ -298,8 +298,10 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
   const skinValue = DISPLAY_SCALE.iga(current.iga);
   const skin = skinConditionInfo(skinValue);
   const tag = previous ? trendLabel(delta) : null;
-  // 표시값(0~100) 기준 변화량 — 카드의 상태 값과 같은 눈금이라야 읽힌다
-  const shift = DISPLAY_SCALE.iga(delta);
+  // 표시값(0~100) 기준 변화량 — 카드의 상태 값과 같은 눈금이라야 읽힌다.
+  // DISPLAY_SCALE.iga는 이제 100에서 빼는 역산(비선형)이라 DISPLAY_SCALE.iga(delta)로 바로 구할
+  // 수 없다 — 두 시점의 표시값을 각각 구해서 차이를 낸다.
+  const shift = previous ? skinValue - DISPLAY_SCALE.iga(previous.iga) : 0;
 
   return (
     <View style={[cardDecoration(16), styles.trendRow]}>
@@ -307,7 +309,7 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
       <View style={{ flex: 1 }}>
         <Text style={styles.trendSite}>{site.label}</Text>
         <Text style={styles.trendMeta}>
-          {current.date.replace(/-/g, '.')} 기준 · 피부 종합 상태 {skinValue.toFixed(1)}
+          {current.date.replace(/-/g, '.')} 기준 · 피부 종합 상태 {Math.round(skinValue)}
           <Text style={{ color: skin.color }}> {skin.ko}</Text>
         </Text>
       </View>
@@ -316,7 +318,7 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
           <MaterialIcons name={tag.icon} size={14} color={tag.color} />
           <Text style={[styles.trendTagText, { color: tag.color }]}>
             {tag.text} {shift > 0 ? '+' : ''}
-            {shift.toFixed(1)}
+            {Math.round(shift)}
           </Text>
         </View>
       ) : (

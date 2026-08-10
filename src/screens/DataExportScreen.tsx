@@ -143,7 +143,7 @@ export default function DataExportScreen({ navigation }: { navigation: any }) {
                           {fmtDate(r.date)} · D+{r.dayOffset}
                         </Text>
                         <Text style={[styles.recordBand, { color: skinConditionInfo(skin).color }]}>
-                          피부 종합 상태 {skin.toFixed(1)} · {skinConditionInfo(skin).ko}
+                          피부 종합 상태 {Math.round(skin)} · {skinConditionInfo(skin).ko}
                         </Text>
                       </View>
                       <CheckBox on={picked.has(k)} />

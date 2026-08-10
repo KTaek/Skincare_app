@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { AppColors } from '../theme';
 import { monitoringColors as mc, monitoringCard, segmentFor } from '../folders/theme';
 import ScaleBar from '../folders/components/ScaleBar';
 
@@ -16,13 +17,14 @@ type Segment = { to: number; ko: string; color: string };
 export function MetricCard({
   label,
   value,
-  unit = '/100',
+  unit = '',
   segments,
   foot,
   children,
 }: {
   label: string;
   value: number;
+  /** 몇 점 만점인지 값 옆에 덧붙인다 (예: "/100") — 기본은 안 붙인다 */
   unit?: string;
   segments: Segment[];
   foot?: string;
@@ -34,8 +36,8 @@ export function MetricCard({
       <View style={styles.headRow}>
         <Text style={styles.label}>{label}</Text>
         <Text style={styles.value}>
-          {Number.isInteger(value) ? value : value.toFixed(1)}
-          <Text style={styles.unit}>{unit}</Text>
+          {Math.round(value)}
+          {unit !== '' && <Text style={styles.unit}>{unit}</Text>}
         </Text>
         <View style={{ flex: 1 }} />
         <Badge text={band.ko} color={band.color} />
@@ -54,11 +56,14 @@ export function MetricCard({
 export function MetricRow({
   label,
   value,
+  unit = '',
   segments,
   first,
 }: {
   label: string;
   value: number;
+  /** 몇 점 만점인지 값 옆에 덧붙인다 (예: "/100") — 기본은 안 붙인다 */
+  unit?: string;
   segments: Segment[];
   /** 카드 안 첫 줄이면 위 구분선을 그리지 않는다 */
   first?: boolean;
@@ -71,8 +76,8 @@ export function MetricRow({
           {label}
         </Text>
         <Text style={styles.rowValue}>
-          {value.toFixed(1)}
-          <Text style={styles.rowUnit}>/100</Text>
+          {Math.round(value)}
+          {unit !== '' && <Text style={styles.rowUnit}>{unit}</Text>}
         </Text>
         <View style={{ flex: 1 }} />
         <Badge text={band.ko} color={band.color} small />
@@ -94,10 +99,40 @@ export function EmptyMetricCard({ label, text }: { label: string; text: string }
   );
 }
 
+/**
+ * 지표 하나를 작은 정사각 박스로 보여주는 요약칸 — 라벨 / 큰 숫자 / 단계 배지를 세로로 쌓는다.
+ * 홈의 "최근 피부 상태" 카드가 원래 자리이고, 기록 탭의 날짜별 분석 결과도 같은 모양을 써서
+ * 어느 화면에서 봐도 같은 지표는 같게 보이게 한다. 세 칸을 나란히(피부 종합 상태 · 가려움 ·
+ * 수면 점수) 쓰는 게 기본 쓰임이다.
+ */
+export function StatBox({
+  label,
+  value,
+  band,
+}: {
+  label: string;
+  value: string;
+  band: { ko: string; color: string } | null;
+}) {
+  return (
+    <View style={styles.statBox}>
+      <Text style={styles.statLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <View style={{ height: 7 }} />
+      <Text style={styles.statValue}>{value}</Text>
+      <View style={{ height: 7 }} />
+      {band ? <Badge text={band.ko} color={band.color} small /> : <Text style={styles.statNone}>미기재</Text>}
+    </View>
+  );
+}
+
 export function Badge({ text, color, small }: { text: string; color: string; small?: boolean }) {
   return (
     <View style={[styles.badge, small && styles.badgeSmall, { backgroundColor: color }]}>
-      <Text style={[styles.badgeText, small && styles.badgeTextSmall]}>{text}</Text>
+      <Text style={[styles.badgeText, small && styles.badgeTextSmall]} numberOfLines={1}>
+        {text}
+      </Text>
     </View>
   );
 }
@@ -128,4 +163,12 @@ const styles = StyleSheet.create({
     paddingVertical: 18, alignItems: 'center',
   },
   emptyText: { fontSize: 15, fontWeight: '800', color: mc.sub },
+
+  statBox: {
+    flex: 1, alignItems: 'center', backgroundColor: '#F6F8FA', borderRadius: 14,
+    paddingVertical: 12, paddingHorizontal: 4,
+  },
+  statLabel: { fontSize: 11, fontWeight: '600', color: AppColors.sub },
+  statValue: { fontSize: 21, fontWeight: '800', color: AppColors.ink },
+  statNone: { fontSize: 11.5, fontWeight: '800', color: AppColors.sub, paddingVertical: 4 },
 });

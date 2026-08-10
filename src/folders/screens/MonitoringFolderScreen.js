@@ -19,7 +19,9 @@ import PhotoZoomModal from '../components/PhotoZoomModal';
 // 상세 결과와 사용한 제품이 아래에 붙으면서 한 화면에 다 들어가지 않게 되어, 페이지 전체를
 // 세로로 스크롤한다. 그래프 SVG는 픽셀 높이가 필요해서(y축 눈금 위치 계산) flex로 늘릴 수 없고,
 // 스크롤 안에서는 "남는 공간"이라는 것도 없으므로 그래프 카드에 고정 높이를 준다.
-const GRAPH_ROW_H = 250; // 날짜 칸 줄 + 그래프가 함께 차지하는 높이
+// (예전엔 190px이라 가로 폭에 비해 너무 짧고 뚱뚱해 보였고, 가로 스크롤바가 그래프 맨 아래
+// 선과 겹쳐서 잘린 것처럼 보였다 — 세로를 키우고 TrendChart의 아래 여백(PAD_BOTTOM)도 늘렸다.)
+const GRAPH_ROW_H = 340; // 날짜 칸 줄 + 그래프가 함께 차지하는 높이
 const GRAPH_H_DEFAULT = GRAPH_ROW_H - 60;
 const PHOTO_SIZE = 110;
 const SYMPTOM_ORDER = ['redness', 'bumps', 'scratch', 'thickening'];
@@ -52,14 +54,13 @@ function fmtFull(dateKey) {
 const LIGHT_PILL_BGS = [mc.sev1, mc.sev2, mc.warn];
 
 /** 그래프에서 선택된 날짜의 값을 보여주는 요약 박스 — 그래프 포인트를 탭하면 값이 함께 바뀐다 */
-function SummaryBox({ label, value, unit, pillText, pillColor }) {
+function SummaryBox({ label, value, pillText, pillColor }) {
   const pillTextColor = LIGHT_PILL_BGS.includes(pillColor) ? mc.ink : '#fff';
   return (
     <View style={[monitoringCard(14), styles.summaryBox]}>
       <Text style={styles.summaryLabel} numberOfLines={1}>{label}</Text>
       <View style={styles.summaryValueRow}>
         <Text style={styles.summaryValue}>{value}</Text>
-        <Text style={styles.summaryUnit}>{unit}</Text>
       </View>
       <View style={[styles.summaryPill, { backgroundColor: pillColor }]}>
         <Text style={[styles.summaryPillText, { color: pillTextColor }]} numberOfLines={1}>{pillText}</Text>
@@ -153,12 +154,11 @@ export default function MonitoringFolderScreen({ navigation, route }) {
         {/* 그래프에서 선택된 날짜의 값을 보여주는 요약 박스 3개 — 그래프 포인트를 탭하면 함께 바뀐다.
             세 지표 모두 DISPLAY_SCALE로 0~100 표시값으로 맞춰서 같은 축·같은 기준으로 비교할 수 있다. */}
         <View style={styles.summaryRow}>
-          <SummaryBox label="피부 종합 상태" value={skinDisplay.toFixed(1)} unit="/100" pillText={skin.ko} pillColor={skin.color} />
-          <SummaryBox label="가려움" value={itchDisplay} unit="/100" pillText={itch.ko} pillColor={itch.color} />
+          <SummaryBox label="피부 종합 상태" value={Math.round(skinDisplay)} pillText={skin.ko} pillColor={skin.color} />
+          <SummaryBox label="가려움" value={itchDisplay} pillText={itch.ko} pillColor={itch.color} />
           <SummaryBox
             label="수면 점수"
             value={sleep ? selectedRecord.sleepScore : '-'}
-            unit={sleep ? '/100' : ''}
             pillText={sleep ? sleep.ko : '미기재'}
             pillColor={sleep ? sleep.color : mc.navInactive}
           />
@@ -253,8 +253,9 @@ export default function MonitoringFolderScreen({ navigation, route }) {
         {detailOpen && (
           <>
             {/* 상세 결과 화면과 같은 카드(MetricCard)를 쓴다 — 같은 값을 두 화면에서 다른 모양으로
-                보여주면 어느 쪽이 맞는지 헷갈린다. */}
-            <MetricCard label="피부 종합 상태" value={skinDisplay} segments={SKIN_SEGMENTS} />
+                보여주면 어느 쪽이 맞는지 헷갈린다. 위 요약 박스(SummaryBox)와 달리 여기는 4가지
+                증상까지 다 펼쳐 보여주는 상세 영역이라 몇 점 만점인지("/100")도 함께 적는다. */}
+            <MetricCard label="피부 종합 상태" value={skinDisplay} unit="/100" segments={SKIN_SEGMENTS} />
 
             <View style={[monitoringCard(), styles.metricCard]}>
               <Text style={styles.metricCardLabel}>4가지 증상</Text>
@@ -263,16 +264,17 @@ export default function MonitoringFolderScreen({ navigation, route }) {
                   key={key}
                   label={SYMPTOMS[key].label}
                   value={DISPLAY_SCALE.symptom(selectedRecord[key])}
+                  unit="/100"
                   segments={SYMPTOM_SEGMENTS_BASE}
                   first={i === 0}
                 />
               ))}
             </View>
 
-            <MetricCard label="가려움" value={itchDisplay} segments={ITCH_SEGMENTS} />
+            <MetricCard label="가려움" value={itchDisplay} unit="/100" segments={ITCH_SEGMENTS} />
 
             {healthConnected ? (
-              <MetricCard label="수면 점수" value={selectedRecord.sleepScore} segments={SLEEP_SEGMENTS} />
+              <MetricCard label="수면 점수" value={selectedRecord.sleepScore} unit="/100" segments={SLEEP_SEGMENTS} />
             ) : (
               <EmptyMetricCard label="수면 점수" text="미기재" />
             )}
@@ -307,7 +309,6 @@ const styles = StyleSheet.create({
   summaryLabel: { fontSize: 11, color: mc.sub, fontWeight: '700' },
   summaryValueRow: { flexDirection: 'row', alignItems: 'flex-end' },
   summaryValue: { fontSize: 22, fontWeight: '800', color: mc.ink },
-  summaryUnit: { fontSize: 11, color: mc.sub, marginLeft: 2, marginBottom: 3 },
   summaryPill: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 3, maxWidth: '100%' },
   summaryPillText: { fontSize: 10.5, fontWeight: '800' },
 
@@ -315,7 +316,7 @@ const styles = StyleSheet.create({
   dateStripRange: { fontSize: 14, fontWeight: '800', color: mc.ink },
   dateCellRow: { flexDirection: 'row' },
   dateCell: { width: DATE_CELL_W, alignItems: 'center', justifyContent: 'center' },
-  dateCellInner: { alignItems: 'center', paddingVertical: 8, paddingHorizontal: 4, borderRadius: 14, minWidth: 54 },
+  dateCellInner: { alignItems: 'center', paddingVertical: 8, paddingHorizontal: 4, borderRadius: 14, minWidth: 42 },
   dateCellInnerActive: { backgroundColor: mc.greenTop },
   dateCellWeekday: { fontSize: 11.5, fontWeight: '700', color: mc.sub },
   dateCellDay: { fontSize: 14, fontWeight: '800', color: mc.ink, marginTop: 2 },

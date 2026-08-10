@@ -11,7 +11,7 @@ const FEEDBACK_MAIL = 'mailto:support@hnsbiolab.com?subject=%EA%B1%B4%EC%9D%98%E
 type Sheet = 'name' | 'body' | null;
 
 /**
- * "마이페이지" 탭 — 프로필과 앱 설정, 그리고 회사/약관 링크 모음.
+ * "내 정보" 탭 — 프로필과 앱 설정, 그리고 회사/약관 링크 모음.
  *
  * Samsung Health 연동 스위치가 여기 있는 게 중요하다: 수면 점수는 앱이 재는 값이 아니라
  * 스마트워치에서 넘어오는 값이라, 연동을 끄면 홈·결과·상세 화면의 수면 점수가 전부
@@ -31,7 +31,7 @@ export default function ProfileScreen({ navigation }: { navigation: any }) {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 28 }}
       >
-        <Text style={styles.title}>마이페이지</Text>
+        <Text style={styles.title}>내 정보</Text>
         <View style={{ height: 16 }} />
 
         {/* 내 프로필 */}

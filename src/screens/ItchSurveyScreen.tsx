@@ -51,7 +51,7 @@ export default function ItchSurveyScreen({
         <View style={{ height: 26 }} />
         <View style={[styles.bandBox, { borderColor: band.color }]}>
           <Text style={[styles.bandText, { color: band.color }]}>{band.ko}</Text>
-          <Text style={styles.bandHint}>{ITCH_HINTS[band.index]}</Text>
+          <Text style={styles.bandHint}>{itchHintFor(vas)}</Text>
         </View>
       </ScrollView>
 
@@ -64,13 +64,18 @@ export default function ItchSurveyScreen({
   );
 }
 
-/** 4단계마다 "이 정도면 어떤 느낌인지"를 한 줄로 — 숫자만 보고 고르기 어려워서 붙였다 */
-const ITCH_HINTS = [
-  '가렵지 않아요',
-  '가끔 신경 쓰이지만 참을 만해요',
-  '자주 긁게 되고 일에 방해가 돼요',
-  '긁느라 잠들기 어려울 정도예요',
-];
+/**
+ * 숫자(VAS 0~10)마다 "이 정도면 어떤 느낌인지"를 한 줄로 — 숫자만 보고 고르기 어려워서 붙였다.
+ * 4단계 배지(band)와는 다른 경계선을 쓴다 — 이 문구는 실제 문진 기준(생활·수면 방해 정도)을
+ * 그대로 옮긴 것이라, ITCH_SEGMENTS(화면 표시용 4단계)와 굳이 같은 경계일 필요가 없다.
+ */
+function itchHintFor(vas: number): string {
+  if (vas <= 0) return '가려움 없음';
+  if (vas <= 3) return '무의식 중에 긁음 (생활이나 수면방해는 없음)';
+  if (vas <= 6) return '생활, 수면 방해 정도의 가려움 (온종일은 아님)';
+  if (vas <= 9) return '대부분의 시간 동안 생활과 수면을 방해하는 가려움';
+  return '가려움으로 생활과 수면 장애가 심함';
+}
 
 /**
  * VAS 슬라이더 — 0(가렵지 않음) ~ 10(상상할 수 있는 최악).
@@ -136,11 +141,6 @@ function VasSlider({
           </Pressable>
         ))}
       </View>
-
-      <View style={styles.endsRow}>
-        <Text style={styles.endText}>가렵지 않음</Text>
-        <Text style={[styles.endText, { textAlign: 'right' }]}>상상할 수 있는{'\n'}최악의 가려움</Text>
-      </View>
     </View>
   );
 }
@@ -185,9 +185,6 @@ const styles = StyleSheet.create({
   numberRow: { flexDirection: 'row', marginTop: 2 },
   numberBtn: { flex: 1, alignItems: 'center', paddingVertical: 4 },
   number: { fontSize: 12, color: AppColors.sub },
-
-  endsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
-  endText: { flex: 1, fontSize: 11, color: AppColors.sub, lineHeight: 15 },
 
   bandBox: {
     borderRadius: 14,

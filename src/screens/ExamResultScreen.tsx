@@ -115,6 +115,7 @@ export default function ExamResultScreen({
         <MetricCard
           label="피부 종합 상태"
           value={skinValue}
+          unit="/100"
           segments={SKIN_SEGMENTS}
           foot={`IGA ${GRADE_NAMES_KO[analysis.local.igaGradeName] ?? analysis.local.igaGradeName}`}
         />
@@ -122,7 +123,7 @@ export default function ExamResultScreen({
         <SymptomCard analysis={analysis} />
 
         {capture.itchVas != null && (
-          <MetricCard label="가려움" value={itchDisplayValue(capture.itchVas)} segments={ITCH_SEGMENTS} />
+          <MetricCard label="가려움" value={itchDisplayValue(capture.itchVas)} unit="/100" segments={ITCH_SEGMENTS} />
         )}
 
         {isNew && <UsedProductsCard date={new Date()} />}
@@ -279,12 +280,17 @@ function SymptomCard({ analysis }: { analysis: ExamAnalysis }) {
       <Text style={styles.cardLabel}>4가지 증상</Text>
       {SIGN_ORDER.map((sign, i) => {
         const found = byKey[sign];
-        const value = found ? signDisplayValue(sign, found.grade) : 0;
+        // signDisplayValue는 원래(낮을수록 좋음) 스케일이라, 다른 카드처럼 "높을수록 좋음"으로
+        // 보여주려면 100에서 뺀다 — SYMPTOM_SEGMENTS_BASE도 이미 그 방향으로 정의돼 있다.
+        // (값이 없으면 원래 스케일에서 0 = 정상으로 보고, 뒤집은 값도 100 = 정상으로 남는다)
+        const raw = found ? signDisplayValue(sign, found.grade) : 0;
+        const value = 100 - raw;
         return (
           <MetricRow
             key={sign}
             label={SIGN_DISPLAY[sign].label}
             value={value}
+            unit="/100"
             segments={SYMPTOM_SEGMENTS_BASE}
             first={i === 0}
           />

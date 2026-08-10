@@ -112,22 +112,22 @@ function recordSection(
 
   if (fields.has('skin')) {
     const v = DISPLAY_SCALE.iga(r.iga);
-    rows.push(metricRow('피부 종합 상태', `${v.toFixed(1)} / 100`, skinConditionInfo(v).ko));
+    rows.push(metricRow('피부 종합 상태', `${Math.round(v)}`, skinConditionInfo(v).ko));
   }
   if (fields.has('symptoms')) {
     SYMPTOM_ORDER.forEach((key) => {
       const v = DISPLAY_SCALE.symptom(r[key]);
-      rows.push(metricRow(SYMPTOMS[key].label, `${v.toFixed(1)} / 100`, symptomBand(v).ko));
+      rows.push(metricRow(SYMPTOMS[key].label, `${Math.round(v)}`, symptomBand(v).ko));
     });
   }
   if (fields.has('itch')) {
     const v = DISPLAY_SCALE.itch(r.itchVas);
-    rows.push(metricRow('가려움', `${v} / 100`, itchBand(v).ko));
+    rows.push(metricRow('가려움', `${v}`, itchBand(v).ko));
   }
   if (fields.has('sleep')) {
     rows.push(
       healthConnected
-        ? metricRow('수면 점수', `${r.sleepScore} / 100`, sleepBand(r.sleepScore).ko)
+        ? metricRow('수면 점수', `${r.sleepScore}`, sleepBand(r.sleepScore).ko)
         : metricRow('수면 점수', '미기재'),
     );
   }

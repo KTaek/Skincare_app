@@ -85,21 +85,26 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
     const itchSpan = Math.max(1.5, Math.abs(to.itch - from.itch));
     const igaSpan = Math.max(1, Math.abs(to.iga - from.iga));
 
-    // 수면 점수(삼성헬스, 0~100, 정수) · 가려움 VAS(0~10, 정수) · 피부 종합 상태 IGA(0~4, 소수 가능)
+    // 수면 점수(삼성헬스, 0~100, 정수) · 가려움 VAS(0~10, 정수) — 둘 다 그대로 나올 수 있는 값이다.
     const sleepScore = clamp(Math.round(lerp(from.sleep, to.sleep, t) + wave(0) * sleepSpan * 0.4 + noise() * sleepSpan * 0.14), 0, 100);
     const itchVas = clamp(Math.round(lerp(from.itch, to.itch, t) + wave(1.3) * itchSpan * 0.4 + noise() * itchSpan * 0.14), 0, 10);
-    // 모델이 5단계(0~4) 각각의 확률에 대한 기댓값을 출력하므로 argmax처럼 정수로 딱 떨어지지 않고
-    // 1.7처럼 소수로도 나온다 — round1로 소수 첫째 자리까지만 남겨 정수/소수가 섞여서 나오게 한다.
-    const iga = clamp(round1(lerp(from.iga, to.iga, t) + wave(2.6) * igaSpan * 0.4 + noise() * igaSpan * 0.14), 0, 4);
+    // 피부 종합 상태(IGA) — 모델은 5단계(0~4) 확률의 기댓값을 계산해서 쓰지만, 화면·기록에 실제로
+    // 남는 값(igaGrade)은 그 기댓값을 등급 경계로 이산화한 정수다(src/ai/dex.ts의 bucketize) —
+    // 1.7 같은 소수는 실제로는 절대 나오지 않으므로, dump도 정수 등급만 뽑는다.
+    const igaContinuous = clamp(lerp(from.iga, to.iga, t) + wave(2.6) * igaSpan * 0.4 + noise() * igaSpan * 0.14, 0, 4);
+    const iga = Math.round(igaContinuous);
 
-    // 세부 증상(피부 붉기 · 오돌토돌함 · 긁은 상처 · 피부 두꺼워짐, 0~10) — 종합 점수(iga×2)를
-    // 중심으로 증상마다 독립적인 잡음을 더해, 같은 날이라도 증상별로 조금씩 다르게 흔들리게 한다.
-    const skin10 = iga * 2;
-    const symptomNoise = (phaseOffset) => wave(phaseOffset) * 1.2 + noise() * 1.4;
-    const redness = clamp(round1(skin10 + symptomNoise(3.1)), 0, 10);
-    const bumps = clamp(round1(skin10 + symptomNoise(4.4)), 0, 10);
-    const scratch = clamp(round1(skin10 + symptomNoise(5.7)), 0, 10);
-    const thickening = clamp(round1(skin10 + symptomNoise(7.0)), 0, 10);
+    // 세부 증상(피부 붉기 · 오돌토돌함 · 긁은 상처 · 피부 두꺼워짐) — 모델은 sign마다 4단계
+    // (None~Severe, 0~3)만 예측하므로 화면 스케일(0~10)로 옮겨도 {0, 3.3, 6.7, 10} 네 값만
+    // 나올 수 있다(examMetrics.signDisplayValue와 같은 식). 종합 점수(iga)를 중심으로 등급을
+    // 흔들어, 같은 날이라도 증상별로 조금씩 다른 등급이 나오게 한다.
+    const symptomNoise = (phaseOffset) => wave(phaseOffset) * 0.9 + noise() * 1.1;
+    const gradeToDisplay10 = (grade) => Math.round((grade / 3) * 100) / 10;
+    const symptomGrade = (phaseOffset) => Math.round(clamp((iga * 3) / 4 + symptomNoise(phaseOffset), 0, 3));
+    const redness = gradeToDisplay10(symptomGrade(3.1));
+    const bumps = gradeToDisplay10(symptomGrade(4.4));
+    const scratch = gradeToDisplay10(symptomGrade(5.7));
+    const thickening = gradeToDisplay10(symptomGrade(7.0));
 
     const date = addDaysKey(startKey, offset);
     return {

@@ -36,7 +36,7 @@ const ProfileWrapped = withTopInset(ProfileScreen);
 
 /**
  * 하단 바가 붙어 있는 5개 탭 — 앱의 기본 화면.
- * 홈 · 피부 촬영 · 기록 · 루틴 · 마이페이지. 전신 결과는 기록 탭 안에서 스택 화면으로 열린다.
+ * 홈 · 피부 촬영 · 기록 · 루틴 · 내 정보. 전신 결과는 기록 탭 안에서 스택 화면으로 열린다.
  */
 function Tabs() {
   return (

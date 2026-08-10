@@ -22,7 +22,10 @@ export const SIGN_DISPLAY: Record<SignKey, { label: string; recordKey: SymptomRe
 export const SIGN_ORDER: SignKey[] = ['erythema', 'papulation', 'excoriation', 'lichenification'];
 
 /**
- * sign 등급(0 ~ 최고 등급) → 다른 지표와 같은 0~100 표시값.
+ * sign 등급(0 ~ 최고 등급) → 0~100 "원래" 스케일값(0 = 정상, 100 = 최고 등급 — 낮을수록 좋다).
+ * DISPLAY_SCALE과 달리 역산하지 않은 raw 값이다 — toFolderMetrics가 경과 관찰 기록에 그대로
+ * 저장해 두는 축이 이 스케일이라, 여기서 방향을 바꾸면 저장된 기록의 의미가 흔들린다. 화면에
+ * "높을수록 좋음"으로 바로 보여줘야 하면 100에서 빼서 쓴다(ExamResultScreen의 SymptomCard 참고).
  * 등급 수는 labels.json이 sign마다 들고 있으므로 하드코딩하지 않고 거기서 읽는다.
  */
 export function signDisplayValue(sign: SignKey, grade: number): number {

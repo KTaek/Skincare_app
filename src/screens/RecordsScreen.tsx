@@ -23,11 +23,18 @@ function toCellKey(dateStr: string): string {
   return `${y}-${m}-${d}`;
 }
 
+/** 오늘 날짜의 달력 셀 키 — 처음 화면을 열었을 때 기본으로 선택해 둔다 */
+function todayCellKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
 export default function RecordsScreen() {
   const folders = useFolders();
   const navigation = useNavigation<any>();
   const [view, setView] = useState(() => new Date());
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // 캘린더를 누르기 전에도 오늘 기록이 바로 보이도록, 기본 선택 날짜를 오늘로 둔다.
+  const [selectedKey, setSelectedKey] = useState<string | null>(() => todayCellKey());
 
   // 모든 모니터링 폴더의 기록을 날짜(달력 셀 키) 기준으로 묶어 둔다 — 같은 날 여러 부위를
   // 찍었으면 그 날짜 칸에 여러 건이 쌓인다.
@@ -67,21 +74,9 @@ export default function RecordsScreen() {
         onChangeMonth={changeMonth}
       />
 
-      {selectedKey != null && (
-        <>
-          <View style={{ height: 16 }} />
-          {/* 날짜가 바뀌면 접힘 상태·메모 입력칸을 새로 세운다 */}
-          <DetailSection
-            key={selectedKey}
-            dateKey={selectedKey}
-            entries={entriesByDate[selectedKey]}
-            onClose={() => setSelectedKey(null)}
-          />
-        </>
-      )}
-
-      <View style={{ height: 22 }} />
-      {/* 이 탭에서 가장 자주 쓰는 길 — 지켜보는 자리별 추이를 보러 간다. */}
+      <View style={{ height: 16 }} />
+      {/* 이 탭에서 가장 자주 쓰는 길 — 지켜보는 자리별 추이를 보러 간다. 날짜를 골라야만 나오는
+          그날의 분석 결과보다 먼저 두어, 스크롤하지 않아도 항상 바로 보인다. */}
       <ActionBox
         icon="timeline"
         title="경과 관찰"
@@ -98,6 +93,14 @@ export default function RecordsScreen() {
         trailing="chevron-right"
         onPress={() => navigation.navigate('WholeBody')}
       />
+
+      {selectedKey != null && (
+        <>
+          <View style={{ height: 22 }} />
+          {/* 날짜가 바뀌면 접힘 상태·메모 입력칸을 새로 세운다 */}
+          <DetailSection key={selectedKey} dateKey={selectedKey} entries={entriesByDate[selectedKey]} />
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -242,16 +245,17 @@ function NavBtn({ icon, onPress }: { icon: 'chevron-left' | 'chevron-right'; onP
 function DetailSection({
   dateKey,
   entries,
-  onClose,
 }: {
   dateKey: string;
   entries: FolderEntry[] | undefined;
-  /** "모두 접기" — 날짜 선택을 풀어서 이 영역을 통째로 닫는다 */
-  onClose: () => void;
 }) {
   const list = entries ?? [];
   // 기록 하나하나의 접힘 상태. 기본은 펼침이고, 한 번 접으면 그 날짜를 보고 있는 동안 유지된다.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // "모두 접기" — 날짜 제목 줄은 그대로 두고, 그 아래 분석 결과 목록만 통째로 접었다 편다.
+  // (예전엔 날짜 선택 자체를 풀어서 제목 줄까지 함께 사라졌는데, 그러면 다시 펼 방법이
+  // 달력을 다시 누르는 것뿐이라 불편했다.)
+  const [expanded, setExpanded] = useState(true);
   const idOf = (entry: FolderEntry, i: number) => `${entry.folder.id}:${entry.record.id ?? i}`;
 
   const [y, m, d] = dateKey.split('-').map(Number);
@@ -264,39 +268,41 @@ function DetailSection({
           {dateStr} 기록{list.length > 1 ? ` · ${list.length}건` : ''}
         </Text>
         <View style={{ flex: 1 }} />
-        {/* 카드마다 있는 접기와 달리 이건 이 영역 자체를 닫는다 — 날짜를 고르기 전 화면으로 돌아간다 */}
-        <Pressable style={styles.toggleAllBtn} onPress={onClose} hitSlop={6}>
-          <MaterialIcons name="unfold-less" size={14} color={AppColors.sub} />
-          <Text style={styles.toggleAllText}>모두 접기</Text>
+        <Pressable style={styles.toggleAllBtn} onPress={() => setExpanded((v) => !v)} hitSlop={6}>
+          <MaterialIcons name={expanded ? 'unfold-less' : 'unfold-more'} size={14} color={AppColors.sub} />
+          <Text style={styles.toggleAllText}>{expanded ? '모두 접기' : '펼치기'}</Text>
         </Pressable>
       </View>
-      <View style={{ height: 10 }} />
 
-      {list.length === 0 ? (
-        <View style={[cardDecoration(), { padding: 18, alignItems: 'center' }]}>
-          <Text style={styles.noRecord}>이 날에는 촬영 기록이 없어요.</Text>
-        </View>
-      ) : (
-        list.map((entry, i) => {
-          const id = idOf(entry, i);
-          return (
-            <View key={id} style={i !== list.length - 1 ? { marginBottom: 12 } : undefined}>
-              <DetailCard
-                entry={entry}
-                collapsed={!!collapsed[id]}
-                onToggle={() => setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }))}
-              />
+      {expanded && (
+        <>
+          <View style={{ height: 10 }} />
+          {list.length === 0 ? (
+            <View style={[cardDecoration(), { padding: 18, alignItems: 'center' }]}>
+              <Text style={styles.noRecord}>이 날에는 촬영 기록이 없어요.</Text>
             </View>
-          );
-        })
+          ) : (
+            list.map((entry, i) => {
+              const id = idOf(entry, i);
+              return (
+                <View key={id} style={i !== list.length - 1 ? { marginBottom: 12 } : undefined}>
+                  <DetailCard
+                    entry={entry}
+                    collapsed={!!collapsed[id]}
+                    onToggle={() => setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }))}
+                  />
+                </View>
+              );
+            })
+          )}
+        </>
       )}
     </>
   );
 }
 
-
 /**
- * 홈의 "최근 피부 상태" 카드와 같은 3개 지표(피부 종합 상태 · 가려움 · 수면 점수)로 통일했다 —
+ * 홈의 "최근 피부 상태" 카드와 같은 3개 지표(피부 종합 상태 · 가려움 · 수면 점수)를 보여준다 —
  * 사진/부위/병명만 이 폴더가 참조하는 모니터링 대상(MonitorTarget)에서 그대로 가져온다.
  */
 function DetailCard({
@@ -354,6 +360,9 @@ function DetailCard({
           onPress={() => navigation.navigate('MonitoringDetail', { folderId: folder.id, recordId: record.id })}
         >
           <View style={{ height: 10 }} />
+          {/* 사진은 왼쪽에, 병명·상세결과 링크·세 지표는 그 옆 한 칸에 — 지표 세 칸을 박스로
+              칠하지 않고 "|" 구분선만 세워 나눈다. 사진·부위 표시가 있는 왼쪽 칸의 세로 폭을
+              넘지 않도록 이 칸도 라벨·점수·단계 세 줄로만 짧게 고정한다. */}
           <View style={{ flexDirection: 'row' }}>
             <View style={{ alignItems: 'center' }}>
               <LesionThumb
@@ -361,7 +370,7 @@ function DetailCard({
                 areaPct={record.lesionAreaPct}
                 seed={record.seed}
                 mode="photo"
-                size={60}
+                size={64}
                 style={undefined}
               />
               {siteLabel != null && (
@@ -375,24 +384,22 @@ function DetailCard({
             </View>
             <View style={{ width: 12 }} />
             <View style={{ flex: 1, justifyContent: 'center' }}>
-              <Text style={styles.detailDisease}>{diseaseName}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={styles.detailDisease} numberOfLines={1}>
+                  {diseaseName}
+                </Text>
+                <Text style={styles.detailLink}>상세 결과</Text>
+                <MaterialIcons name="chevron-right" size={16} color={AppColors.sub} />
+              </View>
+              <View style={{ height: 8 }} />
+              <View style={styles.statCols}>
+                <StatCol label="피부 종합 상태" value={Math.round(skinValue)} band={skin} />
+                <View style={styles.statColDivider} />
+                <StatCol label="가려움" value={itchValue} band={itch} />
+                <View style={styles.statColDivider} />
+                <StatCol label="수면 점수" value={sleep ? record.sleepScore : '-'} band={sleep} />
+              </View>
             </View>
-            <View style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center' }}>
-              <Text style={styles.detailLink}>상세 결과</Text>
-              <MaterialIcons name="chevron-right" size={16} color={AppColors.sub} />
-            </View>
-          </View>
-          <View style={{ height: 14 }} />
-          <View style={{ flexDirection: 'row' }}>
-            <MonitorStat label="피부 종합 상태" value={skinValue.toFixed(1)} unit="/100" band={skin.ko} bandColor={skin.color} />
-            <MonitorStat label="가려움" value={`${itchValue}`} unit="/100" band={itch.ko} bandColor={itch.color} />
-            <MonitorStat
-              label="수면 점수"
-              value={sleep ? `${record.sleepScore}` : '-'}
-              unit={sleep ? '/100' : undefined}
-              band={sleep?.ko ?? '미기재'}
-              bandColor={sleep?.color}
-            />
           </View>
         </Pressable>
       )}
@@ -405,37 +412,27 @@ function DetailCard({
   );
 }
 
-function MonitorStat({
+/** 지표 세 칸 중 하나 — 박스로 칠하지 않고 라벨·점수·단계 세 줄만 쌓는다 (사이 구분은 세로선) */
+function StatCol({
   label,
   value,
-  unit,
   band,
-  bandColor,
 }: {
   label: string;
-  value: string;
-  unit?: string;
-  band?: string;
-  bandColor?: string;
+  value: number | string;
+  band: { ko: string; color: string } | null;
 }) {
   return (
-    <View style={styles.metric}>
-      <Text style={styles.metricLabel} numberOfLines={1}>
+    <View style={styles.statCol}>
+      <Text style={styles.statColLabel} numberOfLines={1}>
         {label}
       </Text>
-      <View style={{ height: 3 }} />
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
-        <Text style={styles.metricValue}>{value}</Text>
-        {unit != null && <Text style={styles.metricUnit}>{unit}</Text>}
+      <Text style={styles.statColValue}>{value}</Text>
+      <View style={[styles.statColBadge, { backgroundColor: band?.color ?? AppColors.sub }]}>
+        <Text style={styles.statColBandText} numberOfLines={1}>
+          {band?.ko ?? '미기재'}
+        </Text>
       </View>
-      {band != null && (
-        <>
-          <View style={{ height: 2 }} />
-          <Text style={[styles.metricBand, bandColor && { color: bandColor }]} numberOfLines={1}>
-            {band}
-          </Text>
-        </>
-      )}
     </View>
   );
 }
@@ -486,10 +483,13 @@ const styles = StyleSheet.create({
   detailLink: { fontSize: 12, fontWeight: '700', color: AppColors.sub },
   regionPill: { backgroundColor: '#F1F3F6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
   regionPillText: { fontSize: 10.5, fontWeight: '700', color: AppColors.sub },
-  detailDisease: { fontSize: 17, fontWeight: '800', color: AppColors.ink },
-  metric: { flex: 1, backgroundColor: '#F4F6F9', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', marginHorizontal: 3 },
-  metricLabel: { fontSize: 10, color: AppColors.sub },
-  metricValue: { fontSize: 14, fontWeight: '800', color: AppColors.ink },
-  metricUnit: { fontSize: 9, fontWeight: '700', color: AppColors.sub, marginLeft: 1, marginBottom: 1 },
-  metricBand: { fontSize: 9.5, fontWeight: '700', color: AppColors.sub },
+  detailDisease: { flexShrink: 1, fontSize: 15, fontWeight: '800', color: AppColors.ink, marginRight: 8 },
+
+  statCols: { flexDirection: 'row', alignItems: 'stretch' },
+  statCol: { flex: 1, alignItems: 'center' },
+  statColDivider: { width: 1, backgroundColor: AppColors.line, marginHorizontal: 6 },
+  statColLabel: { fontSize: 9.5, fontWeight: '600', color: AppColors.sub },
+  statColValue: { fontSize: 15, fontWeight: '800', color: AppColors.ink, marginTop: 2 },
+  statColBadge: { borderRadius: 7, paddingHorizontal: 6, paddingVertical: 2, marginTop: 3, maxWidth: '100%' },
+  statColBandText: { fontSize: 9.5, fontWeight: '800', color: '#FFFFFF' },
 });

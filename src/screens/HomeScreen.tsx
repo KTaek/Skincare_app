@@ -8,7 +8,7 @@ import { useRoutines } from '../context/RoutineContext';
 import { useProfile } from '../context/ProfileContext';
 import { useLatestMonitoringRecord } from '../folders/store';
 import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
-import { Badge } from '../components/MetricCard';
+import { StatBox } from '../components/MetricCard';
 
 export default function HomeScreen({ navigation }: { navigation: any }) {
   const { careItemsForOffset, toggleForOffset } = useRoutines();
@@ -37,14 +37,9 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
         onPress={goLatestDetail}
       />
 
-      <SectionHeader title="오늘의 피부 케어" onMore={() => navigation.navigate('Routine')} />
-      <TodayCareCard
-        items={careItemsForOffset(0)}
-        onToggle={(key) => toggleForOffset(0, key)}
-      />
-
-      <View style={{ height: 24 }} />
-      {/* 문진 없이 지금 피부만 찍어 결과만 보는 길 — 기록으로 남기지 않는다 */}
+      <View style={{ height: 14 }} />
+      {/* 문진 없이 지금 피부만 찍어 결과만 보는 길 — 기록으로 남기지 않는다.
+          오늘 할 일(루틴) 목록보다 먼저 두어, 상태를 확인한 바로 다음 동작으로 이어지게 한다. */}
       <Pressable
         onPress={() => navigation.navigate('Camera', { mode: 'quick' })}
         style={[cardDecoration(), styles.quickCard]}
@@ -59,6 +54,12 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
           <Text style={styles.noticeText}>피부 바로 스캔 기능으로 촬영한 사진은 저장되지 않아요</Text>
         </View>
       </Pressable>
+
+      <SectionHeader title="오늘의 피부 케어" onMore={() => navigation.navigate('Routine')} />
+      <TodayCareCard
+        items={careItemsForOffset(0)}
+        onToggle={(key) => toggleForOffset(0, key)}
+      />
     </ScrollView>
   );
 }
@@ -100,9 +101,9 @@ function RecentStatusCard({
         <MaterialIcons name="chevron-right" size={20} color={AppColors.sub} />
       </View>
       <View style={styles.statusRow}>
-        <Stat label="피부 종합 상태" value={skinValue.toFixed(1)} band={skinConditionInfo(skinValue)} />
-        <Stat label="가려움" value={`${itchValue}`} band={itchBand(itchValue)} />
-        <Stat
+        <StatBox label="피부 종합 상태" value={`${Math.round(skinValue)}`} band={skinConditionInfo(skinValue)} />
+        <StatBox label="가려움" value={`${itchValue}`} band={itchBand(itchValue)} />
+        <StatBox
           label="수면 점수"
           value={sleepValue != null ? `${sleepValue}` : '-'}
           band={sleepValue != null ? sleepBand(sleepValue) : null}
@@ -112,57 +113,32 @@ function RecentStatusCard({
   );
 }
 
-function Stat({
-  label,
-  value,
-  band,
-}: {
-  label: string;
-  value: string;
-  band: { ko: string; color: string } | null;
-}) {
-  return (
-    <View style={styles.stat}>
-      <Text style={styles.statLabel} numberOfLines={1}>
-        {label}
-      </Text>
-      <View style={{ height: 7 }} />
-      <Text style={styles.statValue}>
-        {value}
-        <Text style={styles.statUnit}>/100</Text>
-      </Text>
-      <View style={{ height: 7 }} />
-      {band ? (
-        <Badge text={band.ko} color={band.color} small />
-      ) : (
-        <Text style={styles.statNone}>미기재</Text>
-      )}
-    </View>
-  );
-}
-
 /**
  * "오늘의 피부 케어" 카드 — 오늘 할 일상 루틴과 사용 제품을 시각 순으로 섞어 보여준다.
+ * 사용자가 추가한 항목은 몇 개든 다 보여준다 — 예전엔 3개까지만 보이고 나머지는 "더 보기"로
+ * 루틴 탭까지 가야 했는데, 홈에서 오늘 할 일을 한눈에 다 보는 게 우선이라 잘라내지 않는다.
  * 지난 날짜를 넘겨보는 기능은 두지 않는다 — 홈에서는 "오늘 무엇이 남았는지"만 보면 되고,
  * 지난 기록은 기록 탭에서 본다.
  */
 function TodayCareCard({ items, onToggle }: { items: CareItem[]; onToggle: (key: string) => void }) {
-  const visible = items.slice(0, 3);
+  if (items.length === 0) {
+    return (
+      <View style={[cardDecoration(), styles.careEmpty]}>
+        <Text style={styles.careEmptyText}>오늘 등록된 루틴·제품이 없어요</Text>
+      </View>
+    );
+  }
   return (
     <View style={[cardDecoration(), { paddingHorizontal: 18 }]}>
-      {[0, 1, 2].map((i) => (
+      {items.map((item, i) => (
         <View
-          key={i}
+          key={item.key}
           style={[
             { paddingVertical: 15 },
-            i !== 2 && { borderBottomWidth: 1, borderBottomColor: AppColors.line },
+            i !== items.length - 1 && { borderBottomWidth: 1, borderBottomColor: AppColors.line },
           ]}
         >
-          {i < visible.length ? (
-            <FadingCareRow item={visible[i]} onToggle={() => onToggle(visible[i].key)} />
-          ) : (
-            <View style={{ height: 26 }} />
-          )}
+          <FadingCareRow item={item} onToggle={() => onToggle(item.key)} />
         </View>
       ))}
     </View>
@@ -194,21 +170,12 @@ const styles = StyleSheet.create({
   statusHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
   statusTitle: { fontSize: 16.5, fontWeight: '800', color: AppColors.ink, flexShrink: 1 },
   statusRow: { flexDirection: 'row', gap: 8 },
-  stat: {
-    flex: 1,
-    alignItems: 'center',
-    backgroundColor: '#F6F8FA',
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-  },
-  statLabel: { fontSize: 11, fontWeight: '600', color: AppColors.sub },
-  statValue: { fontSize: 21, fontWeight: '800', color: AppColors.ink },
-  statUnit: { fontSize: 11, fontWeight: '700', color: AppColors.sub },
-  statNone: { fontSize: 11.5, fontWeight: '800', color: AppColors.sub, paddingVertical: 4 },
 
   emptyStatus: { alignItems: 'center', paddingVertical: 28, paddingHorizontal: 20 },
   emptyStatusText: { fontSize: 13, color: AppColors.sub, textAlign: 'center', lineHeight: 19 },
+
+  careEmpty: { alignItems: 'center', paddingVertical: 24, paddingHorizontal: 20 },
+  careEmptyText: { fontSize: 13, color: AppColors.sub },
 
   // 피부 촬영 탭의 "피부 바로 스캔" 카드와 같은 치수를 쓴다 — 같은 글이 한쪽에서만 두 줄로
   // 접히지 않게 하려면 글자가 놓이는 폭까지 같아야 한다

@@ -14,7 +14,7 @@ const TABS: Record<string, { icon: IconName; label: string }> = {
   Camera: { icon: 'photo-camera', label: '피부 촬영' },
   Records: { icon: 'calendar-today', label: '기록' },
   Routine: { icon: 'checklist', label: '루틴' },
-  Profile: { icon: 'person', label: '마이페이지' },
+  Profile: { icon: 'person', label: '내 정보' },
 };
 
 export default function BottomNav({ state, navigation }: BottomTabBarProps) {

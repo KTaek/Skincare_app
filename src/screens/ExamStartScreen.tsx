@@ -73,6 +73,7 @@ export default function ExamStartScreen({
           <ChoiceCard
             icon="timeline"
             title={'이어서\n기록하기'}
+            caption="경과 기록 파일에 오늘의 상태를 이어서 기록해요"
             selected={picked === 'followUp'}
             onPress={() => setPicked('followUp')}
           />
