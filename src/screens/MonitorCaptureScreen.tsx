@@ -77,7 +77,7 @@ const UNMEASURED_CONFIDENCE: SessionConfidence = {
   score: 50,
   tier: 'medium',
   breakdown: { focus: 0, exposure: 0, skin: 0, color: 0 },
-  warnings: ['촬영 품질을 측정하지 못했어요 — 신뢰도 점수는 참고만 해주세요'],
+  warnings: ['촬영 품질을 측정하지 못했어요 — 이 기록은 참고만 해주세요'],
   usable: true,
 };
 

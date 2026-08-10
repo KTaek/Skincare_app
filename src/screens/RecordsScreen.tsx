@@ -49,8 +49,13 @@ export default function RecordsScreen() {
     return map;
   }, [folders]);
 
-  const changeMonth = (delta: number) => {
-    setView((v) => new Date(v.getFullYear(), v.getMonth() + delta, 1));
+  /** 한 주(7일)씩 앞뒤로 옮긴다 — delta는 주 단위(-1 = 지난주, 1 = 다음주) */
+  const changeWeek = (delta: number) => {
+    setView((v) => {
+      const d = new Date(v);
+      d.setDate(d.getDate() + delta * 7);
+      return d;
+    });
     setSelectedKey(null);
   };
 
@@ -71,7 +76,7 @@ export default function RecordsScreen() {
         entriesByDate={entriesByDate}
         selectedKey={selectedKey}
         onSelect={setSelectedKey}
-        onChangeMonth={changeMonth}
+        onChangeWeek={changeWeek}
       />
 
       <View style={{ height: 16 }} />
@@ -135,35 +140,53 @@ function ActionBox({
   );
 }
 
+/** date가 속한 주의 일요일 자정 — 달력을 한 주씩만 보여주는 기준점 */
+function startOfWeek(date: Date): Date {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+}
+
+const fmtDot = (d: Date) => `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
+
+/**
+ * 달력 카드 — 한 주(일~토) 7칸만 보여주고, 화살표로 이전/다음 주로 옮긴다.
+ * 예전엔 한 달 전체(최대 6주)를 그려서 기록이 없는 달에도 카드가 크게 자리를 차지했는데,
+ * 지금은 늘 7칸 한 줄이라 카드 높이가 고정되고 필요한 주만 오간다.
+ */
 function CalendarCard({
   view,
   entriesByDate,
   selectedKey,
   onSelect,
-  onChangeMonth,
+  onChangeWeek,
 }: {
+  /** 지금 보여줄 주에 속한 아무 날짜 하나(주의 시작으로 정규화해서 쓴다) */
   view: Date;
   entriesByDate: Record<string, FolderEntry[]>;
   selectedKey: string | null;
   onSelect: (k: string) => void;
-  onChangeMonth: (d: number) => void;
+  onChangeWeek: (d: number) => void;
 }) {
-  const year = view.getFullYear();
-  const month = view.getMonth(); // 0-based
-  const first = new Date(year, month, 1).getDay(); // 일=0
-  const days = new Date(year, month + 1, 0).getDate();
   const today = new Date();
   const memoDates = useDatesWithMemos();
+  const start = startOfWeek(view);
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const day = new Date(start);
+    day.setDate(start.getDate() + i);
+    return day;
+  });
 
-  const cells: React.ReactNode[] = [];
-  for (let i = 0; i < first; i++) cells.push(<View key={`blank-${i}`} style={styles.cell} />);
-  for (let d = 1; d <= days; d++) {
+  const cells = weekDays.map((day) => {
+    const year = day.getFullYear();
+    const month = day.getMonth();
+    const d = day.getDate();
     const key = `${year}-${month + 1}-${d}`;
     const entries = entriesByDate[key];
     const hasMemo = memoDates.has(normalizeDateKey(key));
     const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === d;
     const isSel = selectedKey === key;
-    cells.push(
+    return (
       <Pressable key={key} style={styles.cell} onPress={() => onSelect(key)}>
         <View
           style={[
@@ -204,20 +227,28 @@ function CalendarCard({
             />
           )}
         </View>
-      </Pressable>,
+      </Pressable>
     );
-  }
+  });
+
+  const end = weekDays[6];
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const sameMonth = sameYear && start.getMonth() === end.getMonth();
+  const endLabel = sameMonth
+    ? `${end.getDate()}`
+    : sameYear
+      ? `${end.getMonth() + 1}.${end.getDate()}`
+      : fmtDot(end);
+  const rangeLabel = `${fmtDot(start)} - ${endLabel}`;
 
   return (
     <View style={[cardDecoration(), styles.calendarCard]}>
       <View style={styles.calendarHeader}>
-        <Text style={styles.monthLabel}>
-          {year}년 {month + 1}월
-        </Text>
+        <Text style={styles.rangeLabel}>{rangeLabel}</Text>
         <View style={{ flexDirection: 'row' }}>
-          <NavBtn icon="chevron-left" onPress={() => onChangeMonth(-1)} />
+          <NavBtn icon="chevron-left" onPress={() => onChangeWeek(-1)} />
           <View style={{ width: 6 }} />
-          <NavBtn icon="chevron-right" onPress={() => onChangeMonth(1)} />
+          <NavBtn icon="chevron-right" onPress={() => onChangeWeek(1)} />
         </View>
       </View>
       <View style={{ height: 14 }} />
@@ -333,7 +364,7 @@ function DetailCard({
     date: record.date,
     folderId: folder.id,
     recordId: String(record.id),
-    label: [diseaseName, siteLabel].filter(Boolean).join(' · ') + ` · D+${record.dayOffset}`,
+    label: [diseaseName, siteLabel].filter(Boolean).join(' · '),
   };
   const hasMemo = useHasMemo(memoTarget);
 
@@ -341,7 +372,7 @@ function DetailCard({
     <View style={[cardDecoration(), styles.detailCard, collapsed && styles.detailCardCollapsed]}>
       {/* 제목 줄 전체가 접기 버튼이다 — 접으면 병명·부위만 한 줄로 남는다 */}
       <Pressable style={{ flexDirection: 'row', alignItems: 'center' }} onPress={onToggle}>
-        <Text style={styles.detailDate}>D+{record.dayOffset} 기록</Text>
+        <Text style={styles.detailDate}>기록</Text>
         {collapsed && (
           <Text style={styles.detailPeek} numberOfLines={1}>
             {[diseaseName, siteLabel].filter(Boolean).join(' · ')}
@@ -395,7 +426,7 @@ function DetailCard({
               <View style={styles.statCols}>
                 <StatCol label="피부 종합 상태" value={Math.round(skinValue)} band={skin} />
                 <View style={styles.statColDivider} />
-                <StatCol label="가려움" value={itchValue} band={itch} />
+                <StatCol label="가려움 안정도" value={itchValue} band={itch} />
                 <View style={styles.statColDivider} />
                 <StatCol label="수면 점수" value={sleep ? record.sleepScore : '-'} band={sleep} />
               </View>
@@ -459,7 +490,7 @@ const styles = StyleSheet.create({
 
   calendarCard: { paddingHorizontal: 16, paddingTop: 18, paddingBottom: 20 },
   calendarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  monthLabel: { fontSize: 17, fontWeight: '800', color: AppColors.ink },
+  rangeLabel: { fontSize: 16, fontWeight: '800', color: AppColors.ink },
   navBtn: { width: 30, height: 30, borderRadius: 9, backgroundColor: '#F1F3F6', alignItems: 'center', justifyContent: 'center' },
   weekdayCell: { flex: 1, alignItems: 'center' },
   weekdayText: { fontSize: 12, fontWeight: '600', color: AppColors.sub },

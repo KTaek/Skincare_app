@@ -53,8 +53,8 @@ export default function ExamResultScreen({
   capture: ExamCapture;
   analysis: ExamAnalysis;
   linkedFolder: { id: string; name: string } | null;
-  /** 이 자리로 경과 관찰 폴더를 만들고 이번 기록을 첫 기록으로 넣는다 */
-  onLink: () => void;
+  /** 이 자리로 경과 관찰 폴더를 만들고 이번 기록을 첫 기록으로 넣는다. 만든(또는 이미 있던) 폴더 id를 그대로 돌려준다 */
+  onLink: () => string;
   onOpenFolder: (folderId: string) => void;
   /** 기록 탭으로 넘어간다 (저장은 이미 끝나 있다) */
   onOpenRecords: () => void;
@@ -72,6 +72,15 @@ export default function ExamResultScreen({
   const disease = target.diagnosis?.disease;
   const skinValue = igaDisplayValue(analysis.local.igaGrade);
 
+  // 하단 버튼 문구 — 신규는 "만들 폴더 이름", 이어서 기록은 "이미 있는 폴더 이름"을 그대로 보여준다
+  const footerLabel = isQuick
+    ? '닫기'
+    : isNew
+      ? `“${folderNameOf(plainSiteLabel(target.label), disease)}” 경과 폴더 생성`
+      : isFollowUp && linkedFolder
+        ? `“${linkedFolder.name}” 경과 보기`
+        : '기록 보기';
+
   const [editing, setEditing] = useState(false);
 
   return (
@@ -86,7 +95,6 @@ export default function ExamResultScreen({
             {[isQuick ? '바로 스캔' : plainSiteLabel(target.label), disease].filter(Boolean).join(' · ')}
           </Text>
         </View>
-        <ConfidencePill score={session.confidence.score} tier={session.confidence.tier} />
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.body}>
@@ -123,27 +131,10 @@ export default function ExamResultScreen({
         <SymptomCard analysis={analysis} />
 
         {capture.itchVas != null && (
-          <MetricCard label="가려움" value={itchDisplayValue(capture.itchVas)} unit="/100" segments={ITCH_SEGMENTS} />
+          <MetricCard label="가려움 안정도" value={itchDisplayValue(capture.itchVas)} unit="/100" segments={ITCH_SEGMENTS} />
         )}
 
         {isNew && <UsedProductsCard date={new Date()} />}
-
-        {isNew && (
-          <LinkSection
-            siteLabel={target.label}
-            disease={disease}
-            linkedFolder={linkedFolder}
-            onLink={onLink}
-            onOpenFolder={onOpenFolder}
-          />
-        )}
-
-        {!isNew && !isQuick && linkedFolder && (
-          <Pressable style={styles.openFolderBtn} onPress={() => onOpenFolder(linkedFolder.id)}>
-            <MaterialIcons name="timeline" size={18} color={AppColors.greenMuted} />
-            <Text style={styles.openFolderText}>“{linkedFolder.name}” 추이 보기</Text>
-          </Pressable>
-        )}
 
         {session.confidence.warnings.length > 0 && (
           <View style={[monitoringCard(), styles.card]}>
@@ -168,8 +159,18 @@ export default function ExamResultScreen({
             <View style={{ height: 10 }} />
           </>
         )}
-        <Pressable style={styles.saveBtn} onPress={isQuick ? onClose : onOpenRecords}>
-          <Text style={styles.saveBtnText}>{isQuick ? '닫기' : '기록 보기'}</Text>
+        <Pressable
+          style={styles.saveBtn}
+          onPress={() => {
+            if (isQuick) return onClose();
+            // 신규 증상 기록은 예전엔 "경과 관찰에 연동" 박스에서 따로 눌러야 폴더가 생겼는데,
+            // 지금은 이 버튼 한 번으로 폴더까지 만들고 바로 그 경과로 넘어간다.
+            if (isNew) return onOpenFolder(onLink());
+            if (isFollowUp && linkedFolder) return onOpenFolder(linkedFolder.id);
+            return onOpenRecords();
+          }}
+        >
+          <Text style={styles.saveBtnText}>{footerLabel}</Text>
         </Pressable>
         <View style={{ height: 10 }} />
         <Text style={styles.disclaimer}>
@@ -191,16 +192,6 @@ export default function ExamResultScreen({
           setEditing(false);
         }}
       />
-    </View>
-  );
-}
-
-/** 촬영·후처리 신뢰도 배지 — 낮은 기록은 추세에서 가중치를 낮춰야 하므로 결과에도 계속 달고 다닌다 */
-function ConfidencePill({ score, tier }: { score: number; tier: 'high' | 'medium' | 'low' }) {
-  const color = tier === 'high' ? mc.sev1 : tier === 'medium' ? mc.sev2 : mc.sev3;
-  return (
-    <View style={[styles.confPill, { backgroundColor: color }]}>
-      <Text style={styles.confPillText}>신뢰도 {score}</Text>
     </View>
   );
 }
@@ -290,9 +281,9 @@ function SymptomCard({ analysis }: { analysis: ExamAnalysis }) {
             key={sign}
             label={SIGN_DISPLAY[sign].label}
             value={value}
-            unit="/100"
             segments={SYMPTOM_SEGMENTS_BASE}
             first={i === 0}
+            hideValue
           />
         );
       })}
@@ -329,57 +320,6 @@ function PhotoPair({ uri, bbox }: { uri: string; bbox: LesionBox }) {
           <Text style={styles.photoCaption}>증상 부위 표시</Text>
         </View>
       </View>
-    </View>
-  );
-}
-
-/** 신규 기록 결과로 이 자리의 경과 관찰 폴더를 만드는 자리 */
-function LinkSection({
-  siteLabel,
-  disease,
-  linkedFolder,
-  onLink,
-  onOpenFolder,
-}: {
-  siteLabel: string;
-  disease?: string;
-  linkedFolder: { id: string; name: string } | null;
-  onLink: () => void;
-  onOpenFolder: (folderId: string) => void;
-}) {
-  if (linkedFolder) {
-    return (
-      <View style={[monitoringCard(), styles.card, styles.linkedCard]}>
-        <View style={styles.linkedHead}>
-          <MaterialIcons name="check-circle" size={20} color={mc.sev1} />
-          <Text style={styles.linkedTitle}>경과 관찰에 연동했어요</Text>
-        </View>
-        <Text style={styles.linkedName}>{plainSiteLabel(linkedFolder.name)}</Text>
-        <Pressable style={styles.openFolderBtn} onPress={() => onOpenFolder(linkedFolder.id)}>
-          <MaterialIcons name="timeline" size={18} color={AppColors.greenMuted} />
-          <Text style={styles.openFolderText}>추이 보기</Text>
-        </Pressable>
-      </View>
-    );
-  }
-  return (
-    <View style={[monitoringCard(), styles.card]}>
-      <Text style={styles.cardLabel}>경과 관찰에 연동</Text>
-      <Text style={styles.metricFoot}>
-        이 기록으로 경과 관찰 폴더를 하나 만들어요. 다음부터 같은 자리를 찍으면 추이 그래프에
-        이어서 볼 수 있어요.
-      </Text>
-      <View style={{ height: 12 }} />
-      <View style={styles.newFolderRow}>
-        <MaterialIcons name="accessibility-new" size={20} color={AppColors.greenMuted} />
-        <Text style={styles.newFolderName} numberOfLines={1}>
-          {folderNameOf(plainSiteLabel(siteLabel), disease)}
-        </Text>
-      </View>
-      <View style={{ height: 12 }} />
-      <Pressable style={styles.linkBtn} onPress={onLink}>
-        <Text style={styles.linkBtnText}>경과 관찰에 연동하기</Text>
-      </Pressable>
     </View>
   );
 }
@@ -517,8 +457,6 @@ const styles = StyleSheet.create({
   backBtn: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 16, fontWeight: '800', color: mc.ink },
   headerSub: { fontSize: 11.5, color: mc.sub, marginTop: 1 },
-  confPill: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
-  confPillText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
 
   body: { padding: 16, gap: 12, paddingBottom: 24 },
   dumpNotice: {
@@ -569,37 +507,10 @@ const styles = StyleSheet.create({
   photo: { width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: 10, overflow: 'hidden', backgroundColor: mc.bg },
   photoCaption: { fontSize: 10.5, color: mc.sub, marginTop: 6, textAlign: 'center' },
 
-  linkedCard: { borderWidth: 1.5, borderColor: mc.greenTop },
-  linkedHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  linkedTitle: { fontSize: 13, fontWeight: '800', color: mc.ink },
-  linkedName: { fontSize: 16, fontWeight: '800', color: mc.ink, marginTop: 8 },
-  newFolderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderRadius: 12,
-    backgroundColor: mc.bg,
-    borderWidth: 1,
-    borderColor: mc.line,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  newFolderName: { flex: 1, fontSize: 14.5, fontWeight: '800', color: mc.ink },
   linkBtn: { backgroundColor: mc.greenTop, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   linkBtnDisabled: { backgroundColor: '#E7E9EC' },
   linkBtnText: { fontSize: 15, fontWeight: '800', color: '#16320A' },
   linkBtnTextDisabled: { color: mc.sub },
-  openFolderBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 12,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: mc.card,
-  },
-  openFolderText: { fontSize: 13.5, fontWeight: '800', color: AppColors.greenMuted },
 
   warnText: { fontSize: 12.5, color: mc.ink, lineHeight: 19 },
 

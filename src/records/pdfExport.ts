@@ -32,7 +32,7 @@ export const EXPORT_FIELDS: { key: ExportField; label: string; caption: string }
   { key: 'photo', label: '이미지', caption: '그날 촬영한 사진' },
   { key: 'skin', label: '피부 종합 상태', caption: '0~100 표시값과 단계' },
   { key: 'symptoms', label: '4가지 증상', caption: '붉기 · 오돌토돌함 · 긁은 상처 · 두꺼워짐' },
-  { key: 'itch', label: '가려움', caption: '가려움 문진(VAS)' },
+  { key: 'itch', label: '가려움 안정도', caption: '가려움 문진(VAS)' },
   { key: 'sleep', label: '수면 점수', caption: '스마트워치 연동 값' },
   { key: 'memo', label: '메모', caption: '기록에 직접 남긴 글' },
 ];
@@ -115,14 +115,15 @@ function recordSection(
     rows.push(metricRow('피부 종합 상태', `${Math.round(v)}`, skinConditionInfo(v).ko));
   }
   if (fields.has('symptoms')) {
+    // 세부 증상은 점수를 적지 않고 이름만 적는다(뚜렷함/두드러짐/미미함/없음)
     SYMPTOM_ORDER.forEach((key) => {
       const v = DISPLAY_SCALE.symptom(r[key]);
-      rows.push(metricRow(SYMPTOMS[key].label, `${Math.round(v)}`, symptomBand(v).ko));
+      rows.push(metricRow(SYMPTOMS[key].label, symptomBand(v).ko));
     });
   }
   if (fields.has('itch')) {
     const v = DISPLAY_SCALE.itch(r.itchVas);
-    rows.push(metricRow('가려움', `${v}`, itchBand(v).ko));
+    rows.push(metricRow('가려움 안정도', `${v}`, itchBand(v).ko));
   }
   if (fields.has('sleep')) {
     rows.push(
@@ -147,7 +148,7 @@ function recordSection(
     <section class="record">
       <div class="record-head">
         <div class="site">${escapeHtml(entry.folderName)}</div>
-        <div class="date">${fmtDate(r.date)} · D+${r.dayOffset}</div>
+        <div class="date">${fmtDate(r.date)}</div>
       </div>
       ${photoBlock}
       ${tableBlock}

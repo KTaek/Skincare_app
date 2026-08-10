@@ -1,11 +1,11 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   monitoringColors as mc, monitoringCard, sleepBand, itchBand, skinConditionInfo, DISPLAY_SCALE,
-  SKIN_SEGMENTS, ITCH_SEGMENTS, SLEEP_SEGMENTS, SYMPTOM_SEGMENTS_BASE, SYMPTOMS,
+  SKIN_SEGMENTS, ITCH_SEGMENTS, SLEEP_SEGMENTS, SYMPTOM_SEGMENTS_BASE, SYMPTOMS, CHART_SERIES,
 } from '../theme';
-import { useFolder, dayCount } from '../store';
+import { useFolder } from '../store';
 import { useProfile } from '../../context/ProfileContext';
 import { plainSiteLabel } from '../../models';
 import { MetricCard, MetricRow, EmptyMetricCard } from '../../components/MetricCard';
@@ -25,6 +25,11 @@ const GRAPH_ROW_H = 340; // 날짜 칸 줄 + 그래프가 함께 차지하는 �
 const GRAPH_H_DEFAULT = GRAPH_ROW_H - 60;
 const PHOTO_SIZE = 110;
 const SYMPTOM_ORDER = ['redness', 'bumps', 'scratch', 'thickening'];
+
+// 요약칸 원형 배지 아이콘 — 흰 선화라 배경색(CHART_SERIES 색) 위에 바로 얹는다
+const SKIN_ICON = require('../../../assets/icon/skin_icon_white.png');
+const ITCH_ICON = require('../../../assets/icon/itch_icon_white.png');
+const SLEEP_ICON = require('../../../assets/icon/sleep_icon_white.png');
 
 /** 기록의 날짜 키("2026-08-05")를 Date로 — "사용한 제품"이 그날의 제품 목록을 찾는 데 쓴다 */
 function toDate(dateKey) {
@@ -49,15 +54,23 @@ function fmtFull(dateKey) {
   return `${y}.${m}.${d}`;
 }
 
-// 밝은 배경(연두/주황/노랑 계열)은 흰 글자보다 진한 잉크색 글자가 더 잘 읽혀서 배경색에 따라
-// 글자색을 바꾼다 — 참고 디자인의 sev3(빨강)만 어두운 편이라 흰 글자를 그대로 쓴다.
-const LIGHT_PILL_BGS = [mc.sev1, mc.sev2, mc.warn];
+// 밝은 배경(노랑/주황 계열)은 흰 글자보다 진한 잉크색 글자가 더 잘 읽혀서 배경색에 따라
+// 글자색을 바꾼다 — 파랑(sev0)·빨강(sev3)은 진한 편이라 흰 글자를 그대로 쓴다.
+const LIGHT_PILL_BGS = [mc.sevCaution, mc.warn];
 
-/** 그래프에서 선택된 날짜의 값을 보여주는 요약 박스 — 그래프 포인트를 탭하면 값이 함께 바뀐다 */
-function SummaryBox({ label, value, pillText, pillColor }) {
+/**
+ * 그래프에서 선택된 날짜의 값을 보여주는 요약 박스 — 그래프 포인트를 탭하면 값이 함께 바뀐다.
+ * 원형 배지 색(circleColor)은 그 아래 배지(pillColor, 좋음/나쁨 4단계)와는 다른 축이다 — 이건
+ * "지금 상태가 좋은지 나쁜지"가 아니라 "이 항목이 그래프의 어느 꺾은선인지"를 색으로 잇는다.
+ * 점수 글자색은 항상 검정(ink) — 상태색은 원형 배지·아래 배지 둘로 충분하다.
+ */
+function SummaryBox({ label, value, pillText, pillColor, icon, circleColor, iconSize = 22 }) {
   const pillTextColor = LIGHT_PILL_BGS.includes(pillColor) ? mc.ink : '#fff';
   return (
     <View style={[monitoringCard(14), styles.summaryBox]}>
+      <View style={[styles.summaryIconCircle, { backgroundColor: circleColor }]}>
+        <Image source={icon} style={{ width: iconSize, height: iconSize }} resizeMode="contain" />
+      </View>
       <Text style={styles.summaryLabel} numberOfLines={1}>{label}</Text>
       <View style={styles.summaryValueRow}>
         <Text style={styles.summaryValue}>{value}</Text>
@@ -87,9 +100,6 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   const folder = useFolder(folderId);
   const [zoomRecord, setZoomRecord] = useState(null);
   const [zoomPage, setZoomPage] = useState(0);
-  // "피부 상태 상세 결과"를 펼쳐 뒀는지 — 기본은 접힘. 그래프까지만 보러 들어오는 경우가
-  // 많아서, 지표 카드 네 장을 처음부터 펼쳐 두면 사진·그래프가 화면 밖으로 밀려난다.
-  const [detailOpen, setDetailOpen] = useState(false);
   const { healthConnected } = useProfile();
   // 날짜 칸 줄과 그래프가 같은 가로 스크롤 하나를 공유한다(아래 참고) — 처음 열렸을 때(또는 새로
   // 촬영해 기록이 늘었을 때) 오른쪽 끝(오늘)으로 자동 스크롤하기 위한 참조.
@@ -145,31 +155,47 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           <Text style={{ fontSize: 20, color: mc.ink }}>‹</Text>
           <Text style={styles.topBarTitle} numberOfLines={1}>{plainSiteLabel(folder.name)}</Text>
         </TouchableOpacity>
-        <View style={styles.dayBadge}>
-          <Text style={styles.dayBadgeText}>D+{dayCount(folder)}</Text>
-        </View>
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.body}>
         {/* 그래프에서 선택된 날짜의 값을 보여주는 요약 박스 3개 — 그래프 포인트를 탭하면 함께 바뀐다.
             세 지표 모두 DISPLAY_SCALE로 0~100 표시값으로 맞춰서 같은 축·같은 기준으로 비교할 수 있다. */}
         <View style={styles.summaryRow}>
-          <SummaryBox label="피부 종합 상태" value={Math.round(skinDisplay)} pillText={skin.ko} pillColor={skin.color} />
-          <SummaryBox label="가려움" value={itchDisplay} pillText={itch.ko} pillColor={itch.color} />
+          <SummaryBox
+            label="피부 종합 상태"
+            value={Math.round(skinDisplay)}
+            pillText={skin.ko}
+            pillColor={skin.color}
+            icon={SKIN_ICON}
+            circleColor={CHART_SERIES.skin.color}
+            iconSize={32}
+          />
+          <SummaryBox
+            label="가려움 안정도"
+            value={itchDisplay}
+            pillText={itch.ko}
+            pillColor={itch.color}
+            icon={ITCH_ICON}
+            circleColor={CHART_SERIES.itch.color}
+            iconSize={26}
+          />
           <SummaryBox
             label="수면 점수"
             value={sleep ? selectedRecord.sleepScore : '-'}
             pillText={sleep ? sleep.ko : '미기재'}
             pillColor={sleep ? sleep.color : mc.navInactive}
+            icon={SLEEP_ICON}
+            circleColor={CHART_SERIES.sleep.color}
+            iconSize={32}
           />
         </View>
 
-        {/* 날짜 + 변화 추이 그래프를 한 카드에 합쳤다. 맨 위에 촬영 기간 전체(첫 기록 ~ 마지막
+        {/* 날짜 + 변화 경과 그래프를 한 카드에 합쳤다. 맨 위에 촬영 기간 전체(첫 기록 ~ 마지막
             기록)를 보여주고, 그 아래 날짜 칸 줄과 그래프가 같은 가로 스크롤 하나를 공유해서 항상
             같은 x 위치로 맞물려 움직인다. 날짜 칸을 탭하거나 그래프 포인트를 탭하면(selectRecord)
-            선택된 날짜의 폭 전체가 초록 띠(그래프)·초록 배지(날짜 칸)로 함께 강조되고, 위 요약
-            박스 값도 갱신된다. 그래프 포인트를 두 번(더블탭) 탭하면 바로 그 기록의 상세 결과로
-            넘어간다. "변화 추이" 제목·촬영 횟수·범례는 그래프 아래에 둔다. */}
+            선택된 날짜의 폭 전체가 회색 띠(그래프)·초록 배지(날짜 칸)로 함께 강조되고, 위 요약
+            박스 값도 갱신된다. 상세 결과로 넘어가는 길은 없다 — 아래 "피부 상태 상세 결과"에서
+            그대로 펼쳐 본다. "변화 경과" 제목·촬영 횟수·범례는 그래프 아래에 둔다. */}
         <View style={[monitoringCard(), styles.card]}>
           <View style={styles.dateStripHeader}>
             <Text style={{ fontSize: 15 }}>📅</Text>
@@ -208,14 +234,13 @@ export default function MonitoringFolderScreen({ navigation, route }) {
                   chartHeight={graphH}
                   selectedId={selectedRecord.id}
                   onSelect={selectRecord}
-                  onDoubleSelect={(r) => navigation.navigate('MonitoringDetail', { folderId, recordId: r.id })}
                 />
               </View>
             </ScrollView>
           </View>
 
           <View style={styles.cardHeadRow}>
-            <Text style={styles.cardTitle}>변화 추이</Text>
+            <Text style={styles.cardTitle}>변화 경과</Text>
             <Text style={styles.cardSub}>총 {total}회 촬영</Text>
           </View>
           <TrendChartLegend />
@@ -239,50 +264,36 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           </View>
         </View>
 
-        {/* 선택된 날짜의 지표 네 가지 — 접었다 펼 수 있다. 카드가 길어서 기본은 접어 둔다. */}
-        <TouchableOpacity
-          style={[monitoringCard(), styles.detailToggle]}
-          activeOpacity={0.85}
-          onPress={() => setDetailOpen((v) => !v)}
-        >
-          <Text style={styles.detailToggleTitle}>피부 상태 상세 결과</Text>
-          <Text style={styles.detailToggleDate}>{fmtFull(selectedRecord.date)}</Text>
-          <Text style={styles.detailToggleChevron}>{detailOpen ? '⌃' : '⌄'}</Text>
-        </TouchableOpacity>
+        {/* 선택된 날짜의 지표 네 가지 — 상세 결과 화면과 같은 카드(MetricCard)를 쓴다. 같은 값을
+            두 화면에서 다른 모양으로 보여주면 어느 쪽이 맞는지 헷갈린다. 위 요약 박스(SummaryBox)와
+            달리 여기는 4가지 증상까지 다 펼쳐 보여주는 상세 영역이라 몇 점 만점인지("/100")도
+            함께 적는다. */}
+        <MetricCard label="피부 종합 상태" value={skinDisplay} unit="/100" segments={SKIN_SEGMENTS} />
 
-        {detailOpen && (
-          <>
-            {/* 상세 결과 화면과 같은 카드(MetricCard)를 쓴다 — 같은 값을 두 화면에서 다른 모양으로
-                보여주면 어느 쪽이 맞는지 헷갈린다. 위 요약 박스(SummaryBox)와 달리 여기는 4가지
-                증상까지 다 펼쳐 보여주는 상세 영역이라 몇 점 만점인지("/100")도 함께 적는다. */}
-            <MetricCard label="피부 종합 상태" value={skinDisplay} unit="/100" segments={SKIN_SEGMENTS} />
+        <View style={[monitoringCard(), styles.metricCard]}>
+          <Text style={styles.metricCardLabel}>4가지 증상</Text>
+          {SYMPTOM_ORDER.map((key, i) => (
+            <MetricRow
+              key={key}
+              label={SYMPTOMS[key].label}
+              value={DISPLAY_SCALE.symptom(selectedRecord[key])}
+              segments={SYMPTOM_SEGMENTS_BASE}
+              first={i === 0}
+              hideValue
+            />
+          ))}
+        </View>
 
-            <View style={[monitoringCard(), styles.metricCard]}>
-              <Text style={styles.metricCardLabel}>4가지 증상</Text>
-              {SYMPTOM_ORDER.map((key, i) => (
-                <MetricRow
-                  key={key}
-                  label={SYMPTOMS[key].label}
-                  value={DISPLAY_SCALE.symptom(selectedRecord[key])}
-                  unit="/100"
-                  segments={SYMPTOM_SEGMENTS_BASE}
-                  first={i === 0}
-                />
-              ))}
-            </View>
+        <MetricCard label="가려움 안정도" value={itchDisplay} unit="/100" segments={ITCH_SEGMENTS} />
 
-            <MetricCard label="가려움" value={itchDisplay} unit="/100" segments={ITCH_SEGMENTS} />
-
-            {healthConnected ? (
-              <MetricCard label="수면 점수" value={selectedRecord.sleepScore} unit="/100" segments={SLEEP_SEGMENTS} />
-            ) : (
-              <EmptyMetricCard label="수면 점수" text="미기재" />
-            )}
-
-            {/* 그날 쓴 제품 — 루틴 탭의 <사용 제품>과 연동 */}
-            <UsedProductsCard date={toDate(selectedRecord.date)} />
-          </>
+        {healthConnected ? (
+          <MetricCard label="수면 점수" value={selectedRecord.sleepScore} unit="/100" segments={SLEEP_SEGMENTS} />
+        ) : (
+          <EmptyMetricCard label="수면 점수" text="미기재" />
         )}
+
+        {/* 그날 쓴 제품 — 루틴 탭의 <사용 제품>과 연동 */}
+        <UsedProductsCard date={toDate(selectedRecord.date)} />
       </ScrollView>
 
       <PhotoZoomModal visible={!!zoomRecord} record={zoomRecord} initialPage={zoomPage} onClose={() => setZoomRecord(null)} />
@@ -298,13 +309,15 @@ const styles = StyleSheet.create({
     backgroundColor: mc.card, borderBottomWidth: 1, borderBottomColor: mc.line,
   },
   topBarTitle: { fontSize: 15, fontWeight: '700', color: mc.ink, flexShrink: 1 },
-  dayBadge: { backgroundColor: mc.greenBody, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
-  dayBadgeText: { fontSize: 12, color: mc.greenDeep, fontWeight: '800' },
   body: { padding: 12, gap: 12, paddingBottom: 24 },
   summaryRow: { flexDirection: 'row', gap: 8 },
   summaryBox: {
     flex: 1, paddingVertical: 12, paddingHorizontal: 8,
     alignItems: 'center', gap: 6,
+  },
+  summaryIconCircle: {
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
   },
   summaryLabel: { fontSize: 11, color: mc.sub, fontWeight: '700' },
   summaryValueRow: { flexDirection: 'row', alignItems: 'flex-end' },
@@ -337,10 +350,6 @@ const styles = StyleSheet.create({
   photoCol: { alignItems: 'center' },
   photoCaption: { fontSize: 10.5, color: mc.sub, marginTop: 6, textAlign: 'center' },
 
-  detailToggle: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16, gap: 8 },
-  detailToggleTitle: { fontSize: 14, fontWeight: '800', color: mc.ink, flex: 1 },
-  detailToggleDate: { fontSize: 12, color: mc.sub, fontWeight: '600' },
-  detailToggleChevron: { fontSize: 16, color: mc.sub, fontWeight: '800', width: 14, textAlign: 'center' },
   metricCard: { padding: 16 },
   metricCardLabel: { fontSize: 16, fontWeight: '800', color: mc.ink, marginBottom: 12 },
 });

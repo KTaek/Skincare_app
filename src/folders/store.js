@@ -182,11 +182,6 @@ export function useFolder(id) {
   return getFolder(id);
 }
 
-/** 폴더의 촬영 시작일로부터 오늘까지 며칠째인지 (예: D+53) */
-export function dayCount(folder) {
-  return Math.max(0, daysBetween(folder.startDate, todayKey()));
-}
-
 /** 한 모니터링 대상(MonitorTarget)에 딸린 폴더 */
 export function getFolderByTarget(targetId) {
   return folders.find((f) => f.targetId === targetId) || null;

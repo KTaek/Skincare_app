@@ -15,19 +15,20 @@ import {
 /** 루틴/제품을 추가할 때 화면에서 넘겨주는 값 */
 export interface CareDraft {
   name: string;
-  time: string;
+  /** 하루 실행 시각들 — Routine.times와 같은 규칙(원소 수 = 하루 횟수, null = 시각 안 정함) */
+  times: (string | null)[];
   push: boolean;
   /** 제품일 때만 의미가 있다 (기본 1 = 매일) */
   cycleDays?: number;
 }
 
 interface RoutineContextValue {
-  /** 등록된 일상 루틴 (틀) — 시각 순 */
+  /** 등록된 일상 루틴 (틀) */
   routines: Routine[];
-  /** 등록된 사용 제품 (틀) — 시각 순 */
+  /** 등록된 사용 제품 (틀) */
   products: CareProduct[];
 
-  /** offsetDays 날짜(음수=과거, 0=오늘)의 일상 루틴 */
+  /** offsetDays 날짜(음수=과거, 0=오늘)의 일상 루틴 — 하루 여러 번인 항목은 그 수만큼 펼쳐진다 */
   routinesForOffset: (offsetDays: number) => CareItem[];
   /** offsetDays 날짜에 실제로 쓰는 제품만 (사용 주기 반영) */
   productsForOffset: (offsetDays: number) => CareItem[];
@@ -36,7 +37,7 @@ interface RoutineContextValue {
   /** 위 둘을 시각 순으로 합친 "오늘의 피부 케어" 목록 */
   careItemsForOffset: (offsetDays: number) => CareItem[];
 
-  /** 체크 토글 — key는 careItemKey(kind, id) */
+  /** 체크 토글 — key는 careItemKey(kind, id, occurrenceIndex) */
   toggleForOffset: (offsetDays: number, key: string) => void;
 
   add: (kind: CareKind, draft: CareDraft) => void;
@@ -53,8 +54,51 @@ interface RoutineContextValue {
 
 const RoutineContext = createContext<RoutineContextValue | null>(null);
 
-const byTime = <T extends { time: string }>(list: T[]): T[] =>
-  [...list].sort((a, b) => a.time.localeCompare(b.time));
+/** 시각 비교 — null(시각 안 정함)은 항상 뒤로 보낸다 */
+function compareTime(a: string | null, b: string | null): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return a.localeCompare(b);
+}
+
+/**
+ * 틀(Routine/CareProduct) 목록을 그날의 CareItem 줄로 펼친다 — times가 여러 개면 그 수만큼
+ * 줄이 생기고(각자 자기 시각과 자기 완료 여부를 갖는다), 펼친 뒤에 시각순으로 정렬한다.
+ * (틀 단계에서 먼저 정렬하면 하루 2회인 항목의 두 시각이 서로 멀리 떨어져 있을 때 둘 다
+ * 첫 시각 자리에 붙어버려서, 반드시 펼친 다음에 정렬해야 한다.)
+ */
+function expandForDate<T extends Routine>(
+  items: T[],
+  kind: CareKind,
+  date: Date,
+  completions: Record<string, Set<string>>,
+  dueOf: (item: T) => boolean,
+): CareItem[] {
+  const done = completions[recordKey(date)];
+  const rows: CareItem[] = [];
+  items.forEach((item) => {
+    const times = item.times.length > 0 ? item.times : [null];
+    const due = dueOf(item);
+    times.forEach((time, occurrenceIndex) => {
+      const key = careItemKey(kind, item.id, occurrenceIndex);
+      rows.push({
+        id: item.id,
+        name: item.name,
+        time,
+        push: item.push,
+        kind,
+        cycleDays: (item as unknown as CareProduct).cycleDays,
+        key,
+        due,
+        occurrenceIndex,
+        occurrenceCount: times.length,
+        done: done ? done.has(key) : false,
+      });
+    });
+  });
+  return rows.sort((a, b) => compareTime(a.time, b.time));
+}
 
 export function RoutineProvider({ children }: { children: React.ReactNode }) {
   // routines/products는 이름·시각 등 '틀'만 담는다 — 완료 여부는 날짜별로 completions에 따로 쌓인다
@@ -63,36 +107,16 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
   // 날짜 키("2026-8-6") -> 그날 완료 처리된 항목 key 집합
   const [completions, setCompletions] = useState<Record<string, Set<string>>>({});
 
-  const sortedRoutines = useMemo(() => byTime(routines), [routines]);
-  const sortedProducts = useMemo(() => byTime(products), [products]);
-
   const routinesForDate = useCallback(
-    (date: Date): CareItem[] => {
-      const done = completions[recordKey(date)];
-      return sortedRoutines.map((r) => {
-        const key = careItemKey('routine', r.id);
-        return { ...r, kind: 'routine' as const, key, due: true, done: done ? done.has(key) : false };
-      });
-    },
-    [sortedRoutines, completions],
+    (date: Date): CareItem[] => expandForDate(routines, 'routine', date, completions, () => true),
+    [routines, completions],
   );
 
   /** 등록된 제품 전부를 그날 기준(due 판정 포함)으로 펼친다 */
   const allProductsForDate = useCallback(
-    (date: Date): CareItem[] => {
-      const done = completions[recordKey(date)];
-      return sortedProducts.map((p) => {
-        const key = careItemKey('product', p.id);
-        return {
-          ...p,
-          kind: 'product' as const,
-          key,
-          due: isCycleDay(p.cycleDays, date),
-          done: done ? done.has(key) : false,
-        };
-      });
-    },
-    [sortedProducts, completions],
+    (date: Date): CareItem[] =>
+      expandForDate(products, 'product', date, completions, (p) => isCycleDay(p.cycleDays, date)),
+    [products, completions],
   );
 
   /** 그날 실제로 쓰는 제품만 */
@@ -138,7 +162,8 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const add = useCallback((kind: CareKind, draft: CareDraft) => {
-    const base = { id: Date.now(), name: draft.name, time: draft.time, done: false, push: draft.push };
+    const times = draft.times.length > 0 ? draft.times : [null];
+    const base = { id: Date.now(), name: draft.name, times, done: false, push: draft.push };
     if (kind === 'product') {
       setProducts((prev) => [...prev, { ...base, cycleDays: Math.max(1, draft.cycleDays ?? 1) }]);
     } else {
@@ -151,7 +176,7 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
       if (item.id !== id) return item;
       const next: any = { ...item };
       if (patch.name != null) next.name = patch.name;
-      if (patch.time != null) next.time = patch.time;
+      if (patch.times != null) next.times = patch.times.length > 0 ? patch.times : [null];
       if (patch.push != null) next.push = patch.push;
       if (patch.cycleDays != null) next.cycleDays = Math.max(1, patch.cycleDays);
       return next;
@@ -176,8 +201,8 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(
     () => ({
-      routines: sortedRoutines,
-      products: sortedProducts,
+      routines,
+      products,
       routinesForOffset,
       productsForOffset,
       allProductsForOffset,
@@ -189,8 +214,8 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
       productsUsedOn,
     }),
     [
-      sortedRoutines,
-      sortedProducts,
+      routines,
+      products,
       routinesForOffset,
       productsForOffset,
       allProductsForOffset,

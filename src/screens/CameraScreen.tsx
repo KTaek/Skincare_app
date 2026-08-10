@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { AppColors } from '../theme';
-import { analyzeLocal, LocalAnalysisResult } from '../ai/analyzeLocal';
+import { analyzeLocal, normalSkinResult, LocalAnalysisResult } from '../ai/analyzeLocal';
 import { classifyDisease, preloadDiseaseModel } from '../ai/diseaseModel';
 import { preloadModels } from '../ai/tfliteService';
 import { GRADE_NAMES_KO } from '../ai/labels';
@@ -31,6 +31,10 @@ import ExamResultScreen from './ExamResultScreen';
  *
  * 질환 분류 모델은 이미 지켜보는 자리를 다시 찍을 때(이어서 기록)와 사용자가 진단명을 직접
  * 넣어 둔 자리에서는 돌리지 않는다 — 그 경우엔 이름을 새로 맞힐 이유가 없다.
+ *
+ * 질환 분류를 먼저 끝내고, 1순위가 "정상"이면 세그멘테이션·중증도 모델(analyzeLocal)은 돌리지
+ * 않는다 — 이미 정상 피부라고 판단된 사진에 그 모델까지 돌리면 잡음을 병변처럼 읽을 수 있어서,
+ * 대신 normalSkinResult로 "이상 없음"(피부 종합 상태 100점, 세부 증상 전부 없음)을 바로 확정한다.
  */
 type Stage = 'start' | 'flow' | 'analyzing' | 'result' | 'error';
 
@@ -134,16 +138,13 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         // 기준 세션이거나 조명을 추정하지 못한 촬영에서는 [1,1,1]이라 아무 효과가 없다.
         const colorGain = cap.session.colorNorm?.gain;
 
-        // dump 모드에서는 모델을 부르지 않고 지어낸 값으로 결과 화면을 채운다.
-        // 세션 id를 씨앗으로 써서 같은 촬영이면 항상 같은 숫자가 나온다.
-        const local = DUMP_RESULTS
-          ? makeDumpLocalResult(cap.session.id)
-          : await analyzeLocal(cap.photoUri, { colorGain });
-
         // 진단명을 직접 넣어 둔 자리이거나 이어서 기록이면 질환 분류 모델은 건너뛴다
         const skipDisease = cap.kind === 'followUp' || !!cap.target.diagnosis?.diagnosed;
         let diseases: ExamAnalysis['diseases'] = null;
         let predictedDisease: string | undefined;
+        // 질환 분류 1순위가 "정상"이면 세그멘테이션·중증도 모델(analyzeLocal)은 돌리지 않고
+        // 바로 "이상 없음"으로 확정한다 — 그래서 질환 분류를 먼저 끝내 둔다.
+        let isNormalSkin = false;
         if (!skipDisease) {
           const predictions = DUMP_RESULTS
             ? makeDumpDiseases(cap.session.id)
@@ -153,6 +154,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
           const top = predictions[0];
           if (top) {
             predictedDisease = top.label;
+            isNormalSkin = top.key === '정상';
             setDiagnosis(cap.target.id, {
               diagnosed: false,
               disease: top.label,
@@ -162,6 +164,14 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
             });
           }
         }
+
+        // dump 모드에서는 모델을 부르지 않고 지어낸 값으로 결과 화면을 채운다.
+        // 세션 id를 씨앗으로 써서 같은 촬영이면 항상 같은 숫자가 나온다.
+        const local = DUMP_RESULTS
+          ? makeDumpLocalResult(cap.session.id)
+          : isNormalSkin
+            ? await normalSkinResult(cap.photoUri)
+            : await analyzeLocal(cap.photoUri, { colorGain });
 
         // 경과 이어서 기록은 이미 이어붙일 폴더가 정해져 있으므로 바로 오늘 기록으로 남긴다
         if (cap.kind === 'followUp' && cap.folderId) {
@@ -193,10 +203,13 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
   /**
    * 신규 증상 기록 결과로 이 자리의 경과 관찰 폴더를 만들고 오늘 기록을 넣는다.
    * 다른 자리의 폴더에 끼워 넣는 선택지는 두지 않는다 — 폴더 하나는 자리 하나를 계속 따라가야
-   * 추이 비교가 의미가 있기 때문이다. (같은 자리를 또 찍으면 ensureFolder가 그 폴더를 돌려준다)
+   * 경과 비교가 의미가 있기 때문이다. (같은 자리를 또 찍으면 ensureFolder가 그 폴더를 돌려준다)
+   *
+   * 결과 화면의 "경과 폴더 생성" 버튼이 누른 그 자리에서 바로 폴더로 넘어가야 해서, 만든(또는
+   * 이미 있던) 폴더 id를 그대로 돌려준다.
    */
-  const linkToFolder = useCallback(() => {
-    if (!capture || !analysis) return;
+  const linkToFolder = useCallback((): string => {
+    if (!capture || !analysis) return ''; // 결과 화면이 떠 있는 동안만 눌리므로 실제로는 항상 값이 있다
     const target = findTarget(capture.target.id) ?? capture.target;
     const id = ensureFolder({
       targetId: target.id,
@@ -210,6 +223,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     });
     const folder = getFolder(id);
     if (folder) setLinkedFolder({ id: folder.id, name: folder.name });
+    return id;
   }, [capture, analysis, findTarget]);
 
   const openFolder = useCallback(

@@ -66,9 +66,6 @@ export default function MonitoringDetailScreen({ navigation, route }) {
             <Text style={styles.topBarSub} numberOfLines={1}>{plainSiteLabel(folder.name)}</Text>
           </View>
         </TouchableOpacity>
-        <View style={styles.dayBadge}>
-          <Text style={styles.dayBadgeText}>D+{record.dayOffset}</Text>
-        </View>
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: PAGE_PAD, gap: 12, paddingBottom: 24 }}>
@@ -99,15 +96,15 @@ export default function MonitoringDetailScreen({ navigation, route }) {
               key={key}
               label={SYMPTOMS[key].label}
               value={DISPLAY_SCALE.symptom(record[key])}
-              unit="/100"
               segments={SYMPTOM_SEGMENTS_BASE}
               first={i === 0}
+              hideValue
             />
           ))}
         </View>
 
         {/* 3) 가려움 문진 (VAS 0~10 × 10 = 0~100 표시값) */}
-        <MetricCard label="가려움" value={itchValue} unit="/100" segments={ITCH_SEGMENTS} />
+        <MetricCard label="가려움 안정도" value={itchValue} unit="/100" segments={ITCH_SEGMENTS} />
 
         {/* 4) 수면 점수 (삼성헬스) — 스마트워치를 연동하지 않았으면 점수 대신 "미기재" */}
         {healthConnected ? (
@@ -134,8 +131,6 @@ const styles = StyleSheet.create({
   },
   topBarTitle: { fontSize: 15, fontWeight: '700', color: mc.ink },
   topBarSub: { fontSize: 11, color: mc.sub, maxWidth: 160 },
-  dayBadge: { backgroundColor: mc.greenBody, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
-  dayBadgeText: { fontSize: 10, color: mc.greenDeep, fontWeight: '800' },
 
   photoCard: { padding: 12 },
   photoRow: { flexDirection: 'row', justifyContent: 'center', gap: PHOTO_GAP },

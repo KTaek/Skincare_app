@@ -20,7 +20,7 @@
  * 밖으로 밀려 잘리는 문제가 있었다. 고정 높이를 쓰고, 넘치면 부모 화면이 세로로 스크롤하게 하는
  * 편이 어떤 화면 크기에서도 안전하다.
  */
-import React, { useRef } from 'react';
+import React from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import Svg, { Polyline, Circle, Line, Rect } from 'react-native-svg';
 import { monitoringColors as mc, CHART_SERIES, DISPLAY_SCALE } from '../theme';
@@ -60,32 +60,20 @@ function toPointsAttr(pts) {
   return pts.map(([x, y]) => `${x},${y}`).join(' ');
 }
 
-const DOUBLE_TAP_MS = 300;
-
 /**
  * 결합 그래프 본체 — 지표 이름은 TrendChartLegend가, 좌우 y축 숫자는 TrendChartYAxis가 각각
- * 스크롤 밖 고정 자리에 그린다. selectedId와 같은 기록의 폭 전체를 옅은 초록 띠로 칠해 어떤
- * 날짜가 선택되어 있는지 보여주고, 포인트를 한 번 탭하면 onSelect(record)로 선택을 바꾸고, 같은
- * 포인트를 300ms 안에 두 번 탭(더블클릭)하면 onDoubleSelect(record)로 상세 결과로 넘어가라는
- * 신호를 준다.
+ * 스크롤 밖 고정 자리에 그린다. selectedId와 같은 기록의 폭 전체를 옅은 회색 띠로 칠해 어떤
+ * 날짜가 선택되어 있는지 보여주고, 포인트를 탭하면 onSelect(record)로 선택을 바꾼다. 상세 결과는
+ * 이 그래프에서 바로 넘어가지 않는다 — 아래 "피부 상태 상세 결과" 영역에서 그대로 펼쳐 본다.
  */
-export default function TrendChart({ records, chartHeight = MIN_CHART_H, selectedId, onSelect, onDoubleSelect }) {
+export default function TrendChart({ records, chartHeight = MIN_CHART_H, selectedId, onSelect }) {
   const n = records.length;
   const width = chartContentWidth(n);
   const h = chartHeight;
   const selectedIndex = Math.max(0, records.findIndex((r) => r.id === selectedId));
-  const lastTapRef = useRef({});
 
   const handlePress = (r) => {
-    const now = Date.now();
-    const last = lastTapRef.current[r.id] || 0;
-    if (now - last < DOUBLE_TAP_MS) {
-      lastTapRef.current[r.id] = 0;
-      onDoubleSelect?.(r);
-    } else {
-      lastTapRef.current[r.id] = now;
-      onSelect?.(r);
-    }
+    onSelect?.(r);
   };
 
   // 지표별 (x, y) 점 목록을 미리 계산해 둔다 — 꺾은선과 점 둘 다 이 좌표를 그대로 쓴다.
@@ -97,13 +85,14 @@ export default function TrendChart({ records, chartHeight = MIN_CHART_H, selecte
   return (
     <View style={{ width, height: h }}>
       <Svg width={width} height={h}>
-        {/* 선택된 날짜를 가리키는 세로 띠 — 점선 대신 그 날짜의 폭(POINT_W) 전체를 옅은 초록으로
-            칠해서 강조한다. 그리드/데이터보다 먼저 그려서 뒤(배경)에 깔린다. 기본은 가장 최근
-            기록(오른쪽 끝). */}
+        {/* 선택된 날짜를 가리키는 세로 띠 — 점선 대신 그 날짜의 폭(POINT_W) 전체를 옅은 회색으로
+            칠해서 강조한다. 날짜 칸(위 DateCell)의 초록 배지와는 다른 색을 써서, 그래프 위 꺾은선
+            색(피부 종합 상태·가려움 안정도·수면 점수)과 초록이 겹쳐 헷갈리지 않게 한다. 그리드/
+            데이터보다 먼저 그려서 뒤(배경)에 깔린다. 기본은 가장 최근 기록(오른쪽 끝). */}
         {records[selectedIndex] && (
           <Rect
             x={xAt(selectedIndex) - POINT_W / 2} y={0} width={POINT_W} height={h}
-            fill={mc.greenTop} opacity={0.22}
+            fill={mc.sub} opacity={0.16}
           />
         )}
 

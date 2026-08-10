@@ -88,6 +88,36 @@ export async function detectBboxLocal(uri: string): Promise<LesionBox | null> {
 }
 
 /**
+ * 질환 분류(diseaseModel)에서 1순위가 "정상"으로 나왔을 때 쓰는 합성 결과.
+ *
+ * 이미 정상 피부라고 판단됐는데 세그멘테이션·중증도 모델(Stage1/2)을 또 돌리면, 병변이 없는
+ * 사진에서도 잡음을 병변처럼 읽어 등급을 매기려 드는 경우가 있다 — 이 경로에서는 그 모델들을
+ * 아예 부르지 않고 "이상 없음"을 그대로 확정한다. 이미지 크기만 읽어(가볍다, 모델 추론이 아니다)
+ * bbox를 전체 이미지로 채운다.
+ */
+export async function normalSkinResult(uri: string): Promise<LocalAnalysisResult> {
+  const { origW, origH } = await withSkImage(uri, (image) => ({ origW: image.width(), origH: image.height() }));
+  const bbox: LesionBox = { x: 0, y: 0, width: origW, height: origH, imageWidth: origW, imageHeight: origH };
+  const signs: SignResult[] = SIGN_KEYS.map((sign) => ({
+    sign,
+    grade: 0,
+    gradeName: labels.grade_names_by_sign[sign][0],
+  }));
+  const igaGradeName = labels.grade_names_by_sign.iga[0]; // 'Clear'
+
+  return {
+    signs,
+    igaGrade: 0,
+    igaGradeName,
+    severity: IGA_GRADE_TO_SEVERITY[0] ?? 1,
+    bbox,
+    maskAreaPct: 0,
+    regions: [{ bbox, signs, igaGrade: 0, igaGradeName, share: 1 }],
+    inferenceTimeMs: 0,
+  };
+}
+
+/**
  * 촬영된 사진 전체 분석: Stage1(분할) → 덩어리별 crop → Stage2(분류) → DEX 등급 산출.
  *
  * 증상이 여러 곳에 떨어져 있으면 덩어리마다 따로 잘라 등급을 매기고, 그중 가장 나쁜 것을

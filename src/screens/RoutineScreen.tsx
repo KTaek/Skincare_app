@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { Image, Platform, ScrollView, StyleSheet, Text, TextInput, View, Pressable } from 'react-native';
+import { Image, ScrollView, StyleSheet, Text, TextInput, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { AppColors, cardDecoration } from '../theme';
 import { RoutineRow } from '../components/widgets';
 import { CareItem, CareKind, cycleLabel } from '../models';
@@ -154,6 +153,30 @@ function CareSection({
   );
 }
 
+const defaultTimeAt = (hour: number) => {
+  const d = new Date();
+  d.setHours(hour, 0, 0, 0);
+  return d;
+};
+
+const fmtHHMM = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+/** "HH:mm" 문자열 → 오늘 날짜에 그 시:분을 올린 Date (프리셋 칩을 고를 때 씀) */
+const atHHMM = (hhmm: string) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d;
+};
+
+/** 실행 시각 메뉴에서 스크롤해서 고르는 시각 목록 — 정시 단위로 하루 전체를 둔다 */
+const HOURLY_TIMES = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+
+/** "몇 일"과 같은 형식으로 맞춘 "몇 번" 라벨 — 1이면 "하루 1회", 그 외엔 "하루 N회" */
+function timesPerDayLabel(n: number): string {
+  return `하루 ${n}회`;
+}
+
 /** 루틴/제품 추가 시트 — 화면 트리 안의 절대위치 View로 덮는다 (RN Modal은 웹 미리보기에서 프레임 밖으로 나간다) */
 function AddCareSheet({
   kind,
@@ -162,37 +185,60 @@ function AddCareSheet({
 }: {
   kind: CareKind | null;
   onClose: () => void;
-  onSave: (kind: CareKind, draft: { name: string; time: string; push: boolean; cycleDays: number }) => void;
+  onSave: (kind: CareKind, draft: { name: string; times: (string | null)[]; push: boolean; cycleDays: number }) => void;
 }) {
   const [name, setName] = useState('');
-  const [time, setTime] = useState(() => {
-    const d = new Date();
-    d.setHours(9, 0, 0, 0);
-    return d;
-  });
-  const [showPicker, setShowPicker] = useState(false);
+  // 하루 횟수만큼 시각을 들고 있는다 — 횟수를 늘리면 저녁 시간대를 기본값으로 채워 둔다
+  const [times, setTimes] = useState<Date[]>([defaultTimeAt(9)]);
+  // 하루 횟수 — 제품일 때만 "사용 주기" 칸에서 바꿀 수 있다. 루틴은 항상 1이고, 실행 시각을
+  // 여러 개 등록하고 싶으면 그 자체가 "하루 여러 번"이라 별도 횟수 입력이 필요 없다.
+  const [timesPerDay, setTimesPerDay] = useState(1);
+  // 시각을 아예 정해두지 않는 루틴("생각날 때 하기")도 있어서, 실행 시각 칸 자체에서 고른다.
+  // 기본값도 "설정 안 함"이다 — 시각을 정하는 쪽이 아니라 사용자가 직접 골라야 하는 선택지다.
+  const [timeSpecified, setTimeSpecified] = useState(false);
+  const [timeMenuOpen, setTimeMenuOpen] = useState(false);
   const [push, setPush] = useState<boolean | null>(null);
   const [cycleDays, setCycleDays] = useState(1);
 
-  // 시트를 닫을 때마다 입력을 비워, 다음에 열면 항상 빈 폼으로 시작한다
-  const close = () => {
+  const resetForm = () => {
     setName('');
+    setTimes([defaultTimeAt(9)]);
+    setTimesPerDay(1);
+    setTimeSpecified(false);
+    setTimeMenuOpen(false);
     setPush(null);
     setCycleDays(1);
-    setShowPicker(false);
+  };
+
+  // 시트를 닫을 때마다 입력을 비워, 다음에 열면 항상 빈 폼으로 시작한다
+  const close = () => {
+    resetForm();
     onClose();
   };
 
   if (!kind) return null;
 
   const isProduct = kind === 'product';
-  const timeStr = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
   const canSave = !!name.trim() && push != null;
 
-  const onTimeChange = (_e: DateTimePickerEvent, selected?: Date) => {
-    setShowPicker(Platform.OS === 'ios'); // iOS는 인라인 유지, Android는 닫힘
-    if (selected) setTime(selected);
+  /** 사용 주기 칸의 "몇 번" 스테퍼 — 횟수가 늘면 그만큼 실행 시각 칸에 회차가 새로 생긴다 */
+  const setTimesPerDayClamped = (n: number) => {
+    const next = Math.max(1, Math.min(5, n));
+    setTimesPerDay(next);
+    setTimes((prev) => {
+      if (prev.length >= next) return prev;
+      const extra = Array.from({ length: next - prev.length }, () => defaultTimeAt(21));
+      return [...prev, ...extra];
+    });
   };
+
+  /** 회차 i의 시각을 목록에서 바로 고른다 */
+  const pickPreset = (i: number, hhmm: string) => {
+    setTimeSpecified(true);
+    setTimes((prev) => prev.map((t, idx) => (idx === i ? atHHMM(hhmm) : t)));
+  };
+
+  const timeSummary = !timeSpecified ? '설정 안 함' : times.slice(0, timesPerDay).map(fmtHHMM).join(', ');
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -223,13 +269,49 @@ function AddCareSheet({
             <View style={{ height: 14 }} />
             <Text style={styles.fieldLabel}>실행 시각</Text>
             <View style={{ height: 6 }} />
-            <Pressable style={styles.timeField} onPress={() => setShowPicker(true)}>
+            {/* 이 칸을 탭하면 "설정 안 함"과 그날 실행 회차(하루 횟수만큼)가 메뉴로 펼쳐진다 */}
+            <Pressable style={styles.timeField} onPress={() => setTimeMenuOpen((o) => !o)}>
               <MaterialIcons name="schedule" size={18} color={AppColors.sub} />
               <View style={{ width: 8 }} />
-              <Text style={styles.timeText}>{timeStr}</Text>
+              <Text style={styles.timeText}>{timeSummary}</Text>
+              <View style={{ flex: 1 }} />
+              <MaterialIcons name={timeMenuOpen ? 'expand-less' : 'expand-more'} size={18} color={AppColors.sub} />
             </Pressable>
-            {showPicker && (
-              <DateTimePicker value={time} mode="time" is24Hour display="spinner" onChange={onTimeChange} />
+            {timeMenuOpen && (
+              <View style={styles.timeMenu}>
+                <Pressable style={styles.timeListRow} onPress={() => setTimeSpecified(false)}>
+                  <Text style={[styles.timeListRowText, !timeSpecified && styles.timeMenuOptionTextActive]}>
+                    설정 안 함
+                  </Text>
+                  {!timeSpecified && <MaterialIcons name="check" size={16} color={AppColors.greenTop} />}
+                </Pressable>
+                {/* 시각 고르기를 따로 펼치지 않고, "설정 안 함" 바로 아래에서 스크롤하며 고른다 */}
+                {Array.from({ length: timesPerDay }).map((_, i) => {
+                  const current = fmtHHMM(times[i] ?? times[0]);
+                  return (
+                    <View key={i}>
+                      {timesPerDay > 1 && (
+                        <View style={styles.timeOccurrenceLabel}>
+                          <Text style={styles.fieldSubLabel}>{i + 1}회차</Text>
+                        </View>
+                      )}
+                      <ScrollView style={styles.timeScrollList} nestedScrollEnabled showsVerticalScrollIndicator>
+                        {HOURLY_TIMES.map((t) => {
+                          const active = timeSpecified && current === t;
+                          return (
+                            <Pressable key={t} style={styles.timeListRow} onPress={() => pickPreset(i, t)}>
+                              <Text style={[styles.timeListRowText, active && styles.timeMenuOptionTextActive]}>
+                                {t}
+                              </Text>
+                              {active && <MaterialIcons name="check" size={16} color={AppColors.greenTop} />}
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  );
+                })}
+              </View>
             )}
 
             {isProduct && (
@@ -248,6 +330,18 @@ function AddCareSheet({
                   <View style={{ width: 8 }} />
                   <StepBtn icon="add" onPress={() => setCycleDays((c) => Math.min(30, c + 1))} />
                 </View>
+                <View style={{ height: 8 }} />
+                <View style={styles.cycleField}>
+                  <Text style={styles.cycleEmoji}>🔁</Text>
+                  <Text style={styles.cycleValue}>
+                    {timesPerDay}회
+                    <Text style={styles.cycleHint}>  · {timesPerDayLabel(timesPerDay)}</Text>
+                  </Text>
+                  <View style={{ flex: 1 }} />
+                  <StepBtn icon="remove" onPress={() => setTimesPerDayClamped(timesPerDay - 1)} />
+                  <View style={{ width: 8 }} />
+                  <StepBtn icon="add" onPress={() => setTimesPerDayClamped(timesPerDay + 1)} />
+                </View>
               </>
             )}
 
@@ -264,11 +358,11 @@ function AddCareSheet({
               style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}
               disabled={!canSave}
               onPress={() => {
-                onSave(kind, { name: name.trim(), time: timeStr, push: push === true, cycleDays });
-                setName('');
-                setPush(null);
-                setCycleDays(1);
-                setShowPicker(false);
+                const draftTimes: (string | null)[] = timeSpecified
+                  ? times.slice(0, timesPerDay).map(fmtHHMM)
+                  : Array(timesPerDay).fill(null);
+                onSave(kind, { name: name.trim(), times: draftTimes, push: push === true, cycleDays });
+                resetForm();
               }}
             >
               <Text style={[styles.saveBtnText, !canSave && styles.saveBtnTextDisabled]}>저장</Text>
@@ -354,6 +448,7 @@ const styles = StyleSheet.create({
   sheetBody: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 26 },
 
   fieldLabel: { fontSize: 12.5, fontWeight: '700', color: AppColors.sub },
+  fieldSubLabel: { fontSize: 11.5, fontWeight: '700', color: AppColors.sub },
   input: {
     fontSize: 15,
     color: AppColors.ink,
@@ -371,6 +466,35 @@ const styles = StyleSheet.create({
     borderColor: AppColors.line,
   },
   timeText: { fontSize: 15, color: AppColors.ink },
+  timeMenu: {
+    marginTop: 6,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: AppColors.line,
+    overflow: 'hidden',
+  },
+  timeMenuOptionTextActive: { fontWeight: '800', color: AppColors.greenMuted },
+  timeOccurrenceLabel: {
+    paddingTop: 10,
+    paddingHorizontal: 14,
+    paddingBottom: 2,
+    backgroundColor: '#F7F8FA',
+  },
+  // 정시 24개를 다 펼치면 시트가 너무 길어져서, 이 안에서만 따로 스크롤한다
+  timeScrollList: { maxHeight: 176 },
+  // "설정 안 함"과 시각 목록이 같은 줄로 보이도록 배경·간격·글씨를 전부 같은 값으로 맞춘다 —
+  // "설정 안 함"만 스크롤 목록 바깥(항상 보이는 자리)에 있을 뿐, 생김새는 똑같아야 한다.
+  timeListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderTopWidth: 1,
+    borderTopColor: AppColors.line,
+    backgroundColor: '#F7F8FA',
+  },
+  timeListRowText: { fontSize: 14, fontWeight: '600', color: AppColors.ink },
 
   cycleField: {
     flexDirection: 'row',

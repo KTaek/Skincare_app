@@ -28,7 +28,7 @@ export default function UsedProductsCard({ date }: { date: Date }) {
               <MaterialIcons name="medication" size={14} color={mc.greenMuted} />
               <Text style={styles.chipText}>{p.name}</Text>
               <Text style={styles.chipMeta}>
-                {p.time}
+                {p.time ?? (p.occurrenceCount > 1 ? `${p.occurrenceIndex + 1}회` : '시각 미정')}
                 {(p.cycleDays ?? 1) > 1 ? ` · ${cycleLabel(p.cycleDays ?? 1)}` : ''}
               </Text>
             </View>

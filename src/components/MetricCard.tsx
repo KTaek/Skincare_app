@@ -59,6 +59,7 @@ export function MetricRow({
   unit = '',
   segments,
   first,
+  hideValue,
 }: {
   label: string;
   value: number;
@@ -67,6 +68,8 @@ export function MetricRow({
   segments: Segment[];
   /** 카드 안 첫 줄이면 위 구분선을 그리지 않는다 */
   first?: boolean;
+  /** true면 숫자를 안 보여주고 단계 배지만 남긴다 — 세부 증상처럼 점수 없이 이름만 보여줄 때 쓴다 */
+  hideValue?: boolean;
 }) {
   const band = segmentFor(value, segments);
   return (
@@ -75,10 +78,12 @@ export function MetricRow({
         <Text style={styles.rowLabel} numberOfLines={1}>
           {label}
         </Text>
-        <Text style={styles.rowValue}>
-          {Math.round(value)}
-          {unit !== '' && <Text style={styles.rowUnit}>{unit}</Text>}
-        </Text>
+        {!hideValue && (
+          <Text style={styles.rowValue}>
+            {Math.round(value)}
+            {unit !== '' && <Text style={styles.rowUnit}>{unit}</Text>}
+          </Text>
+        )}
         <View style={{ flex: 1 }} />
         <Badge text={band.ko} color={band.color} small />
       </View>

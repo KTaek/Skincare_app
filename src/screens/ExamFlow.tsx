@@ -73,8 +73,6 @@ export default function ExamFlow({
   if (isNew && (step === 'part' || !target)) {
     return (
       <PartSelectScreen
-        modelId={modelId}
-        stepLabel="1 / 3"
         onBack={onExit}
         onNext={(spot) => {
           // 자리는 여기서 확정한다. 진단명은 결과 화면에서 붙인다.

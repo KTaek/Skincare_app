@@ -29,7 +29,7 @@ export interface MemoTarget {
   date: string;
   folderId: string;
   recordId: string;
-  /** 내보내기에서 소제목으로 쓸 이름 (예: "건선 · 팔 · D+53") */
+  /** 내보내기에서 소제목으로 쓸 이름 (예: "건선 · 팔") */
   label?: string;
 }
 

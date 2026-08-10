@@ -14,7 +14,13 @@ export type CareKind = 'routine' | 'product';
 export interface Routine {
   id: number;
   name: string;
-  time: string; // "HH:mm" — 목록 정렬 기준
+  /**
+   * 하루 중 실행 시각들 — 원소 수가 곧 "하루 횟수"다(["09:00"] = 하루 1회, ["09:00","21:00"] =
+   * 하루 2회). 시각을 정해두지 않은 실행은 null로 남긴다 — 등록은 하되 특정 시각에 매이지
+   * 않는 루틴("생각날 때 하기")을 위해서다. 최소 한 원소는 항상 있다(시각 없이 하루 1회면
+   * [null]).
+   */
+  times: (string | null)[];
   done: boolean;
   /** PUSH 알람 수신 여부 */
   push: boolean;
@@ -26,18 +32,33 @@ export interface CareProduct extends Routine {
   cycleDays: number;
 }
 
-/** 화면에 뿌릴 때 쓰는 합본 항목 — 루틴/제품 어느 쪽에서 왔는지 kind로 구분한다 */
-export interface CareItem extends Routine {
+/**
+ * 화면에 뿌릴 때 쓰는 합본 항목 — 루틴/제품 어느 쪽에서 왔는지 kind로 구분한다.
+ * Routine.times(하루 여러 번) 하나는 그 횟수만큼 CareItem 여러 개로 펼쳐진다 — 목록의 한 줄이
+ * "그날의 실행 한 번"과 1:1로 대응해야 각 줄을 따로 체크할 수 있기 때문이다.
+ */
+export interface CareItem {
+  id: number;
+  name: string;
+  /** 이 실행(occurrence) 하나의 시각 — 정해두지 않았으면 null */
+  time: string | null;
+  done: boolean;
+  push: boolean;
   kind: CareKind;
   /** 제품일 때만 채워진다 */
   cycleDays?: number;
-  /** 목록 key 겸 토글 대상 식별자 ("product:3") — id는 종류별로만 유일하기 때문 */
+  /** 목록 key 겸 토글 대상 식별자 ("product:3:0") — id는 종류별로만, occurrence는 그 안에서만 유일 */
   key: string;
   /** 그날 쓰는 항목인지 — 주기가 맞지 않는 제품은 false (루틴은 항상 true) */
   due: boolean;
+  /** 하루 여러 번 중 몇 번째(0-based)인지 — 시각이 없을 때 "1회/2회"로 구분해 보여주는 데 쓴다 */
+  occurrenceIndex: number;
+  /** 이 항목의 하루 총 횟수 — 1이면 굳이 회차를 표시하지 않는다 */
+  occurrenceCount: number;
 }
 
-export const careItemKey = (kind: CareKind, id: number): string => `${kind}:${id}`;
+export const careItemKey = (kind: CareKind, id: number, occurrenceIndex = 0): string =>
+  `${kind}:${id}:${occurrenceIndex}`;
 
 /** 사용 주기 라벨 — 1일이면 "매일", 2일이면 "격일", 그 외엔 "N일마다" */
 export function cycleLabel(cycleDays: number): string {
@@ -111,17 +132,17 @@ export const kUserName = '임경택';
 
 /** 일상 루틴 시드 — 사용자가 직접 추가/삭제할 수 있다 */
 export const initialRoutines = (): Routine[] => [
-  { id: 4, name: '피부 상태 사진찍기', time: '09:00', done: false, push: true },
-  { id: 1, name: '손톱 짧게 깎기', time: '12:00', done: false, push: true },
-  { id: 2, name: '물 마시기', time: '14:00', done: false, push: true },
-  { id: 3, name: '미지근한 물로 샤워하기', time: '18:00', done: false, push: false },
+  { id: 4, name: '피부 상태 사진찍기', times: ['09:00'], done: false, push: true },
+  { id: 1, name: '손톱 짧게 깎기', times: ['12:00'], done: false, push: true },
+  { id: 2, name: '물 마시기', times: ['14:00'], done: false, push: true },
+  { id: 3, name: '미지근한 물로 샤워하기', times: ['18:00'], done: false, push: false },
 ];
 
 /** 사용 제품 시드 — 상세 결과의 "사용한 제품"도 이 목록에서 나온다 */
 export const initialProducts = (): CareProduct[] => [
-  { id: 1, name: 'BT4 Complex', time: '12:00', done: false, push: true, cycleDays: 1 },
-  { id: 2, name: '음압 패치', time: '14:00', done: false, push: true, cycleDays: 2 },
-  { id: 3, name: '보습제', time: '18:00', done: false, push: false, cycleDays: 1 },
+  { id: 1, name: 'BT4 Complex', times: ['09:00', '21:00'], done: false, push: true, cycleDays: 1 },
+  { id: 2, name: '음압 패치', times: ['14:00'], done: false, push: true, cycleDays: 2 },
+  { id: 3, name: '보습제', times: ['18:00'], done: false, push: false, cycleDays: 1 },
 ];
 
 /** 1970-01-01부터 며칠째인지 — 사용 주기 판정의 기준축 */

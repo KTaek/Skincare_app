@@ -45,7 +45,7 @@ export function RoutineRowContent({
           },
         ]}
       >
-        {item.done && <MaterialIcons name="check" size={14} color="#FFFFFF" />}
+        {item.done && <MaterialIcons name="check" size={12} color="#FFFFFF" />}
       </Pressable>
       <View style={{ width: 11 }} />
       {isProduct && (
@@ -71,7 +71,13 @@ export function RoutineRowContent({
       {item.push && (
         <MaterialIcons name="notifications-active" size={14} color="#C0C4CB" style={{ marginRight: 6 }} />
       )}
-      <Text style={styles.routineTime}>{item.time}</Text>
+      {/* 시각을 정해두지 않았으면 시각 대신 "1회/2회"로 하루 몇 번째 실행인지만 보여준다 —
+          하루 여러 번인 항목은 이게 없으면 같은 이름의 줄 두 개를 구분할 길이 없다 */}
+      {item.time ? (
+        <Text style={styles.routineTime}>{item.time}</Text>
+      ) : item.occurrenceCount > 1 ? (
+        <Text style={styles.routineTime}>{item.occurrenceIndex + 1}회</Text>
+      ) : null}
       {onDelete && (
         <Pressable onPress={onDelete} style={{ paddingLeft: 8 }} hitSlop={6}>
           <MaterialIcons name="close" size={18} color="#C7CBD1" />
@@ -142,10 +148,12 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   row: { flexDirection: 'row', alignItems: 'center' },
+  // 체크리스트(라디오처럼 하나만 고르는 게 아니라 항목마다 따로 켜고 끄는 목록)라는 걸
+  // 모양으로도 드러내려고 원(라디오 버튼처럼 보임) 대신 둥근 사각(체크박스)으로 그린다.
   checkbox: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 20,
+    height: 20,
+    borderRadius: 5,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',

@@ -102,7 +102,7 @@ function RecentStatusCard({
       </View>
       <View style={styles.statusRow}>
         <StatBox label="피부 종합 상태" value={`${Math.round(skinValue)}`} band={skinConditionInfo(skinValue)} />
-        <StatBox label="가려움" value={`${itchValue}`} band={itchBand(itchValue)} />
+        <StatBox label="가려움 안정도" value={`${itchValue}`} band={itchBand(itchValue)} />
         <StatBox
           label="수면 점수"
           value={sleepValue != null ? `${sleepValue}` : '-'}

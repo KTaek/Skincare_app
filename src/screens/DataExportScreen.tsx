@@ -139,9 +139,7 @@ export default function DataExportScreen({ navigation }: { navigation: any }) {
                   return (
                     <Pressable key={k} style={styles.recordRow} onPress={() => toggle(k)}>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.recordDate}>
-                          {fmtDate(r.date)} · D+{r.dayOffset}
-                        </Text>
+                        <Text style={styles.recordDate}>{fmtDate(r.date)}</Text>
                         <Text style={[styles.recordBand, { color: skinConditionInfo(skin).color }]}>
                           피부 종합 상태 {Math.round(skin)} · {skinConditionInfo(skin).ko}
                         </Text>

@@ -42,7 +42,7 @@ export default function ItchDetailScreen({
         <Pressable style={styles.backBtn} onPress={onBack}>
           <MaterialIcons name="chevron-left" size={24} color={AppColors.ink} />
         </Pressable>
-        <Text style={styles.headerTitle}>가려움 정도 추이</Text>
+        <Text style={styles.headerTitle}>가려움 정도 경과</Text>
       </View>
 
       <View style={[cardDecoration(), styles.card]}>
