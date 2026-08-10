@@ -72,8 +72,23 @@ export function makeDumpLocalResult(seedKey: string): LocalAnalysisResult {
     bbox,
     // 실제 마스크가 없으니 박스 넓이의 절반쯤을 마스크 넓이로 친다 (박스는 여백을 포함한다)
     maskAreaPct: Math.round(side * side * 50 * 10) / 10,
-    // dump에서는 증상 덩어리를 하나로만 지어낸다 — 여러 덩어리는 실제 마스크가 있어야 나온다
-    regions: [{ bbox, signs, igaGrade, igaGradeName, share: 1 }],
+    // 마스크 오버레이는 지어낼 방법이 없다 — dump 모드에서는 원본 사진만 보인다
+    maskUri: null,
+    // dump에서는 판정 단위를 하나로만 지어낸다 — 여러 단위는 실제 마스크가 있어야 나온다
+    regions: [
+      {
+        bbox,
+        signs,
+        igaGrade,
+        igaGradeName,
+        share: 1,
+        areaPct: Math.round(side * side * 50 * 10) / 10,
+        mergedBlobs: 1,
+        foreignPct: 0,
+      },
+    ],
+    worstRegionIndex: 0,
+    droppedRegions: 0,
     inferenceTimeMs: 0,
   };
 }

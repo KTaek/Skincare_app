@@ -1,25 +1,37 @@
-import React, { useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  BackHandler,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import Svg, { Circle, Rect } from 'react-native-svg';
+import Svg, { Circle } from 'react-native-svg';
 import { AppColors } from '../theme';
 import {
   monitoringColors as mc,
   monitoringCard,
+  segmentFor,
   ITCH_SEGMENTS,
   SKIN_SEGMENTS,
   SYMPTOM_SEGMENTS_BASE,
 } from '../folders/theme';
 import { folderNameOf } from '../folders/targets';
 import { plainSiteLabel } from '../models';
-import { LesionBox } from '../ai/analyzeLocal';
 import { GRADE_NAMES_KO } from '../ai/labels';
+import type { LocalAnalysisResult } from '../ai/analyzeLocal';
+import { REGION_COLORS } from '../ai/maskOverlay';
 import { ExamAnalysis, ExamCapture } from '../exam/examTypes';
 import { DUMP_RESULTS } from '../exam/dumpAnalysis';
 import { igaDisplayValue, itchDisplayValue, SIGN_DISPLAY, SIGN_ORDER, signDisplayValue } from '../exam/examMetrics';
 import { useMonitoring } from '../context/MonitoringContext';
-import { MetricCard, MetricRow } from '../components/MetricCard';
+import { Badge, MetricCard, MetricRow } from '../components/MetricCard';
+import { fitBox, useImageAspect } from '../components/imageAspect';
 import UsedProductsCard from '../components/UsedProductsCard';
 
 /** 사용자가 직접 고를 수 있는 진단명 — 분류 모델의 클래스와 같은 집합에 "직접 입력"을 더한 것 */
@@ -73,6 +85,8 @@ export default function ExamResultScreen({
   const skinValue = igaDisplayValue(analysis.local.igaGrade);
 
   const [editing, setEditing] = useState(false);
+  /** 크게 보고 있는 사진 (null이면 안 보고 있다) */
+  const [zoom, setZoom] = useState<{ uri: string; label: string } | null>(null);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -99,7 +113,7 @@ export default function ExamResultScreen({
           </View>
         )}
 
-        <PhotoPair uri={capture.photoUri} bbox={analysis.local.bbox} />
+        <PhotoPair uri={capture.photoUri} maskUri={analysis.local.maskUri} onZoom={setZoom} />
 
         {/* 이어서 기록은 이미 이름이 정해진 자리라 진단명을 다시 묻지 않는다 */}
         {!isFollowUp && (
@@ -121,6 +135,11 @@ export default function ExamResultScreen({
         />
 
         <SymptomCard analysis={analysis} />
+
+        {/* 판정 단위가 둘 이상이거나 제외된 덩어리가 있을 때만 — 하나면 위 카드가 곧 그 하나다 */}
+        {(analysis.local.regions.length > 1 || analysis.local.droppedRegions > 0) && (
+          <RegionCard local={analysis.local} />
+        )}
 
         {capture.itchVas != null && (
           <MetricCard label="가려움" value={itchDisplayValue(capture.itchVas)} unit="/100" segments={ITCH_SEGMENTS} />
@@ -191,7 +210,49 @@ export default function ExamResultScreen({
           setEditing(false);
         }}
       />
+
+      {/* 사진 확대는 화면 트리 맨 위에 둔다 — 헤더·푸터까지 덮어야 사진이 가장 크게 들어간다 */}
+      {zoom && <PhotoZoom uri={zoom.uri} label={zoom.label} onClose={() => setZoom(null)} />}
     </View>
+  );
+}
+
+/**
+ * 사진 확대 보기 — 사진을 누르면 화면을 덮고 원본 비율 그대로 최대 크기로 보여준다.
+ * 아무 곳이나 누르면 닫힌다 (안드로이드 뒤로가기도 결과 화면을 벗어나지 않고 이것만 닫는다).
+ *
+ * RN Modal이 아니라 절대위치 View인 이유는 이 앱의 다른 시트들과 같다 — Modal은 웹 미리보기에서
+ * 폰 프레임 밖으로 나간다.
+ */
+function PhotoZoom({ uri, label, onClose }: { uri: string; label: string; onClose: () => void }) {
+  const insets = useSafeAreaInsets();
+  const aspect = useImageAspect(uri);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [onClose]);
+
+  return (
+    <Pressable
+      style={[styles.zoomRoot, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}
+      onPress={onClose}
+    >
+      {/*
+        너비를 다 쓰고 높이는 사진 비율에서 나오되, 남은 자리보다 길면 줄어든다(flexShrink).
+        줄어든 뒤에도 contain이라 잘리지 않고, 결과적으로 화면에 들어가는 최대 크기가 된다.
+      */}
+      <Image
+        source={{ uri }}
+        style={[styles.zoomImage, { aspectRatio: aspect ?? 1 }]}
+        resizeMode="contain"
+      />
+      <Text style={styles.zoomLabel}>{label}</Text>
+      <Text style={styles.zoomHint}>화면을 누르면 닫혀요</Text>
+    </Pressable>
   );
 }
 
@@ -300,36 +361,145 @@ function SymptomCard({ analysis }: { analysis: ExamAnalysis }) {
   );
 }
 
-/** 촬영 이미지 원본 + 증상 위치 오버레이 — 상세 결과 화면의 사진 카드와 같은 배치 */
-function PhotoPair({ uri, bbox }: { uri: string; bbox: LesionBox }) {
+/**
+ * 병변별 중증도 — 판정 단위마다 IGA 등급을 따로 보여주고, 누르면 4증상까지 펼친다.
+ *
+ * 색 칩은 사진 오버레이의 색과 같다 (둘 다 maskOverlay의 REGION_COLORS를 쓴다) — 사진에서 본
+ * 자리와 이 줄을 눈으로 맞추는 유일한 연결이라, 색 정의가 두 곳으로 갈라지면 안 된다.
+ *
+ * 종합 카드를 대체하지 않고 아래에 덧붙인다. 종합값(가장 나쁜 단위)이 여전히 이 촬영의 대표이고,
+ * 기록·추이도 그 값으로 남기 때문이다.
+ */
+const FOREIGN_NOTICE_PCT = 10;
+
+function RegionCard({ local }: { local: LocalAnalysisResult }) {
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  const merged = local.regions.some((r) => r.mergedBlobs > 1);
+
+  const notes = [
+    '사진에 같은 색으로 표시된 곳이에요.',
+    merged ? '경계가 거의 붙어 있는 곳은 한 병변으로 묶었어요.' : null,
+    local.droppedRegions > 0
+      ? `너무 작은 ${local.droppedRegions}곳은 등급을 매기지 않았어요 (회색으로 표시, 넓이에는 포함).`
+      : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return (
+    <View style={[monitoringCard(), styles.card]}>
+      <Text style={styles.cardLabel}>병변별 중증도</Text>
+      {local.regions.map((region, i) => {
+        const open = openIndex === i;
+        const band = segmentFor(igaDisplayValue(region.igaGrade), SKIN_SEGMENTS);
+        return (
+          <View key={i} style={[styles.regionRow, i > 0 && styles.regionRowDivided]}>
+            <Pressable style={styles.regionHead} onPress={() => setOpenIndex(open ? null : i)}>
+              <View
+                style={[
+                  styles.regionChip,
+                  { backgroundColor: REGION_COLORS[i % REGION_COLORS.length] },
+                ]}
+              />
+              <Text style={styles.regionName}>병변 {i + 1}</Text>
+              {i === local.worstRegionIndex && local.regions.length > 1 && (
+                <Text style={styles.regionRep}>대표</Text>
+              )}
+              <View style={{ flex: 1 }} />
+              <Text style={styles.regionArea}>{region.areaPct.toFixed(1)}%</Text>
+              <Badge text={GRADE_NAMES_KO[region.igaGradeName] ?? region.igaGradeName} color={band.color} small />
+              <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={18} color={mc.sub} />
+            </Pressable>
+            {/* 이 등급이 옆 병변이 함께 찍힌 크롭에서 나왔다면 조용히 넘기지 않고 말해 준다 */}
+            {region.foreignPct > FOREIGN_NOTICE_PCT && (
+              <Text style={styles.regionNote}>
+                옆 병변이 일부 함께 찍혔어요 (이 병변 면적의 약 {Math.round(region.foreignPct)}%)
+              </Text>
+            )}
+            {open &&
+              SIGN_ORDER.map((sign, k) => {
+                const found = region.signs.find((s) => s.sign === sign);
+                return (
+                  <MetricRow
+                    key={sign}
+                    label={SIGN_DISPLAY[sign].label}
+                    value={found ? signDisplayValue(sign, found.grade) : 0}
+                    segments={SYMPTOM_SEGMENTS_BASE}
+                    first={k === 0}
+                  />
+                );
+              })}
+          </View>
+        );
+      })}
+      <Text style={styles.metricFoot}>{notes}</Text>
+    </View>
+  );
+}
+
+/**
+ * 촬영 이미지 원본 + 분할 마스크 오버레이 — 상세 결과 화면의 사진 카드와 같은 배치.
+ *
+ * 오버레이는 analyzeLocal이 사진과 마스크를 픽셀 단계에서 이미 합성해 둔 이미지다.
+ * 여기서 마스크를 따로 올리지 않는 이유는 maskOverlay.ts 주석에 적어 두었다.
+ */
+function PhotoPair({
+  uri,
+  maskUri,
+  onZoom,
+}: {
+  uri: string;
+  maskUri: string | null;
+  onZoom: (photo: { uri: string; label: string }) => void;
+}) {
+  // 원본과 오버레이는 종횡비가 같다 (maskOverlay가 원본 비율을 유지한다) — 한 장만 재서 같이 쓴다.
+  // 두 자리가 같은 크기라야 나란히 놓은 사진이 어긋나 보이지 않는다.
+  const aspect = useImageAspect(uri);
+  const box = fitBox(aspect, PHOTO_MAX_W, PHOTO_MAX_H);
+  const overlayCaption = maskUri ? '증상 부위 표시' : '증상 부위를 찾지 못했어요';
+
   return (
     <View style={[monitoringCard(), styles.photoCard]}>
       <View style={styles.photoRow}>
         <View style={styles.photoCol}>
-          <Image source={{ uri }} style={styles.photo} />
+          <PhotoThumb
+            uri={uri}
+            box={box}
+            onPress={() => onZoom({ uri, label: '촬영 이미지 (원본)' })}
+          />
           <Text style={styles.photoCaption}>촬영 이미지 (원본)</Text>
         </View>
         <View style={styles.photoCol}>
-          <View style={styles.photo}>
-            <Image source={{ uri }} style={StyleSheet.absoluteFill} />
-            <Svg width="100%" height="100%" viewBox="0 0 100 100" style={StyleSheet.absoluteFill}>
-              <Rect
-                x={(bbox.x / bbox.imageWidth) * 100}
-                y={(bbox.y / bbox.imageHeight) * 100}
-                width={(bbox.width / bbox.imageWidth) * 100}
-                height={(bbox.height / bbox.imageHeight) * 100}
-                rx={2}
-                fill="none"
-                stroke="#FFFFFF"
-                strokeWidth={2}
-                strokeDasharray="5,3"
-              />
-            </Svg>
-          </View>
-          <Text style={styles.photoCaption}>증상 부위 표시</Text>
+          <PhotoThumb
+            uri={maskUri ?? uri}
+            box={box}
+            onPress={() => onZoom({ uri: maskUri ?? uri, label: overlayCaption })}
+          />
+          <Text style={styles.photoCaption}>{overlayCaption}</Text>
         </View>
       </View>
+      <Text style={styles.photoHint}>사진을 누르면 크게 볼 수 있어요</Text>
     </View>
+  );
+}
+
+/** 카드 안의 사진 한 장 — 누르면 확대된다. 돋보기 배지는 누를 수 있다는 표시다. */
+function PhotoThumb({
+  uri,
+  box,
+  onPress,
+}: {
+  uri: string;
+  box: { width: number; height: number };
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={[styles.photo, box]} onPress={onPress}>
+      <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+      <View style={styles.photoZoomBadge}>
+        <MaterialIcons name="zoom-in" size={13} color="#FFFFFF" />
+      </View>
+    </Pressable>
   );
 }
 
@@ -500,7 +670,13 @@ function RingPercent({ percent, color, size = 46 }: { percent: number; color: st
   );
 }
 
-const PHOTO_SIZE = 130;
+/**
+ * 사진 카드 한 칸이 차지할 수 있는 최대 크기. 사진은 이 안에서 원본 비율대로 들어간다 —
+ * 가로 사진은 낮고 세로 사진은 좁아진다. 세로 한도를 가로보다 넉넉히 둔 이유는 세로 사진이
+ * 흔하고, 카드가 두 칸을 나란히 놓느라 가로는 이미 좁기 때문이다.
+ */
+const PHOTO_MAX_W = 130;
+const PHOTO_MAX_H = 175;
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: mc.bg },
@@ -566,8 +742,50 @@ const styles = StyleSheet.create({
   photoCard: { padding: 12 },
   photoRow: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
   photoCol: { alignItems: 'center' },
-  photo: { width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: 10, overflow: 'hidden', backgroundColor: mc.bg },
+  // 크기(width/height)는 PhotoPair가 사진의 실제 비율에서 계산해 덧붙인다
+  photo: { borderRadius: 10, overflow: 'hidden', backgroundColor: mc.bg },
   photoCaption: { fontSize: 10.5, color: mc.sub, marginTop: 6, textAlign: 'center' },
+  photoHint: { fontSize: 10.5, color: mc.sub, marginTop: 8, textAlign: 'center' },
+
+  regionRow: { paddingTop: 4 },
+  regionRowDivided: { borderTopWidth: 1, borderTopColor: mc.line, marginTop: 12, paddingTop: 12 },
+  regionHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  regionChip: { width: 12, height: 12, borderRadius: 3 },
+  regionName: { fontSize: 14, fontWeight: '800', color: mc.ink },
+  regionRep: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: mc.sub,
+    borderWidth: 1,
+    borderColor: mc.line,
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  regionArea: { fontSize: 12, fontWeight: '700', color: mc.sub },
+  regionNote: { fontSize: 11, color: mc.sub, marginTop: 6, marginLeft: 18, lineHeight: 16 },
+  photoZoomBadge: {
+    position: 'absolute',
+    right: 5,
+    bottom: 5,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+
+  zoomRoot: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.93)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  zoomImage: { width: '100%', flexShrink: 1 },
+  zoomLabel: { marginTop: 16, fontSize: 13.5, fontWeight: '700', color: '#FFFFFF', textAlign: 'center' },
+  zoomHint: { marginTop: 6, fontSize: 11.5, color: 'rgba(255,255,255,0.6)', textAlign: 'center' },
 
   linkedCard: { borderWidth: 1.5, borderColor: mc.greenTop },
   linkedHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },

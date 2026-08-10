@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { AppColors } from '../theme';
 import { useMonitoring } from '../context/MonitoringContext';
 import { withSkImage } from '../ai/skiaPixels';
+import { useImageAspect } from '../components/imageAspect';
 import { normalizeOrientation } from '../ai/imageOrientation';
 import { evaluateFrame, GATE, measureImageQuality } from '../monitoring/frameQuality';
 import { useCaptureVoice } from '../monitoring/captureVoice';
@@ -604,6 +605,9 @@ function ReviewView({
   onContinue: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  // 확인 화면은 "이 사진으로 분석해도 되나"를 묻는 자리다 — 여기서 잘라 보여주면 사용자는
+  // 잘린 화면을 기준으로 판단하게 된다. 원본 비율 그대로 보여주고 자르지 않는다.
+  const photoAspect = useImageAspect(session?.processedUri);
   const fromAlbum = source === 'album';
   const againLabel = fromAlbum ? '앨범에서 다시 고르기' : '다시 촬영';
   const onAgain = fromAlbum ? onPickAgain : onRetake;
@@ -637,7 +641,11 @@ function ReviewView({
         때문이다 — 지난 사진과의 비교는 경과 관찰 폴더에서 크게 볼 수 있다.
       */}
       <View style={styles.reviewBody}>
-        <Image source={{ uri: session.processedUri }} style={styles.reviewImage} resizeMode="cover" />
+        <Image
+          source={{ uri: session.processedUri }}
+          style={[styles.reviewImage, { aspectRatio: photoAspect ?? 1 }]}
+          resizeMode="contain"
+        />
 
         {measureError && (
           <View style={styles.warnBox}>
@@ -784,7 +792,9 @@ const styles = StyleSheet.create({
   reviewRoot: { flex: 1, backgroundColor: AppColors.bg, padding: 20 },
   reviewTitle: { fontSize: 20, fontWeight: '800', color: AppColors.ink, textAlign: 'center' },
   reviewBody: { flex: 1, justifyContent: 'center' },
-  reviewImage: { width: '100%', aspectRatio: 1, borderRadius: 20, backgroundColor: '#14171C' },
+  // aspectRatio는 사진의 실제 비율로 덧붙인다. 세로로 긴 사진이 버튼을 밀어내지 않도록
+  // flexShrink를 열어 두었다 — 줄어들어도 contain이라 잘리지 않고 여백만 생긴다.
+  reviewImage: { width: '100%', borderRadius: 20, backgroundColor: '#14171C', flexShrink: 1 },
   warnBox: { marginTop: 14, backgroundColor: '#FFFFFF', borderRadius: 14, padding: 14 },
   warnText: { fontSize: 13, color: AppColors.ink, lineHeight: 20 },
   rejectText: { marginTop: 10, fontSize: 13, fontWeight: '700', color: AppColors.sev3, textAlign: 'center' },
