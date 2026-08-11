@@ -61,10 +61,12 @@ export const DISPLAY_SCALE = {
  * 노랑과 주황(warn)은 바로 옆 단계라 헷갈리기 쉬워서, sev2(기존 3단계 중증도의 "중등증" 색,
  * #F2B33C)보다 더 옅은 전용 노랑(sevCaution)을 따로 쓴다.
  *
- * 지표마다 "구간 목록"(SEGMENTS)을 값이 작은 쪽 → 큰 쪽 순서로 정의해 둔다. 각 항목의 `to`는 그
- * 구간의 위쪽 경계값(첫 구간의 아래쪽 경계는 항상 0)이라, 이 배열 하나가 곧 판정 로직(segmentFor)과
- * 스케일 바 눈금(ScaleBar) 양쪽의 단일 기준(source of truth)이 된다. 넷 다 낮은 값(왼쪽)이
- * 나쁨, 높은 값(오른쪽)이 좋음이라 색 순서가 같다(빨강 → 주황 → 노랑 → 파랑). 모두 DISPLAY_SCALE로
+ * 지표마다 "구간 목록"(SEGMENTS)을 정의해 둔다. 각 항목의 `to`는 그 구간의 위쪽 경계값(첫 구간의
+ * 아래쪽 경계는 항상 0)이고, segmentFor는 배열 순서가 아니라 이 `to` 값으로 구간을 찾으므로 배열
+ * 순서를 값 크기와 다르게 둬도 판정 로직은 그대로 맞는다 — 순서는 오직 ScaleBar가 막대를 왼쪽부터
+ * 그리는 "시각적 배치"만 정한다. 피부 종합 상태·가려움 안정도·수면 점수 셋은 낮은 값(왼쪽)이
+ * 나쁨, 높은 값(오른쪽)이 좋음이라 색 순서가 같다(빨강 → 주황 → 노랑 → 파랑). 세부 증상
+ * (SYMPTOM_SEGMENTS_BASE)만 그 반대로 배치해 뒀다 — 이유는 그쪽 주석 참고. 모두 DISPLAY_SCALE로
  * 환산한 뒤의 0~100 표시값 기준이다.
  */
 const LEVEL_COLORS = [monitoringColors.sev0, monitoringColors.sevCaution, monitoringColors.warn, monitoringColors.sev3];
@@ -97,12 +99,17 @@ export const SLEEP_SEGMENTS = [
  * 증상 4종(피부 붉기 · 오돌토돌함 · 긁은 상처 · 피부 두꺼워짐)이 공유하는 0~100 표시값
  * (100 - 원래 0~10 × 10) 구간. 다른 지표와 같은 4단계·색이되, 세부 증상은 점수 대신 이 이름만
  * 보여준다(뚜렷함/두드러짐/미미함/없음 — 모델 등급 3/2/1/0 그대로).
+ *
+ * 다른 세 지표(피부 종합 상태·가려움 안정도·수면 점수)와 달리 **왼쪽이 좋음(없음), 오른쪽이
+ * 나쁨(뚜렷함)**이다 — "증상이 없는 상태"를 왼쪽(시작점)에 두는 게 체크리스트처럼 더 자연스럽게
+ * 읽혀서 이 지표만 배치를 반대로 뒀다. `to` 값은 그대로 두고 배열 순서만 바꿨다 — segmentFor는
+ * 순서가 아니라 `to`로 구간을 찾으므로 판정에는 영향이 없다.
  */
 export const SYMPTOM_SEGMENTS_BASE = [
-  { to: 16.7, ko: '뚜렷함', color: LEVEL_COLORS[3] },
-  { to: 50.0, ko: '두드러짐', color: LEVEL_COLORS[2] },
-  { to: 83.4, ko: '미미함', color: LEVEL_COLORS[1] },
   { to: 100, ko: '없음', color: LEVEL_COLORS[0] },
+  { to: 83.4, ko: '미미함', color: LEVEL_COLORS[1] },
+  { to: 50.0, ko: '두드러짐', color: LEVEL_COLORS[2] },
+  { to: 16.7, ko: '뚜렷함', color: LEVEL_COLORS[3] },
 ];
 
 /** 증상별 이름 — 판정용 4단계 이름은 SYMPTOM_SEGMENTS_BASE의 공용 이름을 그대로 쓴다 */
@@ -113,14 +120,26 @@ export const SYMPTOMS = {
   thickening: { label: '피부 두꺼워짐' },
 };
 
-/** value가 segments(작은 값 → 큰 값 순) 중 몇 번째 구간에 속하는지 찾아 그 구간 정보를 반환한다 */
+/**
+ * value가 속하는 구간을 찾아 그 구간 정보(+ 배열 안에서의 위치 index)를 반환한다.
+ *
+ * segments 배열의 순서가 아니라 각 항목의 `to`(구간 상한)로 판정한다 — SYMPTOM_SEGMENTS_BASE처럼
+ * 시각적 배치(왼쪽부터 그려지는 순서) 때문에 값이 작은 구간이 배열 뒤쪽에 올 수 있어서, 배열
+ * 순서에 기대면 엉뚱한 구간이 잡힌다. index는 ScaleBar가 "그 칸"을 색칠할 때 배열 위치로 다시
+ * 찾아야 해서 함께 돌려준다.
+ */
 export function segmentFor(value, segments) {
-  for (let i = 0; i < segments.length; i++) {
-    if (value <= segments[i].to || i === segments.length - 1) {
-      return { index: i, ...segments[i] };
+  let best = null;
+  segments.forEach((s, i) => {
+    if (value <= s.to && (best === null || s.to < best.to)) {
+      best = { ...s, index: i };
     }
-  }
-  return { index: segments.length - 1, ...segments[segments.length - 1] };
+  });
+  if (best) return best;
+  // value가 모든 to보다 크면(부동소수 오차 등) to가 가장 큰 구간으로 떨어진다
+  let maxI = 0;
+  segments.forEach((s, i) => { if (s.to > segments[maxI].to) maxI = i; });
+  return { index: maxI, ...segments[maxI] };
 }
 
 export function sleepBand(score) {

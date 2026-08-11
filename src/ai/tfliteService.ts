@@ -1,5 +1,5 @@
-import { loadTensorflowModel, type TensorflowModel } from 'react-native-fast-tflite';
 import { labels, SIGN_KEYS, type SignKey } from './labels';
+import { createModelSlot, preloadInOrder } from './modelLoader';
 
 /**
  * 온디바이스 모델 2종 로더 — 증상 부위 분할(Stage1)과 중증도 분류(Stage2).
@@ -15,26 +15,25 @@ import { labels, SIGN_KEYS, type SignKey } from './labels';
  * 변환: tools/export_models.py (PyTorch → ONNX → onnx2tf → TFLite)
  */
 
-let segModelPromise: Promise<TensorflowModel> | null = null;
-let clsModelPromise: Promise<TensorflowModel> | null = null;
+/*
+  로딩·재시도는 modelLoader가 맡는다. 이 둘은 24MB·13MB로 앱에서 가장 큰 에셋이라, 개발 중
+  Metro에서 받을 때 가장 잘 끊긴다 — 실패한 프로미스를 캐시하던 예전 방식에서는 그 한 번의
+  끊김이 앱을 껐다 켤 때까지 분석 전체를 막았다.
+*/
+const segSlot = createModelSlot('seg_lesion_512', () => require('../../assets/models/seg_lesion_512.tflite'));
+const clsSlot = createModelSlot('sev_cls_384', () => require('../../assets/models/sev_cls_384.tflite'));
 
-function getSegModel(): Promise<TensorflowModel> {
-  if (!segModelPromise) {
-    segModelPromise = loadTensorflowModel(require('../../assets/models/seg_lesion_512.tflite'), []);
-  }
-  return segModelPromise;
-}
+const getSegModel = () => segSlot.get();
+const getClsModel = () => clsSlot.get();
 
-function getClsModel(): Promise<TensorflowModel> {
-  if (!clsModelPromise) {
-    clsModelPromise = loadTensorflowModel(require('../../assets/models/sev_cls_384.tflite'), []);
-  }
-  return clsModelPromise;
-}
-
-/** 촬영 화면 진입 시 미리 호출해두면 첫 추론 지연을 없앨 수 있다 */
+/**
+ * 촬영 화면 진입 시 미리 호출해두면 첫 추론 지연을 없앨 수 있다.
+ * 하나씩 받는다 — 37MB를 동시에 받는 것이 개발 중 연결이 끊기는 가장 흔한 조합이다.
+ */
 export async function preloadModels(): Promise<void> {
-  await Promise.all([getSegModel(), getClsModel()]);
+  // 미리 받아 두는 것은 편의라 실패해도 흐름을 막지 않는다 — 실제 추론 때 다시 받는다
+  // (실패가 캐시되지 않으므로 다시 받는 것이 실제로 가능하다: modelLoader.ts)
+  await preloadInOrder([segSlot, clsSlot]).catch(() => {});
 }
 
 /** Stage1: 분할 모델 실행. 512×512×3 정규화 입력 → 512×512 마스크 확률(0~1) */

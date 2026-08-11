@@ -69,7 +69,20 @@ export function makeRng(seed) {
  * 중간중간 좋아졌다 나빠졌다 하는 변동을 준다. 처음/마지막 기록은 폴더가 의도한
  * from/to 값 그대로 남도록 물결의 진폭을 양 끝에서 0으로 줄이는 envelope을 곱한다.
  */
-function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to, photos }) {
+/**
+ * "병변이 여러 곳" 예시(RegionSymptomsCard)를 미리보기용으로 딱 한 장에 붙여 둔다 — 실제로는
+ * seg가 판정 단위를 2개 이상으로 나눈 촬영에서만 생기는 값이라(ai/lesionRegions.ts), 데모
+ * 시계열은 그런 촬영을 하지 않으므로 실제 값을 만들 방법이 없다. bbox는 원본 픽셀이 아니라
+ * "이 사진을 100×100이라고 치면"의 비율이다 — 화면은 비율로만 잘라 그리므로 실제 사진 크기와
+ * 무관하게 항상 같은 자리를 가리킨다.
+ */
+const DEMO_REGIONS = [
+  { bbox: { x: 8, y: 12, width: 30, height: 26, imageWidth: 100, imageHeight: 100 }, symptoms: { redness: true, bumps: true, scratch: false, thickening: false } },
+  { bbox: { x: 58, y: 46, width: 24, height: 22, imageWidth: 100, imageHeight: 100 }, symptoms: { redness: true, bumps: false, scratch: true, thickening: false } },
+  { bbox: { x: 26, y: 66, width: 20, height: 18, imageWidth: 100, imageHeight: 100 }, symptoms: { redness: false, bumps: true, scratch: false, thickening: true } },
+];
+
+function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to, photos, demoMultiRegionOnLast }) {
   const rng = makeRng(seedBase);
 
   // 0일차, 마지막 날은 반드시 포함 + 중간은 불규칙 간격으로 샘플링
@@ -132,11 +145,14 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
       lesionAreaPct: clamp(round1(3 + iga * 6 + noise() * 3), 0.5, 45),
       // 촬영 순서(i, 시간순 정렬됨)에 맞춰 실제 사진을 1:1로 매칭 — 그려낸 이미지가 아니라 실제 dump 이미지
       photo: photos[i % photos.length],
+      // 가장 최근 기록(오늘, offset === spanDays)에만 "병변 여러 곳" 예시를 붙인다 — 매 회차마다
+      // 붙이면 정말 그렇게 찍힌 것처럼 보이고, 미리보기는 한 장이면 충분하다.
+      ...(demoMultiRegionOnLast && offset === spanDays ? { regions: DEMO_REGIONS } : null),
     };
   });
 }
 
-function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, captureCount, from, to, photos }) {
+function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, captureCount, from, to, photos, demoMultiRegionOnLast }) {
   const startDate = addDaysKey(todayKey(), -spanDaysAgoStart);
   const seedBase = hashStr(id + name);
   return {
@@ -146,7 +162,7 @@ function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, c
     disease,
     startDate,
     createdTs: Date.now(),
-    records: generateRecords(startDate, seedBase, { spanDays, captureCount, from, to, photos }),
+    records: generateRecords(startDate, seedBase, { spanDays, captureCount, from, to, photos, demoMultiRegionOnLast }),
   };
 }
 
@@ -170,6 +186,9 @@ let folders = [
     from: { sleep: 64, itch: 6, iga: 3.2 },
     to: { sleep: 79, itch: 2, iga: 0.6 },
     photos: ATOPIC_PHOTOS,
+    // seg가 판정 단위를 여러 개로 나눈 촬영의 미리보기 — 이 폴더가 홈에서 가장 먼저 보이는
+    // 대표 폴더라 예시를 확인하기 가장 쉽다.
+    demoMultiRegionOnLast: true,
   }),
   makeFolder({
     id: 'f1',

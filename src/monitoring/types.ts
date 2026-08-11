@@ -1,6 +1,7 @@
 import { BodyPartId, PartFacing } from './bodyParts';
 import { BodyModelId } from '../three/humanModel';
 import type { SkinSource } from './skinMask';
+import type { AlignEvaluation, ScaleFrame, ScaleReference } from '../ai/scaleFrame';
 
 /**
  * 세션 간 색 비교를 맞추는 채널별 게인 (v' = gain·v).
@@ -26,6 +27,40 @@ export interface Baseline {
    */
   skinReference: [number, number, number];
   brightness: number;
+  /**
+   * 얼굴 자리에서만 채워지는 기준 기하 (양눈·입에서 나온다).
+   *
+   * 배율(areaRef)은 기록용이다 — 면적은 매 회차 자기 사진의 d·v로 나누므로 기준값이 필요 없다.
+   * 실제로 비교에 쓰이는 것은 ratio(=d/v)뿐이고, 그것으로 "지난번과 같은 각도인가"를 판정한다.
+   * 사람마다 얼굴 비례가 다르기 때문에 이 값은 절대 기준이 될 수 없고 반드시 자기 자신과 비교해야 한다.
+   */
+  scale?: ScaleReference;
+  /**
+   * 기준 사진을 어느 카메라로 찍었는지.
+   *
+   * 전면 카메라는 프리뷰가 좌우 반전돼 보이고 저장본의 반전 여부도 기기마다 다르다. 게다가
+   * 렌즈 화각이 후면과 달라 같은 거리에서도 원근 왜곡이 다르다 — 카메라가 바뀌면 고스트가
+   * 맞지 않을 뿐 아니라 면적 비교 자체가 성립하지 않는다. 그래서 기준을 남기고 이어찍기에서 잠근다.
+   */
+  facing?: 'front' | 'back';
+}
+
+/**
+ * 이번 촬영의 병변 면적 측정값.
+ *
+ * 프레임 대비 %(maskAreaPct)는 회차 간 비교가 불가능하다 — 10cm 더 가까이 가면 병변이 그대로여도
+ * 값이 두 배가 된다. faceAreaIndex는 그 넓이를 얼굴의 d·v로 나눈 값이라 배율이 상쇄된다.
+ */
+export interface AreaMeasurement {
+  /** 병변 넓이 ÷ (안간거리 × 눈-입 거리) × 100. 단위는 없다 */
+  faceAreaIndex: number;
+  /**
+   * 회차 간 비교에 써도 되는 측정인지. false면 기록에는 남기되 추세선에서는 뺀다.
+   * 정렬이 어긋났거나, 조명 보정이 한계까지 밀렸거나, 얼굴을 못 찾은 촬영이 여기 걸린다.
+   */
+  usable: boolean;
+  /** usable=false인 이유 (화면에 그대로 보여준다) */
+  reason?: string;
 }
 
 /** 등록 전 문진에서 받은 질환 정보 */
@@ -139,6 +174,23 @@ export interface FrameEvaluation {
     brightness: number;
   };
   softScore: number;
+  /**
+   * 얼굴 정렬 판정 — 얼굴 자리를 찍을 때만 채워지고, 그 외에는 null이다.
+   *
+   * hard에 넣지 않은 것은 의도적이다. hard에 든 항목은 신뢰도 점수 상한(45점)을 씌우는데,
+   * 정렬이 어긋난 사진은 **사진으로서는 아무 문제가 없다** — 등급 판정도 정상적으로 나온다.
+   * 어긋난 것은 면적을 지난 회차와 견줄 자격뿐이라, 그 대가는 areaMeasurement.usable로만 치른다.
+   */
+  align: AlignEvaluation | null;
+  /** 이번 프레임에서 찾은 얼굴 기하 — 못 찾았으면 null */
+  scale: ScaleFrame | null;
+  /**
+   * 이 판정을 한 이미지의 크기.
+   *
+   * 넓이 자격 판정이 "얼굴이 사진 안에 다 들어왔는가"를 확인하려면 경계를 알아야 한다.
+   * 얼굴 기하만으로는 알 수 없다 — 눈과 입만 보이면 d와 v는 계산되기 때문이다.
+   */
+  frameSize: { width: number; height: number };
   /** 화면에 한 줄로 띄울 안내 */
   hint: string;
 }
@@ -178,4 +230,56 @@ export interface MonitorSession {
    * 사진 자체에는 손대지 않는다. 품질을 재지 못한 촬영에서는 없을 수 있다.
    */
   colorNorm?: ColorNormalization;
+  /**
+   * 이 촬영에서 찾은 자(얼굴 또는 몸통). 넓이를 재지 않는 자리이거나 못 찾았으면 없다.
+   * 분석 단계가 이 값으로 관심영역을 정하고 면적을 정규화한다.
+   */
+  scale?: ScaleFrame;
+  /** 촬영 시점에 이미 알 수 있는 면적 측정 자격 — 정렬·조명이 회차 비교를 견딜 만한지 */
+  areaEligible?: AreaEligibility;
+}
+
+/**
+ * 넓이를 못 잰 이유의 기계가 읽는 이름.
+ *
+ * 사용자에게 보이는 문장(reason)만 두면 화면이 그 문장을 뒤져서 분기하게 되는데, 그러면 문구를
+ * 한 글자 다듬는 순간 조용히 어긋난다. 무엇보다 **고칠 수 있는 이유와 없는 이유가 다르다** —
+ * 얼굴을 못 찾은 것은 사진을 잘라 고칠 수 있지만, 해상도·잘림·자세는 자를수록 나빠진다.
+ * 그 구분을 화면이 정확히 알아야 엉뚱한 해결책을 권하지 않는다.
+ */
+export type AreaRejectCode =
+  /** 자가 될 자리를 못 찾았다 — 잘라내면 찾을 수 있다 (검출 입력이 작아 멀리 있는 사람을 놓친다) */
+  | 'noFace'
+  /**
+   * 몸통 전용 — 전신이 프레임에 다 담기지 않았다.
+   * 잘라서는 못 고친다(오히려 더 잘린다). 뒤로 물러서서 다시 찍어야 한다.
+   */
+  | 'partialBody'
+  /** 얼굴이 원본에서 너무 작다 — 자르기로는 못 고친다 (픽셀은 잘라도 늘지 않는다) */
+  | 'resolution'
+  /** 얼굴이 사진 밖으로 잘렸다 — 더 자르면 더 나빠진다 */
+  | 'cropped'
+  /** 고개가 돌아가거나 숙여졌다 — 사진 편집으로 되돌릴 수 없다 */
+  | 'pose'
+  /** 조명이 기준 회차와 다르다 — 다시 찍는 수밖에 없다 */
+  | 'lighting';
+
+export interface AreaEligibility {
+  ok: boolean;
+  /** 사용자에게 그대로 보여주는 한 문장 (실패했을 때만) */
+  reason?: string;
+  code?: AreaRejectCode;
+  /**
+   * 해상도 때문에 빠질 뻔한 것을 사용자가 직접 열었는지.
+   *
+   * 왜 해상도만 열어 주는가. 게이트 넷 중 이것만 **값을 틀리게 만들지 않고 흔들리게만** 한다 —
+   * 얼굴이 작으면 마스크 경계가 뭉개져 넓이가 들쭉날쭉해지지만, 방향이 정해진 편향이 생기지는
+   * 않는다. 나머지 셋은 다르다: 얼굴이 잘리면 병변이 통째로 빠지고, 고개가 돌아가면 투영이
+   * 바뀌며, 조명이 다르면 경계가 한쪽으로 밀린다. 그건 열어 주는 순간 **틀린 숫자를 맞는 숫자인
+   * 척** 기록하는 일이라 선택지로 둘 수 없다.
+   *
+   * 이 표시는 기록까지 따라간다(lesionAreaLowRes) — 흔들릴 수 있는 값이라는 사실은 그 값을 읽는
+   * 자리에서 알아야 의미가 있지, 촬영 화면에서 한 번 말하고 잊으면 아무 소용이 없다.
+   */
+  override?: boolean;
 }

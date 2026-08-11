@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { MaterialIcons } from '@expo/vector-icons';
 import {
   monitoringColors as mc, monitoringCard, sleepBand, itchBand, skinConditionInfo, DISPLAY_SCALE,
   SKIN_SEGMENTS, ITCH_SEGMENTS, SLEEP_SEGMENTS, SYMPTOM_SEGMENTS_BASE, SYMPTOMS, CHART_SERIES,
@@ -25,6 +26,10 @@ const GRAPH_ROW_H = 340; // 날짜 칸 줄 + 그래프가 함께 차지하는 �
 const GRAPH_H_DEFAULT = GRAPH_ROW_H - 60;
 const PHOTO_SIZE = 110;
 const SYMPTOM_ORDER = ['redness', 'bumps', 'scratch', 'thickening'];
+// 부위별 증상 칩을 2×2로 고정 배치하기 위한 줄 나누기 — [피부 붉기, 오돌토돌함] / [긁은 상처,
+// 피부 두꺼워짐]. flexWrap에 맡기면 칩 너비·화면 폭에 따라 3개+1개처럼 들쭉날쭉하게 잘려서,
+// 항상 이 줄 구성으로 보이도록 미리 2개씩 묶어 둔다 (ExamResultScreen의 SIGN_ROWS와 같은 이유).
+const SYMPTOM_ROWS = [SYMPTOM_ORDER.slice(0, 2), SYMPTOM_ORDER.slice(2, 4)];
 
 // 요약칸 원형 배지 아이콘 — 흰 선화라 배경색(CHART_SERIES 색) 위에 바로 얹는다
 const SKIN_ICON = require('../../../assets/icon/skin_icon_white.png');
@@ -90,15 +95,15 @@ function TrendMini({ label, delta, fromBand, toBand, first }) {
   return (
     <View style={[styles.trendMiniItem, first && styles.trendMiniItemFirst]}>
       <View style={styles.trendMiniHead}>
-        {/* 오른쪽 열이 좁아서(왼쪽에 폭을 더 준다) 라벨을 낱말 단위로 강제 줄바꿈한다 — 컨테이너
-            폭에 맡기면(자동 줄바꿈) 폭에 따라 "피부 종합" + "상태"처럼 애매하게 걸치기도 해서,
-            띄어쓰기 자리에 직접 줄바꿈을 넣어 "피부 / 종합 / 상태"로 항상 고정되게 한다. */}
-        <Text style={styles.trendMiniLabel}>{label.replace(/ /g, '\n')}</Text>
+        {/* 라벨은 "피부"·"가려움"·"수면" 한 단어뿐이라 오른쪽 열이 좁아도 한 줄로 충분하다 —
+            그래도 컨테이너가 더 좁아지는 경우를 대비해 numberOfLines로 줄바꿈 자체를 막는다
+            (전에는 "피부 종합 상태"처럼 길어서 띄어쓰기 자리에 강제 줄바꿈을 넣었었다). */}
+        <Text style={styles.trendMiniLabel} numberOfLines={1}>{label}</Text>
         {/* 등급 이동("나쁨 → 주의")을 "개선" 배지 바로 밑에 붙인다 — 오른쪽으로 정렬된 한 덩어리다 */}
         <View style={styles.trendMiniRight}>
           <View style={styles.trendMiniTagRow}>
             {!!rounded && <Text style={styles.trendMiniArrow}>{rounded > 0 ? '▲' : '▼'}</Text>}
-            <Text style={styles.trendMiniTag}>{tag}</Text>
+            <Text style={styles.trendMiniTag} numberOfLines={1}>{tag}</Text>
           </View>
           {fromBand != null && toBand != null && (
             <Text style={styles.trendMiniBands} numberOfLines={1}>{fromBand} → {toBand}</Text>
@@ -138,6 +143,79 @@ function AdherenceBar({ label, rate, first }) {
       <View style={styles.adherenceTrack}>
         <View style={[styles.adherenceFill, { width: `${pct}%` }]} />
       </View>
+    </View>
+  );
+}
+
+const REGION_CROP_SIZE = 60;
+
+/**
+ * 부위별 증상 카드 — 병변이 여러 곳으로 떨어져 있어(seg가 판정 단위를 2개 이상으로 나눴을 때)
+ * 그 부위를 하나씩 잘라 보여주며 4가지 증상 중 "있음/없음"만 알려준다. 촬영 직후 결과 화면
+ * (ExamResultScreen의 RegionSymptomsCard)과 같은 목적·같은 규칙(등급은 안 보여준다)이고, 여기서는
+ * 그 기록이 지나간 뒤에도 경과 관찰 폴더에서 다시 확인할 수 있게 한다.
+ *
+ * ⚠️ record.regions는 지금은 데모 예시(folders/store.js의 DEMO_REGIONS)에만 붙어 있다 — 실제
+ * 촬영이 regions를 기록에 남기려면 CameraScreen.saveExamRecord가 analyzeLocal의 regions를 함께
+ * 저장하도록 손대야 한다(지금은 대표값만 남긴다).
+ */
+function RegionSymptomsCard({ photo, regions }) {
+  return (
+    <View style={[monitoringCard(), styles.metricCard]}>
+      <Text style={styles.metricCardLabel}>부위별 증상</Text>
+      {regions.map((region, i) => (
+        <View key={i} style={[styles.regionRow, i > 0 && styles.regionRowDivider]}>
+          <View style={styles.regionCropCol}>
+            <RegionCrop photo={photo} bbox={region.bbox} />
+            <Text style={styles.regionCropCaption}>부위 {i + 1}</Text>
+          </View>
+          <View style={styles.regionChips}>
+            {SYMPTOM_ROWS.map((row, r) => (
+              <View key={r} style={styles.symptomChipRow}>
+                {row.map((key) => {
+                  const present = !!region.symptoms?.[key];
+                  return (
+                    <View key={key} style={[styles.symptomChip, present && styles.symptomChipOn]}>
+                      <MaterialIcons
+                        name={present ? 'check-circle' : 'radio-button-unchecked'}
+                        size={13}
+                        color={present ? mc.greenDeep : mc.sub}
+                      />
+                      <Text style={[styles.symptomChipText, present && styles.symptomChipTextOn]}>
+                        {SYMPTOMS[key].label}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/**
+ * 크롭 한 장 — bbox 사각형을 정사각형 썸네일에 그대로 눌러 넣는다(종횡비 유지 안 함).
+ * 중증도 모델이 실제로 보는 입력과 같은 규칙이라, 화면에 보이는 크롭이 곧 "모델이 본 바로 그
+ * 사진"이다(ExamResultScreen의 RegionCrop과 같은 규칙 — 자세한 이유는 그쪽 주석 참고).
+ */
+function RegionCrop({ photo, bbox }) {
+  const scaleX = REGION_CROP_SIZE / bbox.width;
+  const scaleY = REGION_CROP_SIZE / bbox.height;
+  return (
+    <View style={styles.regionCrop}>
+      <Image
+        source={photo}
+        style={{
+          position: 'absolute',
+          width: bbox.imageWidth * scaleX,
+          height: bbox.imageHeight * scaleY,
+          left: -bbox.x * scaleX,
+          top: -bbox.y * scaleY,
+        }}
+      />
     </View>
   );
 }
@@ -279,6 +357,9 @@ export default function MonitoringFolderScreen({ navigation, route }) {
                 {bt4Rate != null && <AdherenceBar label="BT4 Complex 이행률" rate={bt4Rate} first />}
                 {patchRate != null && <AdherenceBar label="음압 패치 이행률" rate={patchRate} first={bt4Rate == null} />}
                 <View style={styles.adherenceEncourageBox}>
+                  {/* adjustsFontSizeToFit/minimumFontScale은 iOS·Android 전용이라 웹 프리뷰에서는
+                     안 먹거나 예상과 다르게 동작한다(상한을 올렸는데 오히려 작아지는 식) — 그래서
+                     확실히 동작하는 고정 크기로 되돌린다. */}
                   <Text style={styles.adherenceEncourage}>
                     {increasedCount > 0
                       ? `처음 기록 대비 ${increasedCount}개 항목 점수가 높아졌네요.\n루틴 잊지 말고 꾸준히 이어가 보세요.`
@@ -289,17 +370,17 @@ export default function MonitoringFolderScreen({ navigation, route }) {
               <View style={styles.progressDivider} />
               <View style={styles.progressCol}>
                 {hasSeverity && (
-                  <TrendMini label="피부 종합 상태" delta={skinDelta} fromBand={skinFromBand} toBand={skin.ko} first />
+                  <TrendMini label="피부" delta={skinDelta} fromBand={skinFromBand} toBand={skin.ko} first />
                 )}
                 <TrendMini
-                  label="가려움 안정도"
+                  label="가려움"
                   delta={itchDelta}
                   fromBand={itchFromBand}
                   toBand={itch.ko}
                   first={!hasSeverity}
                 />
                 <TrendMini
-                  label="수면 점수"
+                  label="수면"
                   delta={sleepDelta}
                   fromBand={sleepFromBand}
                   toBand={sleep ? sleep.ko : null}
@@ -405,6 +486,12 @@ export default function MonitoringFolderScreen({ navigation, route }) {
                 />
               ))}
             </View>
+
+            {/* 병변이 여러 곳으로 떨어져 있어 판정 단위가 둘 이상일 때만 보여준다 — 지금은 데모
+                예시(다리 아토피피부염 폴더의 오늘 기록)에만 붙어 있다. */}
+            {selectedRecord.regions && selectedRecord.regions.length > 1 && (
+              <RegionSymptomsCard photo={selectedRecord.photo} regions={selectedRecord.regions} />
+            )}
           </>
         )}
 
@@ -474,13 +561,33 @@ const styles = StyleSheet.create({
   metricCard: { padding: 16 },
   metricCardLabel: { fontSize: 16, fontWeight: '800', color: mc.ink, marginBottom: 12 },
 
+  regionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 12 },
+  regionRowDivider: { borderTopWidth: 1, borderTopColor: mc.line },
+  regionCropCol: { alignItems: 'center' },
+  regionCrop: {
+    width: REGION_CROP_SIZE, height: REGION_CROP_SIZE, borderRadius: 10, overflow: 'hidden', backgroundColor: mc.bg,
+  },
+  regionCropCaption: { fontSize: 10, color: mc.sub, marginTop: 4 },
+  regionChips: { flex: 1, gap: 6 },
+  symptomChipRow: { flexDirection: 'row', gap: 6 },
+  symptomChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: mc.bg,
+    flexShrink: 1,
+  },
+  symptomChipOn: { backgroundColor: '#EDF7E1' },
+  symptomChipText: { fontSize: 11.5, fontWeight: '700', color: mc.sub },
+  symptomChipTextOn: { color: mc.greenDeep },
+
   // 경과추적 카드 — 왼쪽 이행률 열 / 오른쪽 개선·악화 열을 나란히 둔다
   progressRow: { flexDirection: 'row', alignItems: 'stretch' },
   progressCol: { flex: 1 },
-  // 응원 문구 박스의 첫 문장이 왼쪽 열 폭 안에서 한 줄에 들어가려면 꽤 넓은 폭이 필요하다 —
-  // 오른쪽 라벨은 폭과 무관하게 줄바꿈을 직접 넣어 고정해 뒀으니(label.replace) 오른쪽을 더
-  // 좁혀도 "피부/종합/상태"처럼 그대로 읽힌다.
-  progressColLeft: { flex: 2.4 },
+  // 응원 문구 박스는 왼쪽 열 안에서 줄바꿈만 안 되면 되고, 그 폭은 생각보다 적게 필요하다 —
+  // 2.8, 2.5까지 밀었다가 오른쪽 열("가려움" 라벨·"개선" 배지)이 좁아져 "개선…"처럼 잘리는
+  // 걸 보고서야 왼쪽에 여유가 넘치게 남아 있다는 걸 확인했다. 원래(2.4)보다도 더 줄인다 —
+  // 오른쪽이 우선이다(라벨·배지는 줄바꿈·말줄임 둘 다 안 되지만, 응원 문구는 줄바꿈만 막으면
+  // 되므로 좁은 폭에도 더 잘 견딘다).
+  progressColLeft: { flex: 2 },
   progressDivider: { width: 1, backgroundColor: mc.line, marginHorizontal: 12 },
 
   // 응원 문구 박스가 이 열 안으로 들어오면서 왼쪽 열이 고정 높이를 꽤 차지하게 됐다 — 오른쪽
@@ -493,12 +600,18 @@ const styles = StyleSheet.create({
   adherenceTrack: { height: 10, borderRadius: 5, backgroundColor: mc.line, overflow: 'hidden' },
   adherenceFill: { height: '100%', borderRadius: 5, backgroundColor: mc.greenTop },
   adherenceEncourageBox: {
-    marginTop: 16, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 10,
+    marginTop: 16, borderRadius: 12, paddingHorizontal: 6, paddingVertical: 10,
     backgroundColor: '#EDF7E1',
   },
-  // 이제 이 박스가 왼쪽 열 폭 안에만 있어서(카드 전체 폭이 아니라) 첫 문장("...높아졌네요.")이
-  // 한 줄에 들어가도록 글자를 줄이고(progressColLeft도 더 넓혀 뒀다), 두 번째 줄만 줄바꿈된다.
-  adherenceEncourage: { fontSize: 10, fontWeight: '700', color: mc.greenDeep, lineHeight: 14 },
+  // fontSize는 adjustsFontSizeToFit의 상한이다 — 실제로 그려지는 크기는 그 컴포넌트가 이 폭·두
+  // 줄 안에서 찾아낸 "더 못 키우는 지점"이다. 상한을 넉넉히 높게 잡아 둬야(여기서는 18) 그
+  // 컴포넌트가 진짜 최대치까지 올라갈 여지가 생긴다 — 상한을 낮게 잡으면(예: 14) 실제로는
+  // 더 키울 폭이 남아 있어도 딱 그 값에서 멈춘다. lineHeight는 일부러 안 둔다 — 고정하면
+  // 자동으로 정해진 실제 글자 크기와 안 맞아 줄 간격이 어긋나 보인다.
+  // 18~20은(adjustsFontSizeToFit이 안 먹는 환경에서) 실제로 줄바꿈이 났다 — 지금 폭
+  // (progressColLeft: 2)에서 안전하게 확인됐던 원래 10보다 살짝 큰 값으로 되돌린다.
+  // 더 키우려면 이 값보다 progressColLeft를 먼저 넓혀야 한다(둘이 묶여 있다).
+  adherenceEncourage: { fontSize: 11, fontWeight: '700', color: mc.greenDeep, lineHeight: 15 },
 
   // 오른쪽 열은 응원 문구 박스가 없어 왼쪽보다 짧게 끝난다 — 줄 사이를 벌려서
   // 왼쪽 열과 세로 길이를 맞춘다(adherenceRow 참고).
@@ -506,13 +619,20 @@ const styles = StyleSheet.create({
   trendMiniItemFirst: { marginTop: 0 },
   // 라벨은 위쪽에 맞추고, 배지+등급 이동 덩어리는 오른쪽 끝에서 아래로 쌓는다
   trendMiniHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
-  trendMiniLabel: { flex: 1, fontSize: 12.5, fontWeight: '800', color: mc.ink, marginRight: 6 },
-  trendMiniRight: { alignItems: 'flex-end' },
+  // flex: 1을 쓰면 오른쪽 배지·등급 이동 문구가 필요한 만큼 먼저 차지하고 남는 공간만 라벨에
+  // 주는데, 그 공간이 좁을 때 flex가 라벨을 눌러 접어(줄바꿈 이전에) numberOfLines가 "가..."로
+  // 잘라버린다. 라벨은 이제 "피부"·"가려움"·"수면" 중 가장 긴 것도 고정폭이면 충분하므로,
+  // flex 대신 그 폭을 그대로 확보해 둔다 — 오른쪽 내용과 폭을 다투지 않는다.
+  trendMiniLabel: { width: 44, fontSize: 12.5, fontWeight: '800', color: mc.ink, marginRight: 6 },
+  // flex: 1 — 라벨(고정폭 44)이 먼저 확보하고 남는 폭을 이 열이 정확히 채운다. 전에는 이 열도
+  // 내용만큼(auto) 넓이를 차지해서, 라벨+배지 폭 합이 카드보다 넓어지면 배지가 카드 밖으로
+  // 튀어나갔다 — flex: 1로 "남는 만큼만" 쓰게 고정하면 카드 경계를 넘어갈 수 없다.
+  trendMiniRight: { flex: 1, alignItems: 'flex-end' },
   // 맨 아래 응원 문구 박스(adherenceEncourageBox)와 같은 연두색 — 두 요소가 한 카드 안에서
   // 같은 "잘하고 있다" 색으로 이어져 보이게 한다.
   trendMiniTagRow: {
     flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: '#EDF7E1', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3,
+    backgroundColor: '#EDF7E1', borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3,
   },
   trendMiniArrow: { fontSize: 11, fontWeight: '800', color: mc.greenDeep },
   trendMiniTag: { fontSize: 12.5, fontWeight: '800', color: mc.greenDeep },

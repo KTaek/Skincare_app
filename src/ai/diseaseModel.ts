@@ -1,4 +1,4 @@
-import { loadTensorflowModel, type TensorflowModel } from 'react-native-fast-tflite';
+import { createModelSlot } from './modelLoader';
 import { extractNormalizedRGB, withSkImage } from './skiaPixels';
 import meta from '../../assets/models/disease_labels.json';
 
@@ -26,20 +26,15 @@ const CLASSES: string[] = meta.classes;
 const DISPLAY: string[] = meta.display_names;
 const IMG_SIZE: number = meta.imgsz;
 
-let modelPromise: Promise<TensorflowModel> | null = null;
+const slot = createModelSlot('disease_cls_512', () => require('../../assets/models/disease_cls_512.tflite'));
+const getModel = () => slot.get();
 
-function getModel(): Promise<TensorflowModel> {
-  if (!modelPromise) {
-    modelPromise = loadTensorflowModel(require('../../assets/models/disease_cls_512.tflite'), []);
-  }
-  return modelPromise;
-}
-
-/** 문진 화면 진입 시 미리 불러두면 첫 추론 지연이 줄어든다 */
+/**
+ * 문진 화면 진입 시 미리 불러두면 첫 추론 지연이 줄어든다.
+ * 실패는 무시한다 — 캐시에 남지 않으므로(modelLoader) 실제 추론 때 다시 받는다.
+ */
 export function preloadDiseaseModel(): void {
-  getModel().catch(() => {
-    // 미리 불러오기 실패는 무시 — 실제 추론 시 다시 시도한다
-  });
+  getModel().catch(() => {});
 }
 
 const softmax = (logits: Float32Array): number[] => {

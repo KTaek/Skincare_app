@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, View } from 'react-native';
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Circle, Path, Text as SvgText } from 'react-native-svg';
 import { AppColors } from '../theme';
 import { CoarseGroupId } from '../monitoring/bodyParts';
 
@@ -149,14 +149,30 @@ export interface BodyPoint2D {
   y: number;
 }
 
+/** 동그라미 하나의 표시값 — 색은 상태(피부 종합 상태), 반지름은 병변 넓이(%)를 나타낸다 */
+export interface PartMarkerStyle {
+  color: string;
+  /** 뷰박스(327×949) 좌표 기준 반지름. 생략하면 DEFAULT_MARKER_R(예전 고정 크기)을 쓴다 */
+  radius?: number;
+  /**
+   * 동그라미 가운데 적을 숫자(전신 결과 화면의 "존재하는 세부 증상 개수"). 생략하면 숫자를
+   * 그리지 않는다 — 지켜보지 않는 부위(기록 없음)는 잴 값이 없으니 숫자도 없어야 한다.
+   */
+  count?: number;
+}
+
+/** partMarkers에 radius를 안 넘겼을 때(예전 호출부와의 호환)의 고정 크기 */
+const DEFAULT_MARKER_R = 42;
+
 /**
  * 부위 선택용 2D 몸 그림 — 네 덩어리를 각자의 도형으로 그리고, 지금 고른 덩어리만 채움색을
  * 초록으로 바꾼다(나머지는 옅은 회색). 그림과 탭 판정이 같은 좌표계·같은 경계를 그대로 공유해서
  * 그림 위 어디를 눌러도 눈에 보이는 그 부위가 정확히 골라진다.
  *
  * partMarkers를 넘기면(전신 결과 화면이 쓴다) 덩어리 전체를 칠하는 대신, GROUP_MARKERS에 미리
- * 정해 둔 자리에 그 색으로 작은 동그라미만 찍는다 — "이 부위 전체"가 아니라 "이 부위에 병변이
- * 있다"는 표시라서다. highlightGroup·partMarkers는 같이 써도 되지만 실제로는 화면마다 하나만 쓴다.
+ * 정해 둔 자리에 그 색·크기로 작은 동그라미만 찍는다 — "이 부위 전체"가 아니라 "이 부위에 병변이
+ * 있고, 이만큼 넓다"는 표시라서다. highlightGroup·partMarkers는 같이 써도 되지만 실제로는
+ * 화면마다 하나만 쓴다.
  */
 export default function Body2DView({
   highlightGroup,
@@ -168,8 +184,8 @@ export default function Body2DView({
   highlightGroup?: CoarseGroupId | null;
   /** 마지막으로 탭한 위치(뷰 좌표) — 칩으로 골랐을 때는 부모가 null로 지운다 */
   marker?: BodyPoint2D | null;
-  /** 덩어리별 동그라미 색 — 전신 결과 화면의 부위별 호전/악화 표시용 (읽기 전용 화면에서 쓴다) */
-  partMarkers?: Partial<Record<CoarseGroupId, string>>;
+  /** 덩어리별 동그라미 색·크기 — 전신 결과 화면의 부위별 상태 표시용 (읽기 전용 화면에서 쓴다) */
+  partMarkers?: Partial<Record<CoarseGroupId, PartMarkerStyle>>;
   onPick?: (group: CoarseGroupId, point: BodyPoint2D) => void;
 }) {
   const pulse = useRef(new Animated.Value(1)).current;
@@ -214,6 +230,9 @@ export default function Body2DView({
     <View style={styles.container}>
       <View ref={wrapRef} style={styles.figureWrap} onLayout={measureWrap}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onPress}>
+          {/* react-native-svg는 웹 SVG와 달리 viewBox 밖으로 나간 도형을 자동으로 자르지 않는다
+              (overflow 속성 자체를 지원하지 않는다 — 시도해 보면 타입 에러가 난다) — 그래서
+              부위별 동그라미(partMarkers)가 몸 윤곽 밖으로 걸쳐도 별도 설정 없이 그대로 보인다. */}
           <Svg width="100%" height="100%" viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`}>
             {/* 1) 바탕: 몸 전체를 도형 하나로 채운다. 네 덩어리를 각자 도형으로 이어붙이면(예전 방식)
                 맞닿는 경계에서 안티에일리어싱 때문에 실선처럼 보이는 실금이 생겨서, 안 보이는
@@ -223,21 +242,43 @@ export default function Body2DView({
             {highlightGroup && <Path d={REGION_PATHS[highlightGroup]} fill={HIGHLIGHT_COLOR} />}
             {/* 3) 바깥 테두리선은 맨 위에 한 번만 — 안쪽 경계(겨드랑이·가랑이 등)에는 선을 긋지 않는다 */}
             <Path d={OUTLINE_PATH} fill="none" stroke={OUTLINE_COLOR} strokeWidth={2.5} strokeLinejoin="round" />
-            {/* 4) 부위별 동그라미 — 테두리 위에 그려서 항상 또렷하게 보인다 */}
+            {/* 4) 부위별 동그라미 — 테두리 위에 그려서 항상 또렷하게 보인다. count가 있으면
+                가운데에 숫자(존재하는 세부 증상 개수)를 함께 적어, 슬라이더로 회차를 넘길 때
+                동그라미가 작아지는 것과 숫자가 줄어드는 것을 같이 볼 수 있게 한다. */}
             {partMarkers &&
-              (Object.keys(partMarkers) as CoarseGroupId[]).flatMap((group) =>
-                GROUP_MARKERS[group].map((pt, i) => (
-                  <Circle
-                    key={`${group}-${i}`}
-                    cx={pt.x}
-                    cy={pt.y}
-                    r={16}
-                    fill={partMarkers[group]}
-                    stroke="#FFFFFF"
-                    strokeWidth={3}
-                  />
-                )),
-              )}
+              (Object.keys(partMarkers) as CoarseGroupId[]).flatMap((group) => {
+                const style = partMarkers[group]!;
+                const r = style.radius ?? DEFAULT_MARKER_R;
+                // 숫자 하나(0~4)가 동그라미를 거의 꽉 채우도록 반지름보다 큰 배수를 쓴다 —
+                // 글자는 em 상자 안에서 실제 획이 차지하는 부분이 작아서, r과 같은 크기로만
+                // 키우면 여전히 동그라미 안에 여백이 많이 남아 작아 보인다.
+                const fontSize = r * 1.15;
+                return GROUP_MARKERS[group].map((pt, i) => (
+                  <React.Fragment key={`${group}-${i}`}>
+                    <Circle
+                      cx={pt.x}
+                      cy={pt.y}
+                      r={r}
+                      fill={style.color}
+                      stroke="#FFFFFF"
+                      strokeWidth={3}
+                    />
+                    {style.count != null && (
+                      <SvgText
+                        x={pt.x}
+                        y={pt.y}
+                        dy={fontSize * 0.35}
+                        fontSize={fontSize}
+                        fontWeight="800"
+                        fill="#FFFFFF"
+                        textAnchor="middle"
+                      >
+                        {style.count}
+                      </SvgText>
+                    )}
+                  </React.Fragment>
+                ));
+              })}
           </Svg>
         </Pressable>
 

@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { PanResponder, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
-import Body2DView from '../components/Body2DView';
+import Body2DView, { PartMarkerStyle } from '../components/Body2DView';
 import { BodyPartId, COARSE_OF_PART, CoarseGroupId, COARSE_GROUPS, partsOfSpotId } from '../monitoring/bodyParts';
 import { useFolders, addDaysKey, daysBetween, todayKey, folderHasSeverity } from '../folders/store';
 import { DISPLAY_SCALE, skinConditionInfo, SKIN_SEGMENTS } from '../folders/theme';
@@ -19,8 +19,10 @@ import { plainSiteLabel } from '../models';
  *
  * 동그라미 색은 그 시점 "피부 종합 상태" 값 그대로다 — 다른 화면(피부 종합 상태 카드·그래프)과
  * 같은 4단계(좋음·주의·나쁨·매우 나쁨, SKIN_SEGMENTS)를 써서, 여기서만 다른 색 체계(호전/유지/
- * 악화)를 따로 배우지 않아도 된다. 그 시점 대비 좋아지고 있었는지/나빠지고 있었는지는 색이 아니라
- * 아래 "부위별 변화" 목록의 화살표·태그로 따로 보여준다.
+ * 악화)를 따로 배우지 않아도 된다. 아래 "부위별 변화" 목록의 왼쪽 색 막대(trendSwatch)도 같은
+ * skinConditionInfo 색을 쓴다 — 지도의 동그라미와 목록의 그 자리가 같은 색이어야 "이게 그 부위구나"
+ * 하고 눈으로 바로 잇는다. 그 시점 대비 좋아지고 있었는지/나빠지고 있었는지는 색이 아니라 오른쪽
+ * 화살표·태그(개선/악화/유지)로 따로 보여준다 — 그래서 그 태그만 별도의 호전/악화 색 체계를 쓴다.
  *
  * 아래 슬라이더를 끌면 그 날짜 시점의 색으로 바뀐다 — "그때 이 부위가 어떤 상태였나"를 되짚어
  * 보는 타임라인이다.
@@ -28,8 +30,6 @@ import { plainSiteLabel } from '../models';
 
 /** 추세를 재는 창 — 그 시점에서 이만큼 이전의 기록과 견준다 */
 const TREND_WINDOW_DAYS = 14;
-/** 이만큼(IGA 0~4 스케일) 변하면 색이 끝까지 간다 */
-const FULL_SWING = 1.5;
 
 const TREND_COLORS = {
   better: '#4FB86A',
@@ -42,21 +42,70 @@ const NO_RECORD_COLOR = '#DCE1E8';
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
-function hexToRgb(hex: string): [number, number, number] {
-  const m = hex.replace('#', '');
-  return [parseInt(m.slice(0, 2), 16), parseInt(m.slice(2, 4), 16), parseInt(m.slice(4, 6), 16)];
+/**
+ * 동그라미 크기 ↔ 병변 넓이(%) 매핑.
+ *
+ * 넓이는 카메라 촬영 분석(analyzeLocal의 maskAreaPct)이 매 회차 재서 기록에 남기는 값
+ * (folders/store.js recordExam → record.lesionAreaPct)이다. 그 값이 줄면 동그라미도 작아지고,
+ * 늘면 커진다 — 색(피부 종합 상태)과는 별개 축이라 "덜 붉어졌지만 아직 넓다" 같은 상태도
+ * 색·크기 두 신호로 따로 읽힌다.
+ *
+ * ── 반지름이 아니라 "넓이"에 선형이어야 하는 이유 ──────────────────────
+ * 동그라미는 시각적으로 "넓이"를 나타낸다. 사람 눈에 面積(원의 넓이 = πr²)로 읽히는 도형에서
+ * 반지름을 넓이%에 그대로 비례시키면(r ∝ area%) 실제 넓이는 area%의 제곱으로 부풀어 보인다 —
+ * 절반으로 줄어든 병변이 화면에서는 넓이가 1/4로 줄어든 것처럼 보인다. 그래서 반지름은
+ * area%의 **제곱근**에 비례시킨다(r ∝ √area%) — 이래야 원의 넓이 자체가 area%에 선형으로
+ * 비례해서, "줄어든 비율"이 눈에 보이는 크기 변화 비율과 맞는다. 사진 카드의 병변 윤곽선
+ * (folders/components/LesionThumb.js)도 같은 원칙(√area% 비례)을 쓴다 — 앱 전체가 병변
+ * 넓이를 그리는 방식을 통일해 둔 것이다.
+ *
+ * ── 구간을 정하는 기준값 ──────────────────────────────────────────
+ * ⚠️ AREA_FULL을 한 번 8%까지 낮췄다가(민감도만 보고) 되돌린 적이 있다 — 데모 폴더의 실제 병변
+ *    넓이는 보통 6~28% 사이를 오가는데, 상한을 8%로 두면 그 범위 대부분이 이미 상한을 넘겨
+ *    "항상 최대 크기"로 고정되고, 슬라이더를 끝까지 움직여도 동그라미가 거의 안 움직이는
+ *    것처럼 보였다(회차 대부분이 saturate 구간에 몰려서). 상한은 반드시 **실제로 관찰되는 값의
+ *    범위를 덮어야** 그 안에서 변화가 보인다 — 민감도는 상한을 낮추는 대신 MIN_R/MAX_R 폭을
+ *    넓혀서 확보한다.
+ *   AREA_MIN  0.5%  — recordExam이 기록을 저장할 때 두는 하한(clamp)과 같다 — 그 아래 값 자체가
+ *                   없으므로 이 값이 곧 "동그라미가 가장 작아지는 지점"이다.
+ *   AREA_FULL 25%  — 이 이상은 최대 크기로 고정한다(saturate). store.js 데모 폴더들의 병변 넓이
+ *                   상한이 대략 22~28% 사이라(폴더마다 다른 from/to의 iga로 정해짐), 그 실측
+ *                   범위를 거의 다 덮는 값으로 잡았다 — 그래야 슬라이더를 끝에서 끝까지 움직이는
+ *                   동안 대부분의 구간에서 동그라미가 실제로 커졌다 작아졌다 한다.
+ *   MIN_R 16, MAX_R 68 — 반지름 폭(52px)을 크게 잡아서, 상한을 25%로 넉넉히 잡고도 웬만큼
+ *                   민감하게 반응한다 — 예: 15%→13.3%(약 −1.7%p, 한 회차 정도의 전형적인 변화)만
+ *                   돼도 반지름이 56.0→53.6으로 준다. 가운데 숫자(존재하는 세부 증상 개수)도
+ *                   항상 큼직하게 보여야 하므로 하한(16)도 예전보다 작게 잡지 않았다. 몸 그림
+ *                   (Body2DView)의 SVG는 잘라내지 않으므로(그 컴포넌트의 주석 참고) 동그라미가
+ *                   몸 윤곽 밖으로, 서로 겹치는 자리까지도 걸칠 수 있다 — 그래도 잘리지 않고
+ *                   그대로 그려진다.
+ *
+ * 예시(면적% → 반지름 px):  0.5%→16   3%→32.6   5%→38.3   7%→42.8   10%→48.4   15%→56.0   20%→62.4   25%↑→68
+ */
+const AREA_MIN = 0.5;
+const AREA_FULL = 25;
+const MARKER_MIN_R = 16;
+const MARKER_MAX_R = 68;
+
+function areaToRadius(areaPct: number): number {
+  const t = clamp01((areaPct - AREA_MIN) / (AREA_FULL - AREA_MIN));
+  return MARKER_MIN_R + (MARKER_MAX_R - MARKER_MIN_R) * Math.sqrt(t);
 }
 
-const toHex = (v: number) => Math.round(v).toString(16).padStart(2, '0');
+/** 지켜보지 않는(기록 없는) 덩어리의 동그라미 — 크기로도 "잴 값이 없다"를 보여주려 최소 크기로 둔다 */
+const NO_RECORD_RADIUS = MARKER_MIN_R;
 
-/** -1(뚜렷한 호전, 초록) ~ 0(유지, 노랑) ~ +1(뚜렷한 악화, 빨강) */
-function trendColor(score: number): string {
-  const t = Math.min(1, Math.max(-1, score));
-  const [from, to, localT] =
-    t < 0
-      ? [hexToRgb(TREND_COLORS.better), hexToRgb(TREND_COLORS.same), t + 1]
-      : [hexToRgb(TREND_COLORS.same), hexToRgb(TREND_COLORS.worse), t];
-  return `#${from.map((c, i) => toHex(c + (to[i] - c) * localT)).join('')}`;
+/**
+ * 존재하는 세부 증상 개수 — 홍반·구진·긁은 상처·태선화 중 0보다 큰(=등급이 매겨진) 것만 센다.
+ *
+ * 부위별 증상 카드(ExamResultScreen의 RegionSymptomsCard)와 달리 **크롭 이미지 기준이 아니라
+ * 그 촬영의 대표값(가장 나쁜 판정 단위)** 그대로다 — 기록에 저장되는 값 자체가 이미 그 대표값이라
+ * (folders/store.js recordExam), 특정 판정 단위 하나만 골라 셀 수도 없고 그럴 필요도 없다. 전신
+ * 지도는 "이 부위 전체가 지금 어떤 상태인가"를 보는 화면이라, 그 자리의 기록이 대표하는 값 하나로
+ * 충분하다.
+ */
+function symptomCountOf(record: any): number {
+  return [record.redness, record.bumps, record.scratch, record.thickening].filter((v) => v > 0).length;
 }
 
 /**
@@ -154,26 +203,41 @@ export default function WholeBodyResultScreen() {
   // 세부 부위(BodyPartId)라 COARSE_OF_PART로 네 덩어리 중 하나로 먼저 묶는다 — 등록 흐름이 항상
   // 이 네 덩어리 단위로만 자리를 만들어서(PartSelectScreen), 실제로는 site.parts가 전부 같은
   // 덩어리에 속한다. 색은 그 시점 "피부 종합 상태"(0~100 표시값) 평균을 SKIN_SEGMENTS 4단계로
-  // 매긴다 — 다른 화면의 피부 종합 상태 카드·그래프와 같은 기준이다.
-  const groupColors = useMemo<Partial<Record<CoarseGroupId, string>>>(() => {
-    const acc = new Map<CoarseGroupId, { sum: number; n: number }>();
+  // 매긴다 — 다른 화면의 피부 종합 상태 카드·그래프와 같은 기준이다. 크기는 같은 평균 방식으로
+  // 낸 "병변 넓이(%)" 평균을 areaToRadius로 반지름으로 바꾼 값이다 — 색과 크기가 서로 다른 값
+  // (상태 vs 넓이)에서 나오므로 둘은 독립적으로 움직인다. 가운데 숫자(존재하는 세부 증상 개수)도
+  // 같은 방식으로 평균 내어 반올림한다 — 슬라이더로 회차를 넘겨 호전되면 이 숫자가 줄어든다.
+  const groupMarkers = useMemo<Partial<Record<CoarseGroupId, PartMarkerStyle>>>(() => {
+    const acc = new Map<CoarseGroupId, { skinSum: number; areaSum: number; symptomSum: number; n: number }>();
     trends.forEach((t) => {
-      const value = DISPLAY_SCALE.iga(t.current.iga);
+      const skinValue = DISPLAY_SCALE.iga(t.current.iga);
+      // 옛 dump 기록 등 lesionAreaPct가 없는 경우를 대비해 0으로 폴백 — 최소 크기로 그려진다
+      const areaValue = typeof t.current.lesionAreaPct === 'number' ? t.current.lesionAreaPct : 0;
+      const symptomValue = symptomCountOf(t.current);
       const groups = new Set(t.site.parts.map((p) => COARSE_OF_PART[p]));
       groups.forEach((g) => {
         const cur = acc.get(g);
         if (cur) {
-          cur.sum += value;
+          cur.skinSum += skinValue;
+          cur.areaSum += areaValue;
+          cur.symptomSum += symptomValue;
           cur.n += 1;
-        } else acc.set(g, { sum: value, n: 1 });
+        } else acc.set(g, { skinSum: skinValue, areaSum: areaValue, symptomSum: symptomValue, n: 1 });
       });
     });
-    // 지켜보지 않는 덩어리도 "기록 없음" 색으로 명시해 둔다 — 동그라미를 아예 안 찍으면 범례와
-    // 어긋나서 "왜 이 부위엔 동그라미가 없지"가 된다
-    const out: Partial<Record<CoarseGroupId, string>> = {};
+    // 지켜보지 않는 덩어리도 "기록 없음" 색·최소 크기로 명시해 둔다 — 동그라미를 아예 안 찍으면
+    // 범례와 어긋나서 "왜 이 부위엔 동그라미가 없지"가 된다. count는 아예 넣지 않는다 —
+    // 잴 값이 없는 부위에 "0"을 적으면 "다 나았다"처럼 보인다.
+    const out: Partial<Record<CoarseGroupId, PartMarkerStyle>> = {};
     COARSE_GROUPS.forEach((group) => {
       const v = acc.get(group);
-      out[group] = v ? skinConditionInfo(v.sum / v.n).color : NO_RECORD_COLOR;
+      out[group] = v
+        ? {
+            color: skinConditionInfo(v.skinSum / v.n).color,
+            radius: areaToRadius(v.areaSum / v.n),
+            count: Math.round(v.symptomSum / v.n),
+          }
+        : { color: NO_RECORD_COLOR, radius: NO_RECORD_RADIUS };
     });
     return out;
   }, [trends]);
@@ -203,7 +267,7 @@ export default function WholeBodyResultScreen() {
     >
       <View style={[cardDecoration(), styles.mapCard]}>
         <View style={styles.bodyCanvas}>
-          <Body2DView partMarkers={groupColors} />
+          <Body2DView partMarkers={groupMarkers} />
         </View>
 
         <View style={{ height: 6 }} />
@@ -308,14 +372,10 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
   const skinValue = DISPLAY_SCALE.iga(current.iga);
   const skin = skinConditionInfo(skinValue);
   const tag = previous ? trendLabel(delta) : null;
-  // 표시값(0~100) 기준 변화량 — 카드의 상태 값과 같은 눈금이라야 읽힌다.
-  // DISPLAY_SCALE.iga는 이제 100에서 빼는 역산(비선형)이라 DISPLAY_SCALE.iga(delta)로 바로 구할
-  // 수 없다 — 두 시점의 표시값을 각각 구해서 차이를 낸다.
-  const shift = previous ? skinValue - DISPLAY_SCALE.iga(previous.iga) : 0;
 
   return (
     <View style={[cardDecoration(16), styles.trendRow]}>
-      <View style={[styles.trendSwatch, { backgroundColor: trendColor(Math.min(1, Math.max(-1, delta / FULL_SWING))) }]} />
+      <View style={[styles.trendSwatch, { backgroundColor: skin.color }]} />
       <View style={{ flex: 1 }}>
         <Text style={styles.trendSite}>{site.label}</Text>
         <Text style={styles.trendMeta}>
@@ -326,10 +386,7 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
       {tag ? (
         <View style={[styles.trendTag, { backgroundColor: `${tag.color}22` }]}>
           <MaterialIcons name={tag.icon} size={14} color={tag.color} />
-          <Text style={[styles.trendTagText, { color: tag.color }]}>
-            {tag.text} {shift > 0 ? '+' : ''}
-            {Math.round(shift)}
-          </Text>
+          <Text style={[styles.trendTagText, { color: tag.color }]}>{tag.text}</Text>
         </View>
       ) : (
         <View style={styles.trendTag}>

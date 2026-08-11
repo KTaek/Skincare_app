@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import Svg, { Circle, Rect } from 'react-native-svg';
+import Svg, { Circle } from 'react-native-svg';
 import { AppColors } from '../theme';
 import {
   monitoringColors as mc,
@@ -15,7 +15,7 @@ import {
 import { folderNameOf } from '../folders/targets';
 import { useLatestMonitoringRecord } from '../folders/store';
 import { plainSiteLabel } from '../models';
-import { LesionBox } from '../ai/analyzeLocal';
+import { LesionBox, LesionRegionResult } from '../ai/analyzeLocal';
 import { ExamAnalysis, ExamCapture } from '../exam/examTypes';
 import { DUMP_RESULTS } from '../exam/dumpAnalysis';
 import { igaDisplayValue, itchDisplayValue, SIGN_DISPLAY, SIGN_ORDER, signDisplayValue } from '../exam/examMetrics';
@@ -25,6 +25,13 @@ import { MetricCard, MetricRow, EmptyMetricCard } from '../components/MetricCard
 
 /** 사용자가 직접 고를 수 있는 진단명 — 분류 모델의 클래스와 같은 집합에 "직접 입력"을 더한 것 */
 const DIAGNOSES = ['아토피피부염', '건선', '여드름', '주사', '지루', '직접 입력'];
+
+/**
+ * 부위별 증상 칩을 2×2로 고정 배치하기 위한 줄 나누기 — [피부 붉기, 오돌토돌함] / [긁은 상처,
+ * 피부 두꺼워짐]. flexWrap에 맡기면 칩 너비·화면 폭에 따라 한 줄에 3개+1개처럼 들쭉날쭉하게
+ * 잘려서, 항상 이 순서·이 줄 구성으로 보이도록 미리 2개씩 묶어 둔다.
+ */
+const SIGN_ROWS = [SIGN_ORDER.slice(0, 2), SIGN_ORDER.slice(2, 4)];
 
 /**
  * 피부 촬영 분석 결과 화면.
@@ -70,7 +77,6 @@ export default function ExamResultScreen({
   const isNew = capture.kind === 'new';
   const isFollowUp = capture.kind === 'followUp';
 
-  const { session } = capture;
   // 진단명을 결과 화면에서 고칠 수 있어서, 대상은 항상 저장소의 최신 상태를 읽는다
   const target = findTarget(capture.target.id) ?? capture.target;
   const disease = target.diagnosis?.disease;
@@ -111,7 +117,7 @@ export default function ExamResultScreen({
           </View>
         )}
 
-        <PhotoPair uri={capture.photoUri} bbox={analysis.local.bbox} />
+        <PhotoPair uri={capture.photoUri} maskUri={analysis.local.maskUri ?? null} />
 
         {/* 이어서 기록은 이미 이름이 정해진 자리라 진단명을 다시 묻지 않는다 */}
         {!isFollowUp && (
@@ -125,7 +131,7 @@ export default function ExamResultScreen({
         )}
 
         {/* 4가지 증상·IGA 모델은 아토피피부염 채점 기준이라, 이 진단명이 그게 아니면(정상은 예외)
-            근거 없는 값이라 두 카드 다 보여주지 않는다 */}
+            근거 없는 값이라 이 블록을 통째로 보여주지 않는다. */}
         {analysis.severitySupported && (
           <>
             <MetricCard
@@ -136,6 +142,15 @@ export default function ExamResultScreen({
             />
 
             <SymptomCard analysis={analysis} />
+
+            {/* 부위별 증상은 "4가지 증상" 바로 다음 — 그 카드가 대표(가장 나쁜) 판정 단위 하나의
+                등급을 보여주는 자리이니, 병변이 여러 곳일 때 그 대표값이 어디서 왔는지를 바로
+                이어서 펼쳐 보여준다(경과 관찰 폴더의 상세 결과와 같은 순서). 병변이 한 곳뿐이면
+                위 PhotoPair의 마스크 오버레이로 이미 위치·모양을 보여줬으니 여기서 또 크롭 한
+                장을 반복할 이유가 없다. */}
+            {analysis.local.regions.length > 1 && (
+              <RegionSymptomsCard photoUri={capture.photoUri} regions={analysis.local.regions} />
+            )}
           </>
         )}
 
@@ -148,17 +163,6 @@ export default function ExamResultScreen({
           <MetricCard label="수면 점수" value={latestSleep.record.sleepScore} unit="/100" segments={SLEEP_SEGMENTS} />
         ) : (
           <EmptyMetricCard label="수면 점수" text="미기재" />
-        )}
-
-        {session.confidence.warnings.length > 0 && (
-          <View style={[monitoringCard(), styles.card]}>
-            <Text style={styles.cardLabel}>촬영 품질 참고</Text>
-            {session.confidence.warnings.map((w) => (
-              <Text key={w} style={styles.warnText}>
-                • {w}
-              </Text>
-            ))}
-          </View>
         )}
       </ScrollView>
 
@@ -305,8 +309,20 @@ function SymptomCard({ analysis }: { analysis: ExamAnalysis }) {
   );
 }
 
-/** 촬영 이미지 원본 + 증상 위치 오버레이 — 상세 결과 화면의 사진 카드와 같은 배치 */
-function PhotoPair({ uri, bbox }: { uri: string; bbox: LesionBox }) {
+/**
+ * 촬영 이미지 원본 + 분할 마스크 오버레이 — 상세 결과 화면의 사진 카드와 같은 배치.
+ *
+ * 오버레이는 bbox를 사각형으로 그리는 대신 analyzeLocal이 이미 합성해 준 이미지(maskUri)를
+ * 그대로 보여준다 — 실제 병변 모양(반투명 색 면)과 그 경계(흰 테두리 + 어두운 테두리 한 겹, 어떤
+ * 피부색 위에서도 보이도록)가 그대로 담겨 있어서, 사각형 박스보다 "어디가, 어떤 모양으로" 병변인지
+ * 정확히 보여준다(ai/maskOverlay.ts 참고). 판정 단위가 하나뿐이면 항상 붉은색(REGION_COLORS[0])
+ * 하나로 칠해진다.
+ *
+ * 마스크를 못 찾았거나(비정상 피부·정상 피부 등) 합성에 실패하면 maskUri가 null이라 원본을
+ * 그대로 보여주고, 캡션으로 그 사실을 알린다 — 빈 오버레이를 사각 박스로 억지로 채우지 않는다.
+ */
+function PhotoPair({ uri, maskUri }: { uri: string; maskUri: string | null }) {
+  const overlayCaption = maskUri ? '증상 부위 표시' : '증상 부위를 찾지 못했어요';
   return (
     <View style={[monitoringCard(), styles.photoCard]}>
       <View style={styles.photoRow}>
@@ -315,25 +331,94 @@ function PhotoPair({ uri, bbox }: { uri: string; bbox: LesionBox }) {
           <Text style={styles.photoCaption}>촬영 이미지 (원본)</Text>
         </View>
         <View style={styles.photoCol}>
-          <View style={styles.photo}>
-            <Image source={{ uri }} style={StyleSheet.absoluteFill} />
-            <Svg width="100%" height="100%" viewBox="0 0 100 100" style={StyleSheet.absoluteFill}>
-              <Rect
-                x={(bbox.x / bbox.imageWidth) * 100}
-                y={(bbox.y / bbox.imageHeight) * 100}
-                width={(bbox.width / bbox.imageWidth) * 100}
-                height={(bbox.height / bbox.imageHeight) * 100}
-                rx={2}
-                fill="none"
-                stroke="#FFFFFF"
-                strokeWidth={2}
-                strokeDasharray="5,3"
-              />
-            </Svg>
-          </View>
-          <Text style={styles.photoCaption}>증상 부위 표시</Text>
+          <Image source={{ uri: maskUri ?? uri }} style={styles.photo} />
+          <Text style={styles.photoCaption}>{overlayCaption}</Text>
         </View>
       </View>
+    </View>
+  );
+}
+
+/**
+ * 부위별 증상 카드 — 병변이 여러 곳으로 떨어져 있어 판정 단위(regions)가 둘 이상일 때, 그 부위를
+ * 하나씩 잘라 보여주며 4가지 증상 중 "있음/없음"만 알려준다. 등급(중증도)까지 보여주지 않는 건
+ * 위 "4가지 증상" 카드가 이미 대표(가장 나쁜) 단위 하나로 등급을 보여주고 있어서, 여기서 부위마다
+ * 등급까지 늘어놓으면 정보가 겹쳐서 오히려 어디를 봐야 할지 헷갈리기 때문이다 — 여기서는 "이 부위는
+ * 무슨 증상인지"만 훑고, 얼마나 심한지는 위 카드로 돌아가 보게 한다.
+ */
+function RegionSymptomsCard({ photoUri, regions }: { photoUri: string; regions: LesionRegionResult[] }) {
+  return (
+    <View style={[monitoringCard(), styles.card]}>
+      <Text style={styles.cardLabel}>부위별 증상</Text>
+      {regions.map((region, i) => (
+        <RegionSymptomRow key={i} index={i} photoUri={photoUri} region={region} />
+      ))}
+    </View>
+  );
+}
+
+/** 부위별 증상 카드의 한 줄 — 그 부위를 잘라낸 사진 + 4가지 증상 있음/없음 칩 */
+function RegionSymptomRow({
+  index,
+  photoUri,
+  region,
+}: {
+  index: number;
+  photoUri: string;
+  region: LesionRegionResult;
+}) {
+  return (
+    <View style={[styles.regionRow, index > 0 && styles.regionRowDivider]}>
+      <View style={styles.regionCropCol}>
+        <RegionCrop uri={photoUri} bbox={region.bbox} />
+        <Text style={styles.regionCropCaption}>부위 {index + 1}</Text>
+      </View>
+      <View style={styles.regionChips}>
+        {SIGN_ROWS.map((row, r) => (
+          <View key={r} style={styles.symptomChipRow}>
+            {row.map((sign) => {
+              const found = region.signs.find((s) => s.sign === sign);
+              const present = !!found && found.grade > 0;
+              return (
+                <View key={sign} style={[styles.symptomChip, present && styles.symptomChipOn]}>
+                  <MaterialIcons
+                    name={present ? 'check-circle' : 'radio-button-unchecked'}
+                    size={13}
+                    color={present ? mc.greenDeep : mc.sub}
+                  />
+                  <Text style={[styles.symptomChipText, present && styles.symptomChipTextOn]}>
+                    {SIGN_DISPLAY[sign].label}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * 크롭 한 장 — bbox 사각형을 정사각형 썸네일에 그대로 눌러 넣는다(종횡비 유지 안 함).
+ * 중증도 모델이 실제로 보는 입력(ai/skiaPixels의 extractNormalizedRGB)과 같은 규칙이라, 화면에
+ * 보이는 크롭이 곧 "모델이 본 바로 그 사진"이다.
+ */
+function RegionCrop({ uri, bbox }: { uri: string; bbox: LesionBox }) {
+  const scaleX = REGION_CROP_SIZE / bbox.width;
+  const scaleY = REGION_CROP_SIZE / bbox.height;
+  return (
+    <View style={styles.regionCrop}>
+      <Image
+        source={{ uri }}
+        style={{
+          position: 'absolute',
+          width: bbox.imageWidth * scaleX,
+          height: bbox.imageHeight * scaleY,
+          left: -bbox.x * scaleX,
+          top: -bbox.y * scaleY,
+        }}
+      />
     </View>
   );
 }
@@ -455,6 +540,7 @@ function RingPercent({ percent, color, size = 46 }: { percent: number; color: st
 }
 
 const PHOTO_SIZE = 130;
+const REGION_CROP_SIZE = 64;
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: mc.bg },
@@ -521,12 +607,38 @@ const styles = StyleSheet.create({
   photo: { width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: 10, overflow: 'hidden', backgroundColor: mc.bg },
   photoCaption: { fontSize: 10.5, color: mc.sub, marginTop: 6, textAlign: 'center' },
 
+  regionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 12 },
+  regionRowDivider: { borderTopWidth: 1, borderTopColor: mc.line },
+  regionCropCol: { alignItems: 'center' },
+  regionCrop: {
+    width: REGION_CROP_SIZE,
+    height: REGION_CROP_SIZE,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: mc.bg,
+  },
+  regionCropCaption: { fontSize: 10, color: mc.sub, marginTop: 4 },
+  regionChips: { flex: 1, gap: 6 },
+  symptomChipRow: { flexDirection: 'row', gap: 6 },
+  symptomChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    backgroundColor: mc.bg,
+    flexShrink: 1,
+  },
+  symptomChipOn: { backgroundColor: '#EDF7E1' },
+  symptomChipText: { fontSize: 11.5, fontWeight: '700', color: mc.sub },
+  symptomChipTextOn: { color: mc.greenDeep },
+
   linkBtn: { backgroundColor: mc.greenTop, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   linkBtnDisabled: { backgroundColor: '#E7E9EC' },
   linkBtnText: { fontSize: 15, fontWeight: '800', color: '#16320A' },
   linkBtnTextDisabled: { color: mc.sub },
 
-  warnText: { fontSize: 12.5, color: mc.ink, lineHeight: 19 },
 
   footer: { paddingHorizontal: 16, paddingBottom: 18, paddingTop: 10, backgroundColor: mc.bg },
   saveBtn: { backgroundColor: mc.greenTop, borderRadius: 14, paddingVertical: 15, alignItems: 'center' },
