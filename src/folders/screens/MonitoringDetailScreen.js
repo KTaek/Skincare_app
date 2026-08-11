@@ -74,7 +74,7 @@ export default function MonitoringDetailScreen({ navigation, route }) {
               <Text style={styles.photoCaption}>촬영 이미지 (원본)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(1)}>
-              <LesionThumb photo={record.photo} areaPct={record.lesionAreaPct} seed={record.seed} mode="overlay" size={PHOTO_SIZE} />
+              <LesionThumb photo={record.photo} overlay={record.overlay} areaPct={record.lesionAreaPct} seed={record.seed} mode="overlay" size={PHOTO_SIZE} />
               <Text style={styles.photoCaption}>증상 부위 표시</Text>
             </TouchableOpacity>
           </View>

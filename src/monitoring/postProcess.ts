@@ -3,6 +3,7 @@ import { GATE } from './frameQuality';
 import { SKIN_GATE } from './skinMask';
 import {
   Baseline,
+  CapturePath,
   ColorNormalization,
   ConfidenceBreakdown,
   FrameEvaluation,
@@ -28,6 +29,29 @@ import {
 const GAIN_MIN = 0.75;
 const GAIN_MAX = 1.35;
 
+/**
+ * 기준 사진이 없을 때 맞춰 갈 표준 피부 중앙값 (0~1, RGB).
+ *
+ * 백색광 아래 중간 피부톤의 값에서 잡았다. 절대적으로 옳은 색이라는 뜻이 아니라 — 그런 값은
+ * 없다, 피부색은 사람마다 다르다 — **모든 첫 촬영이 같은 자리로 모이게 하는 기준점**이다.
+ * 그것만으로도 모델이 보는 색의 퍼짐이 줄어든다.
+ *
+ * 무엇을 노리는가: 기준 사진이 있을 때만 조명을 보정하면 첫 촬영·바로 스캔·앨범 사진은 조명이
+ * 제각각인 채로 모델에 들어간다. 그런데 촬영 게이트를 걷어내면서 조명이 고르지 않은 사진이
+ * 늘어나는 쪽으로 갔으므로, 보정이 가장 필요한 곳이 하필 보정이 없던 곳이 되었다.
+ */
+const CANONICAL_SKIN: readonly [number, number, number] = [0.72, 0.56, 0.5];
+/**
+ * 기준 없는 보정의 한계 — 기준 사진이 있을 때보다 훨씬 좁게 잡는다.
+ *
+ * 기준 사진과 맞추는 것은 **같은 사람의 같은 자리**를 견주는 일이라 큰 게인도 근거가 있다.
+ * 표준값과 맞추는 것은 다르다: 그 사람의 피부가 원래 표준보다 짙은 것인지 조명이 어두운 것인지
+ * 구분할 방법이 없으므로, 크게 밀면 **타고난 피부색을 지우는** 쪽으로 간다. 조명의 색기울기만
+ * 살짝 덜어내는 정도로 제한한다.
+ */
+const CANONICAL_GAIN_MIN = 0.88;
+const CANONICAL_GAIN_MAX = 1.14;
+
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const clamp01 = (v: number) => clamp(v, 0, 1);
 
@@ -47,19 +71,23 @@ export const IDENTITY_COLOR_NORM: ColorNormalization = { gain: [1, 1, 1], applie
  *     오인되고, 그 보정이 병변의 붉기를 지운다. 중앙값은 병변이 피부의 절반을 넘지 않는 한
  *     정상 피부 쪽에 머무르므로 순수한 조명 기준이 된다. 세그 마스크도 필요 없다.
  *
- * 기준 세션 자신은 보정하지 않는다 — 그 세션이 곧 기준이기 때문이다.
+ * 기준 세션이 없으면 표준 피부값(CANONICAL_SKIN)에 맞추되 훨씬 좁은 한계를 쓴다 — 예전에는
+ * 이 경우 아무것도 하지 않았는데, 첫 촬영·바로 스캔·앨범 사진이 전부 그 경우였다.
  */
 export function computeColorNormalization(
   metrics: ImageQualityMetrics,
   baseline?: Baseline,
 ): ColorNormalization {
-  // 기준 세션이거나, 피부 표본이 모자라 조명을 추정할 수 없으면 손대지 않는다
-  if (!baseline || metrics.skinCount === 0) return IDENTITY_COLOR_NORM;
+  // 피부 표본이 모자라면 조명을 추정할 근거가 없다 — 손대지 않는 편이 옳다
+  if (metrics.skinCount === 0) return IDENTITY_COLOR_NORM;
 
-  const target = baseline.skinReference;
+  const target = baseline?.skinReference ?? CANONICAL_SKIN;
+  const lo = baseline ? GAIN_MIN : CANONICAL_GAIN_MIN;
+  const hi = baseline ? GAIN_MAX : CANONICAL_GAIN_MAX;
+
   const current = metrics.skinMedians;
   const gain = [0, 1, 2].map((ch) =>
-    current[ch] > 1e-3 ? clamp(target[ch] / current[ch], GAIN_MIN, GAIN_MAX) : 1,
+    current[ch] > 1e-3 ? clamp(target[ch] / current[ch], lo, hi) : 1,
   ) as [number, number, number];
 
   const applied = gain.some((g) => Math.abs(g - 1) > 1e-3);
@@ -80,7 +108,13 @@ export function baselineFromCapture(
    * facing — 전면/후면은 화각이 달라 같은 거리에서도 원근 왜곡이 다르다. 카메라가 바뀌면
    *   면적 비교 자체가 성립하지 않으므로 기준을 남기고 이어찍기에서 잠근다.
    */
-  extra: { scale?: ScaleFrame | null; facing?: 'front' | 'back' } = {},
+  extra: {
+    scale?: ScaleFrame | null;
+    facing?: 'front' | 'back';
+    covered?: number;
+    /** 자가 화면 짧은 변의 몇 배였는지 — 몸통의 배율 비교 기준이 된다 */
+    sOfMinSide?: number;
+  } = {},
 ): Baseline {
   return {
     sessionId,
@@ -88,7 +122,21 @@ export function baselineFromCapture(
     skinReference: metrics.skinMedians,
     brightness: metrics.brightness,
     scale: extra.scale
-      ? { areaRef: extra.scale.areaRef, ratio: extra.scale.ratio, asym: extra.scale.asym }
+      ? {
+          areaRef: extra.scale.areaRef,
+          ratio: extra.scale.ratio,
+          asym: extra.scale.asym,
+          /*
+            기준 사진에서 부위가 담긴 정도. 다음 회차는 100%가 아니라 **이 값**에 맞추면 된다 —
+            얼굴을 가득 채워 찍는 것이 정상인 부위에서 100%를 요구하면 아무 사진도 통과하지 못한다.
+          */
+          covered: extra.covered,
+          /*
+            몸통에서만 쓰인다. 얼굴은 배율이 계산에서 사라지지만 몸통의 자는 프레이밍을 타므로,
+            다음 회차가 "표준 구도"가 아니라 **이 사진과 같은 거리**에 맞춰야 한다.
+          */
+          sOfMinSide: extra.sOfMinSide,
+        }
       : undefined,
     facing: extra.facing,
   };
@@ -96,12 +144,17 @@ export function baselineFromCapture(
 
 /**
  * 신뢰도 = 촬영 품질(초점·노출·구도·피부) + 보정량(조명을 얼마나 크게 손댔는지).
- * 느슨한 게이트로 통과시킨 대가를 여기서 정량화해, 추세 계산에서 가중치를 낮추거나 재촬영을 안내한다.
+ *
+ * **이 함수의 무게가 예전보다 훨씬 무거워졌다.** 촬영 게이트를 걷어내면서 품질이 낮은 사진도
+ * 전부 통과하게 됐으므로, "이 기록을 얼마나 믿을 수 있는가"를 말하는 곳이 여기밖에 남지 않았다.
+ * 막지 않기로 한 이상 기록은 정직해야 한다 — 낮은 품질로 찍혔다는 사실이 점수와 문구에 남는다.
  */
 export function scoreConfidence(
   evaluation: FrameEvaluation,
   colorNorm: ColorNormalization,
   baseline?: Baseline,
+  /** 어떤 경로로 찍혔는지 — 'fallback'은 목표 품질에 못 미친 채 시간이 다 되어 찍힌 사진이다 */
+  capturePath?: CapturePath,
 ): SessionConfidence {
   const { metrics, gauges, hard } = evaluation;
 
@@ -118,12 +171,26 @@ export function scoreConfidence(
   const weighted =
     100 * (breakdown.focus * 0.35 + breakdown.exposure * 0.3 + breakdown.skin * 0.25 + breakdown.color * 0.1);
 
-  // 수동 셔터는 필수 조건을 못 넘겨도 찍히므로, 그 경우 점수가 높게 나오지 않도록 상한을 씌운다.
-  // (초점·노출·피부는 후처리로 복구할 수 없는 항목이라 다른 항목이 아무리 좋아도 신뢰할 수 없다)
+  /*
+    품질 항목을 놓친 사진에 씌우는 상한.
+
+    예전에는 45였다. 그때는 이 경로로 들어오는 것이 **수동 셔터뿐**이었다 — 자동으로 찍힌 사진은
+    정의상 모든 항목을 통과했으니까. 지금은 자동 셔터도 이 항목들을 요구하지 않으므로 평범한
+    촬영이 여기로 들어온다. 45로 두면 대부분의 기록이 한 점으로 뭉쳐서, 정작 그 안에서 어느
+    사진이 나은지를 구분할 수 없게 된다 — 상한이 정보를 지우는 셈이다.
+
+    60으로 올리되 상한 자체는 남긴다. 초점·노출·피부는 후처리로 복구할 수 없으므로, 하나라도
+    놓친 사진이 "높은 신뢰도"로 표시되어서는 안 된다 (tier 경계가 75라 medium에 머문다).
+  */
   const hardFailed = (Object.keys(hard) as (keyof typeof hard)[]).filter((k) => !hard[k]);
-  const score = Math.round(hardFailed.length > 0 ? Math.min(weighted, 45) : weighted);
+  const capped = hardFailed.length > 0 ? Math.min(weighted, 60) : weighted;
+  // 목표 품질에 못 미친 채 시간이 다 되어 찍힌 사진 — 앱이 "그만 기다리고 찍은" 것이라 더 깎는다
+  const score = Math.round(capturePath === 'fallback' ? Math.min(capped, 50) : capped);
 
   const warnings: string[] = [];
+  if (capturePath === 'fallback') {
+    warnings.push('좋은 순간을 찾지 못해 그때까지 중 가장 나은 장면으로 촬영했어요');
+  }
   if (!hard.focus) warnings.push('초점이 맞지 않은 상태로 촬영됐어요 (나중에 되살릴 수 없어요)');
   else if (breakdown.focus < 0.35) warnings.push('초점이 충분히 선명하지 않아요');
   if (!hard.skin) warnings.push('화면에 피부가 적게 담겨서 분석이 정확하지 않을 수 있어요');
@@ -133,8 +200,15 @@ export function scoreConfidence(
   else if (breakdown.exposure < 0.4) warnings.push('빛이 날아가거나 어두워 색 정보가 일부 손실됐어요');
   if (breakdown.color < 0.4) warnings.push('조명이 지난번과 많이 달라요 — 보정했지만 오차가 남을 수 있어요');
 
-  // 필수 조건을 하나라도 놓친 촬영은 추세 계산에서 제외한다
-  const usable = hardFailed.length === 0 && score >= 35;
+  /*
+    재촬영을 권할지. **제외 여부가 아니다** — 이 값을 읽는 곳은 리뷰 화면의 권유 문구뿐이다.
+
+    예전 기준(품질 항목을 하나라도 놓치면 false)을 그대로 두면 이제 거의 모든 촬영이 false가
+    되어 문구가 늘 떠 있게 되고, 그러면 아무도 읽지 않는다. 되돌릴 수 없는 두 가지(초점·노출)를
+    놓쳤거나 점수가 바닥일 때만 권한다 — 피부 점유율은 분류 입력 크롭(skinCropOf)이 상당 부분
+    흡수하므로 여기서 재촬영을 권할 이유가 약해졌다.
+  */
+  const usable = (hard.focus && hard.exposure) || score >= 45;
   const tier = score >= 75 ? 'high' : score >= 50 ? 'medium' : 'low';
 
   return { score, tier, breakdown, warnings, usable };

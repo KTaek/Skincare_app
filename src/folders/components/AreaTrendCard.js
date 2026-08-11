@@ -34,7 +34,7 @@ const PAD_BOTTOM = 22;
 const PAD_LEFT = 34;
 const PAD_RIGHT = 12;
 
-export default function AreaTrendCard({ records, width }) {
+export default function AreaTrendCard({ records, width, selectedId }) {
   const series = areaTrendOf(records || []);
 
   // 잰 회차가 아예 없으면 카드를 비워 두지 않고 왜 없는지 말한다 —
@@ -52,30 +52,41 @@ export default function AreaTrendCard({ records, width }) {
   }
 
   const { points, skipped } = series;
-  const latest = points[points.length - 1];
-  const verdict = verdictOf(latest.delta, series.kind);
   const lod = series.lod;
 
-  // 한 번만 쟀으면 아직 "변화"가 없다 — 그래프는 못 그리지만 **오늘 얼마나 넓은지는 말할 수 있다**.
-  // 그 값은 그날 한 장에서 나오는 값이라 견줄 회차가 없어도 성립한다.
-  if (series.baselineOnly) {
+  /*
+    **날짜를 고르면 그 회차의 값을 보여준다.**
+
+    예전에는 언제나 마지막 회차만 보여줬다. 그런데 위쪽 날짜 띠에서 다른 촬영을 골라도 이 카드만
+    그대로였고, 두 회차가 같은 12%인 것처럼 보였다 — 회차마다 다른 값을 재 놓고 화면은 하나만
+    말하고 있었던 것이다. 다른 카드(피부 종합 상태·가려움)는 전부 고른 회차를 따라가므로 이
+    카드만 어긋나 있었다.
+  */
+  const selectedRecord = (records || []).find((r) => r.id === selectedId);
+  const selected = selectedRecord
+    ? points.find((p) => p.record.id === selectedId)
+    : points[points.length - 1];
+
+  /*
+    고른 회차가 넓이를 재지 못한 촬영이면 **다른 회차의 숫자를 대신 보여주지 않는다.**
+    그러면 사용자는 이 사진에서 잰 값이라고 읽는다 — 없는 측정을 있는 것처럼 만드는 셈이다.
+  */
+  if (!selected) {
     return (
       <View style={[monitoringCard(), styles.card]}>
         <View style={styles.headRow}>
           <Text style={styles.title}>병변 넓이</Text>
-          <Text style={styles.sub}>{latest.noun} 대비</Text>
-        </View>
-        <View style={styles.valueRow}>
-          <Text style={styles.value}>
-            {latest.noun}의 {fmtCoverage(latest.coveragePct)}
-          </Text>
+          <Text style={styles.sub}>{points[0].noun} 대비</Text>
         </View>
         <Text style={styles.empty}>
-          기준이 되는 첫 촬영이 기록됐어요. 다음에 같은 자리를 한 번 더 찍으면 변화가 보이기 시작해요.
+          이 회차는 넓이를 재지 못했어요. 등급·증상 기록은 그대로 있고, 넓이 비교에서만 빠집니다.
         </Text>
       </View>
     );
   }
+
+  const isBase = selected.record.id === series.base.id;
+  const verdict = verdictOf(selected.delta, series.kind);
 
   const chartW = Math.max(160, (width || 300) - 32);
   const plotW = chartW - PAD_LEFT - PAD_RIGHT;
@@ -95,27 +106,45 @@ export default function AreaTrendCard({ records, width }) {
     <View style={[monitoringCard(), styles.card]}>
       <View style={styles.headRow}>
         <Text style={styles.title}>병변 넓이</Text>
-        <Text style={styles.sub}>{latest.noun} 대비 · 첫 촬영 대비</Text>
+        <Text style={styles.sub}>{selected.noun} 대비</Text>
       </View>
 
-      {/* 큰 숫자는 "지금 얼마나 넓은가", 배지는 "첫 촬영에서 어떻게 달라졌나" — 둘의 근거가 다르다 */}
+      {/* 큰 숫자는 "이 회차가 얼마나 넓은가", 배지는 "첫 촬영에서 어떻게 달라졌나" — 둘의 근거가 다르다 */}
       <View style={styles.valueRow}>
         <Text style={styles.value}>
-          {latest.noun}의 {fmtCoverage(latest.coveragePct)}
+          {selected.noun}의 {fmtCoverage(selected.coveragePct)}
         </Text>
-        <View style={[styles.pill, { backgroundColor: verdict.color }]}>
-          {/* 밝은 배경(연두)에는 흰 글자가 안 읽힌다 — 어느 색이 밝은지는 areaTrend가 알려준다 */}
-          <Text style={[styles.pillText, verdict.lightBg && { color: mc.ink }]}>{verdict.ko}</Text>
-        </View>
+        {isBase ? (
+          <View style={[styles.pill, styles.basePill]}>
+            <Text style={[styles.pillText, { color: mc.ink }]}>기준 회차</Text>
+          </View>
+        ) : (
+          <View style={[styles.pill, { backgroundColor: verdict.color }]}>
+            {/* 밝은 배경(연두)에는 흰 글자가 안 읽힌다 — 어느 색이 밝은지는 areaTrend가 알려준다 */}
+            <Text style={[styles.pillText, verdict.lightBg && { color: mc.ink }]}>
+              첫 촬영 대비 {fmtPct(selected.delta)}
+            </Text>
+          </View>
+        )}
       </View>
-      <Text style={styles.change}>
-        {changePhrase(latest.delta, series.kind)} <Text style={styles.changeExact}>(첫 촬영 대비 {fmtPct(latest.delta)})</Text>
-      </Text>
-      {/* 그래프의 0%가 무엇인지 밝힌다 — 안 그러면 "0%면 병변이 없는 건가"로 읽힌다 */}
-      <Text style={styles.foot}>
-        아래 그래프는 첫 촬영 대비 변화율이에요 — 그때의 {fmtCoverage(points[0].coveragePct)}가 0% 자리입니다.
-      </Text>
+      {/*
+        배지에는 정확한 변화율을, 이 줄에는 말로 된 판정을 둔다. 둘이 다른 이유가 있다 —
+        판정은 측정 오차 띠(lod) 안이면 방향을 말하지 않지만(changePhrase), 숫자는 그 안에서도
+        그대로 보여 준다. 사용자가 "몇 %인지"를 물었을 때 앱이 숨길 이유는 없고, 대신 그 숫자를
+        변화로 읽으면 안 된다는 것은 말로 알려 준다.
+      */}
+      {!isBase && <Text style={styles.change}>{changePhrase(selected.delta, series.kind)}</Text>}
 
+      {/*
+        해상도가 낮았던 회차 표시. 값을 빼지 않고 남기는 대신, 추세가 이 점에서 튀었을 때
+        이유를 댈 수 있어야 한다 — 표시 없이 남기면 흔들림이 변화로 읽힌다.
+      */}
+      {selected.lowRes && (
+        <Text style={styles.foot}>이 회차는 원본 해상도가 낮아 넓이가 조금 흔들릴 수 있어요.</Text>
+      )}
+
+      {/* 잰 회차가 하나뿐이면 그릴 선이 없다 — 점 하나짜리 그래프는 아무것도 말해 주지 않는다 */}
+      {points.length < 2 ? null : (
       <Svg width={chartW} height={CHART_H}>
         {/* 변화 없음 띠 — 이 안의 오르내림은 측정 잡음과 구분되지 않는다 */}
         <Rect
@@ -152,10 +181,14 @@ export default function AreaTrendCard({ records, width }) {
           />
         ))}
       </Svg>
+      )}
 
-      <Text style={styles.foot}>
-        회색 띠 안({fmtPct(-lod)} ~ {fmtPct(lod)})의 오르내림은 측정 오차와 구분되지 않아 변화로 보지 않아요.
-      </Text>
+      {points.length >= 2 && (
+        <Text style={styles.foot}>
+          회색 띠 안({fmtPct(-lod)} ~ {fmtPct(lod)})의 오르내림은 측정 오차와 구분되지 않아 변화로 보지 않아요.
+          그래프의 0%는 첫 촬영({fmtCoverage(points[0].coveragePct)}) 자리예요.
+        </Text>
+      )}
       {skipped > 0 && (
         <Text style={styles.foot}>
           가이드와 어긋나게 찍힌 {skipped}회는 넓이를 견줄 수 없어 이 그래프에서 빠졌어요
@@ -176,6 +209,8 @@ const styles = StyleSheet.create({
   changeExact: { fontSize: 12, fontWeight: '600', color: mc.sub },
   value: { fontSize: 26, fontWeight: '800', color: mc.ink },
   pill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  /** 기준 회차 배지 — 판정이 아니라 사실 표시라 색을 쓰지 않는다 */
+  basePill: { backgroundColor: mc.bg },
   pillText: { fontSize: 12, fontWeight: '700', color: '#FFFFFF' },
   empty: { marginTop: 8, fontSize: 13, color: mc.sub, lineHeight: 20 },
   foot: { marginTop: 8, fontSize: 11, color: mc.sub, lineHeight: 16 },

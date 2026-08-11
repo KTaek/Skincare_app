@@ -67,7 +67,7 @@ export default function ExamFlow({
   const [source, setSource] = useState<CaptureSource>('camera');
   const [itchVas, setItchVas] = useState<number | null>(null);
   const [target, setTarget] = useState<MonitorTarget | null>(presetTarget ?? (isQuick ? QUICK_TARGET : null));
-  const { ensureTarget, findTarget } = useMonitoring();
+  const { createTarget, findTarget } = useMonitoring();
 
   // 신규 증상 기록에서만 거치는 앞 단계 — 부위 선택 한 번
   if (isNew && (step === 'part' || !target)) {
@@ -75,8 +75,14 @@ export default function ExamFlow({
       <PartSelectScreen
         onBack={onExit}
         onNext={(spot) => {
-          // 자리는 여기서 확정한다. 진단명은 결과 화면에서 붙인다.
-          setTarget(ensureTarget(modelId, spot));
+          /*
+            자리는 여기서 확정한다. 진단명은 결과 화면에서 붙인다.
+
+            같은 자리를 전에 등록했더라도 **새 대상을 만든다.** 사용자가 "신규 증상 기록하기"를
+            고른 것 자체가 새로 시작하겠다는 뜻이고, 이어 붙이려면 "이어서 기록하기"가 따로
+            있다(MonitoringContext의 createTarget 주석에 그 사이에서 무엇이 잘못됐었는지 적어 뒀다).
+          */
+          setTarget(createTarget(modelId, spot));
           setStep('itch');
         }}
       />
@@ -113,7 +119,7 @@ export default function ExamFlow({
   // 스캔은 임시 자리를 쓴다)
   if (!target) return null;
 
-  // ensureTarget이 만든 대상은 컨텍스트에서 최신 상태(baseline 포함)를 다시 읽어온다
+  // createTarget이 만든 대상은 컨텍스트에서 최신 상태(baseline 포함)를 다시 읽어온다
   const current = findTarget(target.id) ?? target;
 
   return (

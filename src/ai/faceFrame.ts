@@ -26,16 +26,18 @@ export const MIN_FACE_SCALE_PX = SCALE_SPEC.face.minScalePx;
  *
  *     코 옆이동 1mm → 0.024 (3°)    4mm → 0.096 (12°)    7mm → 0.168 (20°)
  */
-export function faceFrameOf(kp: FaceKeypoints): FaceFrame | null {
+export function faceFrameOf(kp: FaceKeypoints, box?: FaceDetection['box']): FaceFrame | null {
   const dl = Math.hypot(kp.leftEye.x - kp.nose.x, kp.leftEye.y - kp.nose.y);
   const dr = Math.hypot(kp.rightEye.x - kp.nose.x, kp.rightEye.y - kp.nose.y);
   const d = Math.hypot(kp.leftEye.x - kp.rightEye.x, kp.leftEye.y - kp.rightEye.y);
   const asym = d > 0 ? Math.abs(dl - dr) / d : 0;
 
   // 얼굴은 눈 둘과 입이 보이면 그것이 자의 전부다 — 더 들어와야 할 것이 없으므로 항상 complete
-  return scaleFrameOf('face', kp.leftEye, kp.rightEye, kp.mouth, asym, true);
+  return scaleFrameOf('face', kp.leftEye, kp.rightEye, kp.mouth, asym, true, box);
 }
 
 export function faceFrameOfDetection(det: FaceDetection | null): FaceFrame | null {
-  return det ? faceFrameOf(det.kp) : null;
+  // 검출 상자를 함께 넘긴다 — "얼굴이 사진에 얼마나 담겼나"를 비례 상수 없이 재기 위해서다
+  // (scaleFrame의 ScaleFrame.box 주석: 성인 비례는 아이 얼굴에 맞지 않는다)
+  return det ? faceFrameOf(det.kp, det.box) : null;
 }

@@ -1,5 +1,7 @@
 import { createModelSlot } from './modelLoader';
-import { extractNormalizedRGB, withSkImage } from './skiaPixels';
+import { extractNormalizedRGB, withSkImage, type CropRect } from './skiaPixels';
+import { roiOf, tiltOf, type ScaleFrame } from './scaleFrame';
+import { skinCropOf } from '../monitoring/skinMask';
 import meta from '../../assets/models/disease_labels.json';
 
 /**
@@ -47,20 +49,32 @@ const softmax = (logits: Float32Array): number[] => {
 /**
  * 사진 한 장 → 질환 확률 (높은 순). 정상 클래스도 그대로 포함해 돌려준다.
  *
- * colorGain은 촬영 후처리가 계산한 조명 보정값이다. 이 모델은 크롭 없이 프레임 전체를 먹으므로
- * 조명 차이의 영향을 가장 크게 받는다.
+ * colorGain은 촬영 후처리가 계산한 조명 보정값이다.
+ *
+ * **어디를 볼지는 세 단계로 정한다.**
+ *
+ *   1. scale이 있으면(얼굴 자리) 그 관심영역을 **기울기까지 되돌려** 잘라 넣는다.
+ *      고개가 기울어 찍힌 사진을 반듯하게 세워서 보여주는 것이라, 촬영 때 수평을 맞추라고
+ *      요구할 이유가 사라진다 — 되돌릴 수 있는 것을 사용자에게 시키지 않는다.
+ *   2. 없으면 피부가 모여 있는 자리로 좁힌다(skinCropOf). 이것이 촬영 게이트에서 "피부 55%"를
+ *      걷어낸 대가를 치르는 자리다 — 화면의 3분의 2가 카펫인 사진을 막는 대신, 카펫을 빼고
+ *      모델에 넣는다. 이미 찍어 둔 앨범 사진에도 똑같이 적용된다는 것이 게이트에는 없던 이점이다.
+ *   3. 피부가 이미 충분히 담긴 사진이면 skinCropOf가 null을 돌려주고, 예전 그대로 프레임 전체를
+ *      쓴다 — 이 모델은 그렇게 학습됐으므로 잘 찍힌 사진까지 건드릴 이유가 없다.
  */
-export async function classifyDisease(uri: string, colorGain?: readonly number[]): Promise<DiseasePrediction[]> {
-  const input = await withSkImage(uri, (image) =>
-    extractNormalizedRGB(
-      image,
-      { x: 0, y: 0, width: image.width(), height: image.height() },
-      IMG_SIZE,
-      meta.mean,
-      meta.std,
-      colorGain,
-    ),
-  );
+export async function classifyDisease(
+  uri: string,
+  colorGain?: readonly number[],
+  /** 촬영 때 찾아 둔 자 — 있으면 그 관심영역을 기울기까지 되돌려 잘라 쓴다 */
+  scale?: ScaleFrame | null,
+): Promise<DiseasePrediction[]> {
+  const input = await withSkImage(uri, (image) => {
+    const full = { x: 0, y: 0, width: image.width(), height: image.height() };
+    const src: CropRect = scale
+      ? { ...roiOf(scale, image.width(), image.height()), rotation: tiltOf(scale) }
+      : (skinCropOf(image) ?? full);
+    return extractNormalizedRGB(image, src, IMG_SIZE, meta.mean, meta.std, colorGain);
+  });
   const model = await getModel();
   // 입출력 모두 float32 — 버퍼를 그대로 주고받는다 (float16 변환 없음)
   const [output] = await model.run([input.buffer as ArrayBuffer]);

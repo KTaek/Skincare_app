@@ -38,6 +38,23 @@ export function readResizedRGBA(image: SkImage, src: SkRect, outW: number, outH:
   );
 }
 
+/**
+ * 잘라낼 자리를 **기울기까지 포함해** 지정한다.
+ *
+ * rotation은 원본에서 잰 면내 회전(rad)이고, 잘라낼 때 그만큼 **되돌린다**. 얼굴이 7° 기울어
+ * 찍혔으면 7° 반대로 돌려 반듯한 얼굴을 잘라 낸다는 뜻이다.
+ *
+ * 왜 게이트가 아니라 여기서 처리하는가: 기울기는 촬영 순간에만 고칠 수 있는 것이 아니라
+ * **아는 순간 언제든 되돌릴 수 있는 것**이다(자를 찾았다면 각도는 이미 알고 있다). 되돌릴 수
+ * 있는 것을 사용자에게 시키면, 고칠 수 없는 것(초점·조명)에 쓸 주의력을 거기에 뺏긴다.
+ * 앨범에서 고른 사진처럼 촬영 안내를 받을 기회가 없었던 사진에도 똑같이 적용된다는 것이
+ * 게이트에는 없는 이점이다.
+ */
+export interface CropRect extends SkRect {
+  /** 면내 회전 (rad). 0이거나 없으면 예전과 같은 축 정렬 크롭이다 */
+  rotation?: number;
+}
+
 /** 레터박스 배치 — 원본(의 일부)을 정사각형 안에 종횡비를 지켜 넣었을 때의 배치 정보 */
 export interface Letterbox {
   /** 정사각형 한 변 */
@@ -152,7 +169,7 @@ export function readLetterboxRGBA(
  * 실패할 지점이 없고, 사용자가 보는 사진은 찍은 그대로 남는다. */
 export function extractNormalizedRGB(
   image: SkImage,
-  src: SkRect,
+  src: CropRect,
   outSize: number,
   mean: readonly number[],
   std: readonly number[],
@@ -182,7 +199,7 @@ export function extractNormalizedRGB(
  */
 function withOffscreen<T>(
   image: SkImage,
-  src: SkRect,
+  src: CropRect,
   outW: number,
   outH: number,
   consume: (pixels: Uint8Array) => T,
@@ -193,7 +210,26 @@ function withOffscreen<T>(
   let snapshot: SkImage | null = null;
   try {
     const canvas = surface.getCanvas();
-    canvas.drawImageRect(image, src, { x: 0, y: 0, width: outW, height: outH }, Skia.Paint());
+    if (src.rotation) {
+      /*
+        기울기를 되돌려 잘라낸다. 변환을 목적지 쪽부터 읽으면 이렇다:
+        출력 한가운데로 옮기고 → -rotation만큼 돌리고 → 출력 크기에 맞춰 늘리고 →
+        잘라낼 자리의 중심이 원점에 오도록 원본을 민다.
+
+        돌린 사각형의 네 귀퉁이가 사진 밖으로 나갈 수 있으므로 먼저 검게 채운다 — 채우지 않으면
+        그 자리에 서피스의 초기값이 그대로 남아 무엇이 들어갈지 보증할 수 없다.
+      */
+      canvas.clear(Skia.Color('black'));
+      canvas.save();
+      canvas.translate(outW / 2, outH / 2);
+      canvas.rotate((-src.rotation * 180) / Math.PI, 0, 0);
+      canvas.scale(outW / src.width, outH / src.height);
+      canvas.translate(-(src.x + src.width / 2), -(src.y + src.height / 2));
+      canvas.drawImage(image, 0, 0, Skia.Paint());
+      canvas.restore();
+    } else {
+      canvas.drawImageRect(image, src, { x: 0, y: 0, width: outW, height: outH }, Skia.Paint());
+    }
     surface.flush();
 
     snapshot = surface.makeImageSnapshot();

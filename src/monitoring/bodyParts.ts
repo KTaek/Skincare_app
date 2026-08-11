@@ -216,13 +216,14 @@ const define = (group: PartGroupId, defs: SpotDef[]) => {
 export function scaleKindOf(part: BodyPartId): ScaleKind | null {
   if (part === 'head') return 'face';
   /*
-    몸통('chest' — 가슴/복부와 등)은 **아직 켜지 않는다.**
+    몸통('chest' — 가슴/복부와 등)을 켠다.
 
-    자를 내는 코드(ai/torsoFrame · poseDetector)는 이미 들어와 있지만, 실기기 검증이 끝나지
-    않았다. 특히 사용자가 실제로 찍는 프레임(어깨만 보이고 골반은 화면 밖인 근접 등 사진)에서는
-    랜드마크 모델이 골반을 **추정**해서 내놓고, 그 추정이 회차마다 달라 자가 4배씩 흔들린다.
-    준비가 되면 여기 한 줄을 되살리면 된다 — 나머지 경로는 이미 kind를 따라 움직인다.
+    예전에 꺼 둔 이유는 자가 어깨너비 × 어깨-골반이라, **사용자가 실제로 찍는 프레임(어깨만
+    보이고 골반은 화면 밖인 근접 등 사진)에서 골반이 추정값이 되어 자가 4배씩 흔들렸기** 때문이다.
+    그 자를 어깨너비 하나(d²)로 바꾸면서 골반이 필요 없어졌다 — 근거와 대가는 ai/torsoFrame의
+    파일 주석에 있다. 어깨가 프레임을 벗어나거나 visibility가 낮으면 여전히 넓이만 빠진다.
   */
+  if (part === 'chest') return 'torso';
   return null;
 }
 

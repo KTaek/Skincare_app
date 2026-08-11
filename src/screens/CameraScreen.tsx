@@ -148,9 +148,14 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         // 바로 "이상 없음"으로 확정한다 — 그래서 질환 분류를 먼저 끝내 둔다.
         let isNormalSkin = false;
         if (!skipDisease) {
+          /*
+            촬영 때 찾아 둔 자를 함께 넘긴다. 있으면 분류 모델도 그 관심영역을 기울기까지
+            되돌려 보고(고개가 기운 사진이 반듯하게 선다), 없으면 모델 쪽이 알아서 피부가
+            모여 있는 자리로 좁힌다 — 피부가 적게 담긴 사진에서 배경을 보고 판단하지 않도록.
+          */
           const predictions = DUMP_RESULTS
             ? makeDumpDiseases(cap.session.id)
-            : await classifyDisease(cap.photoUri, colorGain);
+            : await classifyDisease(cap.photoUri, colorGain, cap.session.scale);
           diseases = predictions.slice(0, 3);
           // 추정한 이름을 대상에 붙여 둔다 — 폴더 이름과 기록의 질환명이 여기서 나온다
           const top = predictions[0];
@@ -201,6 +206,8 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
             ...toFolderMetrics(local, cap.session.areaEligible),
             itchVas: cap.itchVas,
             photoUri: cap.photoUri,
+            // 분석이 합성해 둔 병변 오버레이 — 폴더에서도 결과 화면과 같은 그림을 보여준다
+            maskUri: local.maskUri ?? undefined,
           });
           const folder = getFolder(cap.folderId);
           if (folder) setLinkedFolder({ id: folder.id, name: folder.name });
@@ -222,12 +229,16 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
   );
 
   /**
-   * 신규 증상 기록 결과로 이 자리의 경과 관찰 폴더를 만들고 오늘 기록을 넣는다.
-   * 다른 자리의 폴더에 끼워 넣는 선택지는 두지 않는다 — 폴더 하나는 자리 하나를 계속 따라가야
-   * 경과 비교가 의미가 있기 때문이다. (같은 자리를 또 찍으면 ensureFolder가 그 폴더를 돌려준다)
+   * 신규 증상 기록 결과로 **새 경과 관찰 폴더를 만들고** 오늘 기록을 넣는다.
    *
-   * 결과 화면의 "경과 폴더 생성" 버튼이 누른 그 자리에서 바로 폴더로 넘어가야 해서, 만든(또는
-   * 이미 있던) 폴더 id를 그대로 돌려준다.
+   * 이미 있는 다른 폴더에 끼워 넣는 선택지는 두지 않는다 — 폴더 하나는 자리 하나를 계속 따라가야
+   * 경과 비교가 의미가 있기 때문이다. 같은 자리를 다시 "신규"로 등록했더라도 마찬가지다:
+   * 그때는 대상 자체가 새로 만들어지므로(MonitoringContext의 createTarget) 폴더도 새로 생긴다.
+   * 예전에는 같은 자리면 옛 폴더에 이어붙었는데, 그 사이에 질환 판정이 바뀌면 옛 질환의 기록 위에
+   * 새 질환의 기록이 쌓이고 이름만 새 질환으로 바뀌었다.
+   *
+   * 결과 화면의 "경과 폴더 생성" 버튼이 누른 그 자리에서 바로 폴더로 넘어가야 해서, 만든 폴더
+   * id를 그대로 돌려준다.
    */
   const linkToFolder = useCallback((): string => {
     if (!capture || !analysis) return ''; // 결과 화면이 떠 있는 동안만 눌리므로 실제로는 항상 값이 있다
@@ -242,6 +253,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
       ...toFolderMetrics(analysis.local, capture.session.areaEligible),
       itchVas: capture.itchVas,
       photoUri: capture.photoUri,
+      maskUri: analysis.local.maskUri ?? undefined,
     });
     const folder = getFolder(id);
     if (folder) setLinkedFolder({ id: folder.id, name: folder.name });

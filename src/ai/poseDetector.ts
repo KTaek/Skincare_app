@@ -83,6 +83,33 @@ export interface PoseLandmarks {
   rightHip: Pt;
   /** 네 점 중 가장 낮은 존재 확률 — 옷이나 팔에 가려지면 떨어진다 */
   presence: number;
+  /**
+   * 관절별 visibility (0~1) — "이 관절이 **화면에 실제로 보이는가**".
+   *
+   * presence와 다른 축이다. presence는 "이 사람에게 이 관절이 있는가"에 가까워서, 프레임 밖으로
+   * 나간 관절에도 높은 값이 나온다. 모델은 화면 밖 관절의 좌표를 **추정해서** 내놓기 때문에
+   * 좌표만 보면 언제나 값이 있고, 그 추정이 화면 안쪽으로 떨어지면 경계 검사(inside)마저 통과한다.
+   * 그때 기록되는 것은 있지도 않은 어깨너비다.
+   *
+   * visibility는 정확히 그 경우를 가려내라고 있는 값인데 여태 디코딩만 하고 버리고 있었다.
+   */
+  visibility: {
+    leftShoulder: number;
+    rightShoulder: number;
+    leftHip: number;
+    rightHip: number;
+  };
+  /**
+   * 좌우 어깨의 깊이 차 (이미지 픽셀과 같은 배율, 부호 있음).
+   *
+   * 골반 없이 몸통 자를 만들 때 **비틀림(yaw)을 잴 수 있는 유일한 재료**다. 어깨-골반 길이가
+   * 있으면 d/v 비율이 그 역할을 하지만, 어깨만 쓰는 자에서는 그 값이 상수가 되어 쓸 수 없다.
+   *
+   * ⚠️ BlazePose의 z는 x·y보다 부정확하기로 알려져 있다. 그래서 이 값은 "정면인지 아닌지"를
+   *    거칠게 가르는 용도로만 쓰고 임계값도 느슨하게 잡는다 — 비틀림 25°까지는 넓이 오차가
+   *    ±44% 문턱 안에 들어오므로(1/cos²25° = 1.22) 굳이 조일 이유도 없다.
+   */
+  shoulderDz: number;
 }
 
 const detSlot = createModelSlot('pose_det_224', () => require('../../assets/models/pose_det_224.tflite'));
@@ -146,9 +173,38 @@ export async function detectPose(image: SkImage): Promise<PoseLandmarks | null> 
     return null;
   }
 
-  const roi = await runDetector(detector, image);
-  if (!roi) return null;
-  return runLandmark(landmarker, image, roi);
+  /*
+    사람 검출이 실패하면 **프레임 전체를 정사각형으로 감싸** 랜드마크 모델에 그대로 넣는다.
+
+    왜 필요한가: 이 검출기는 **사람 하나가 통째로 담긴 사진**으로 학습됐다. 골반 중점과 전신
+    크기를 함께 예측해서 그 둘로 크롭을 만드는 구조라, 다리도 머리도 없이 몸통만 담긴 사진에서는
+    아예 안 잡히거나 전신 원을 엉뚱하게 키운다. 그런데 사용자가 등·가슴을 찍는 자연스러운 구도가
+    정확히 그 사진이다 — 검출기가 첫 관문에서 막으면 뒤의 모든 개선이 무의미해진다.
+
+    프레임 전체를 넣는 방식은 예전에 시도해 밀린 적이 있다(areaRef 퍼짐 155%). 다만 그때는 자가
+    어깨너비 × **어깨-골반**이라 골반 위치가 값을 좌우했다. 자가 어깨 하나로 바뀐 지금은 골반이
+    어디로 추정되든 상관없고, 필요한 것은 어깨 두 점뿐이라 다시 시도할 가치가 있다.
+    믿을 수 없는 어깨는 visibility가 걸러 낸다(torsoFrame).
+
+    ⚠️ 이 경로로 들어온 판이 실제로 쓸 만한지는 실기기 로그로 확인할 것 — 아래 경고에 표시된다.
+  */
+  let roi = await runDetector(detector, image);
+  if (!roi) {
+    const side = Math.max(image.width(), image.height());
+    roi = { x: (image.width() - side) / 2, y: (image.height() - side) / 2, side };
+    console.warn('[pose] 사람을 못 찾아 프레임 전체로 관절을 찾습니다', {
+      frame: `${image.width()}×${image.height()}`,
+    });
+  }
+
+  const lm = await runLandmark(landmarker, image, roi);
+  if (!lm) {
+    console.warn('[pose] 관절을 찾지 못했어요 (presence 미달)', {
+      roi: `${Math.round(roi.x)},${Math.round(roi.y)} ${Math.round(roi.side)}px`,
+      frame: `${image.width()}×${image.height()}`,
+    });
+  }
+  return lm;
 }
 
 /** 1단계 — 사람을 찾아 랜드마크 모델에 넣을 정사각형을 만든다 (원본 픽셀 좌표) */
@@ -191,7 +247,14 @@ async function runDetector(
       bestIndex = i;
     }
   }
-  if (bestIndex < 0) return null;
+  if (bestIndex < 0) {
+    // 몸통만 담긴 사진에서 흔하다 — 부르는 쪽이 프레임 전체로 되돌아간다
+    console.warn('[pose] 사람 검출 실패 (최고 점수가 문턱 미달)', {
+      threshold: DET.score_threshold,
+      best: Math.round(bestScore * 100) / 100,
+    });
+    return null;
+  }
 
   /*
     앵커 기준의 상대 좌표를 푼다. 얼굴과 형식이 같고 개수만 다르다:
@@ -254,6 +317,9 @@ async function runLandmark(
     x: roi.x + (lms![i * stride] / size) * roi.side,
     y: roi.y + (lms![i * stride + 1] / size) * roi.side,
   });
+  // 랜드마크 하나는 (x, y, z, visibility, presence) 다섯 값이다 — 여태 x·y와 presence만 읽었다
+  const zOf = (i: number) => (lms![i * stride + 2] / size) * roi.side;
+  const visibilityOf = (i: number) => sigmoid(lms![i * stride + 3]);
   const presenceOf = (i: number) => sigmoid(lms![i * stride + 4]);
 
   const idx = LM.landmark_index;
@@ -270,7 +336,27 @@ async function runLandmark(
   );
   if (presence < LM.presence_threshold) return null;
 
-  return { leftShoulder, rightShoulder, leftHip, rightHip, presence };
+
+  const visibility = {
+    leftShoulder: visibilityOf(idx.leftShoulder),
+    rightShoulder: visibilityOf(idx.rightShoulder),
+    leftHip: visibilityOf(idx.leftHip),
+    rightHip: visibilityOf(idx.rightHip),
+  };
+  // z는 x와 같은 배율로 나온다(MediaPipe 규약) — px()와 같은 변환을 태워 이미지 좌표계로 맞춘다
+  const shoulderDz = zOf(idx.leftShoulder) - zOf(idx.rightShoulder);
+
+  // 실기기에서 임계값을 잡으려면 성공한 판의 숫자도 보여야 한다 — 실패한 판만 보면
+  // "얼마나 아슬아슬하게 통과했는지"를 알 수 없어 어디를 조일지 정할 수 없다
+  console.log('[pose] 관절', {
+    d: Math.round(Math.hypot(leftShoulder.x - rightShoulder.x, leftShoulder.y - rightShoulder.y)),
+    presence: Math.round(presence * 100) / 100,
+    visShoulder: `${visibilityOf(idx.leftShoulder).toFixed(2)}/${visibilityOf(idx.rightShoulder).toFixed(2)}`,
+    visHip: `${visibilityOf(idx.leftHip).toFixed(2)}/${visibilityOf(idx.rightHip).toFixed(2)}`,
+    shoulderDz: Math.round(shoulderDz),
+  });
+
+  return { leftShoulder, rightShoulder, leftHip, rightHip, presence, visibility, shoulderDz };
 }
 
 const sigmoid = (v: number) => 1 / (1 + Math.exp(-Math.max(-100, Math.min(100, v))));

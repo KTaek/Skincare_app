@@ -280,16 +280,44 @@ export function deleteFolder(id) {
  */
 export function ensureFolder({ targetId, name, disease }) {
   const existing = getFolderByTarget(targetId);
-  if (existing) {
-    // 질환명이 바뀌었으면(모델이 추정한 이름이 새로 붙는 경우 등) 폴더 이름도 따라간다
-    if (existing.name !== name || existing.disease !== disease) {
-      folders = folders.map((f) => (f.id === existing.id ? { ...f, name, disease } : f));
-    }
-    return existing.id;
-  }
+  /*
+    이미 있으면 **그대로 돌려준다 — 이름도 질환명도 건드리지 않는다.**
+
+    예전에는 질환명이 바뀌면 폴더 이름을 따라 바꿨다. 그런데 그러면 예전 회차까지 소급해서
+    새 질환의 폴더가 된다: '주사'로 판정돼 쌓인 두 장 위에 '아토피피부염' 기록이 붙고 이름만
+    아토피로 바뀌어, 사용자 눈에는 처음부터 아토피였던 것이 된다. 더 나쁜 것은 등급이다 —
+    아토피가 아닌 회차는 등급을 아예 재지 않고 0으로 저장되는데(unsupportedDiseaseResult),
+    폴더가 아토피가 되는 순간 그 0들이 "완벽히 깨끗함"으로 그래프에 그려진다.
+
+    지금은 애초에 그 상황이 생기지 않는다. "신규 증상 기록하기"가 매번 새 대상을 만들고
+    (MonitoringContext의 createTarget), 이어서 기록은 질환 분류를 돌리지 않으므로
+    **한 폴더의 질환은 만들어질 때 정해지고 끝까지 바뀌지 않는다.** 이 함수는 그 불변을
+    지키는 쪽에 서 있으면 된다 — 여기로 다시 들어오는 경우는 같은 결과 화면에서 연동 버튼을
+    두 번 누른 정도다.
+  */
+  if (existing) return existing.id;
+
   const id = `f_${targetId}`;
-  folders = [{ id, targetId, name, disease, startDate: todayKey(), createdTs: Date.now(), records: [] }, ...folders];
+  folders = [
+    { id, targetId, name: uniqueFolderName(name), disease, startDate: todayKey(), createdTs: Date.now(), records: [] },
+    ...folders,
+  ];
   return id;
+}
+
+/**
+ * 같은 이름의 폴더가 이미 있으면 뒤에 번호를 붙인다 ("머리 아토피피부염" → "머리 아토피피부염 (2)").
+ *
+ * 신규 등록이 매번 새 폴더를 만들게 되면서 필요해졌다 — 같은 자리에 같은 질환이 다시 잡히면
+ * 이름이 글자 하나까지 똑같은 폴더가 둘 생긴다. 목록에 마지막 기록 날짜가 함께 나오긴 하지만,
+ * "이어서 기록할 폴더"를 고르는 자리에서 이름만으로 구분이 안 되면 엉뚱한 폴더에 이어붙게 된다.
+ */
+function uniqueFolderName(name) {
+  if (!folders.some((f) => f.name === name)) return name;
+  for (let n = 2; ; n++) {
+    const candidate = `${name} (${n})`;
+    if (!folders.some((f) => f.name === candidate)) return candidate;
+  }
 }
 
 /**
@@ -305,12 +333,13 @@ export function ensureFolder({ targetId, name, disease }) {
  *
  * @param {{ folderId: string, iga: number, redness: number, bumps: number, scratch: number,
  *           thickening: number, itchVas: number|null, areaPct: number,
- *           faceAreaIndex?: number|null, faceAreaKind?: 'face'|'torso'|null, photoUri?: string }} args
+ *           faceAreaIndex?: number|null, faceAreaKind?: 'face'|'torso'|null, lowRes?: boolean,
+ *           photoUri?: string, maskUri?: string }} args
  * @returns {{ record: any, hasSleepSource: boolean }|null}
  */
 export function recordExam({
   folderId, iga, redness, bumps, scratch, thickening, itchVas, areaPct,
-  faceAreaIndex = null, faceAreaKind = null, photoUri,
+  faceAreaIndex = null, faceAreaKind = null, lowRes = false, photoUri, maskUri,
 }) {
   const folder = folders.find((f) => f.id === folderId);
   if (!folder) return null;
@@ -345,7 +374,21 @@ export function recordExam({
     lesionAreaFaceIndex: faceAreaIndex == null ? null : Math.max(0, round1(faceAreaIndex)),
     /** 그 지수를 무엇으로 나눴는지. 없으면 얼굴 — 이 필드가 생기기 전 기록은 전부 얼굴이었다 */
     lesionAreaScaleKind: faceAreaIndex == null ? null : faceAreaKind ?? 'face',
+    /*
+      원본 해상도가 낮아 값이 흔들릴 수 있는 회차. 값을 빼지는 않는다 — 해상도는 넓이를
+      틀리게 만들지 않고 흔들리게만 하기 때문이다. 추세가 이 점에서 튀었을 때 이유를 댈 수
+      있어야 해서 기록까지 따라온다(areaTrend의 AreaPoint.lowRes).
+    */
+    lesionAreaLowRes: faceAreaIndex == null ? false : !!lowRes,
     photo: photoUri ? { uri: photoUri } : (last ? last.photo : null),
+    /*
+      분석이 합성해 둔 병변 오버레이 — 촬영 직후 결과 화면이 보여주는 바로 그 그림이다.
+
+      사진과 달리 **직전 기록에서 물려받지 않는다.** 오버레이는 그 사진에서 찾은 병변의 모양이라,
+      다른 사진 위에 얹으면 엉뚱한 자리를 병변이라고 가리키게 된다. 없으면 없는 채로 둔다 —
+      화면(LesionThumb)이 그때만 예전의 윤곽선 도형으로 되돌아간다.
+    */
+    overlay: maskUri ? { uri: maskUri } : null,
   };
 
   /*

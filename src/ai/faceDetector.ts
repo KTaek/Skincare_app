@@ -120,35 +120,59 @@ const REFINE_EXPAND = 1.8;
  * "다른 사람이 같이 찍혔다"뿐이고, 그때 재야 할 것은 화면을 가장 크게 차지한 얼굴이다.
  */
 export async function detectFace(image: SkImage): Promise<FaceDetection | null> {
-  const first = await runDetector(image);
+  // 1판: 프레임 그대로. 가이드를 보며 찍은 사진은 여기서 끝난다.
+  // 2판: 실패하면 여백을 둘러 다시 본다 — 얼굴이 화면을 가득 채운 사진이 여기서 살아난다.
+  const first = (await runDetector(image)) ?? (await runDetector(image, widened(image)));
   if (!first) return null;
 
-  // 찾은 자리를 크게 다시 본다. 두 번째 판이 실패하면(잘라 낸 그림에서 못 찾는 경우)
-  // 첫 판을 그대로 쓴다 — 정밀도가 조금 떨어질 뿐 못 쓰는 값은 아니다.
+  // 찾은 자리를 크게 다시 본다. 이 판이 실패하면 첫 판을 그대로 쓴다 —
+  // 정밀도가 조금 떨어질 뿐 못 쓰는 값은 아니다.
   const side = Math.max(first.box.width, first.box.height) * REFINE_EXPAND;
   const cx = first.box.x + first.box.width / 2;
   const cy = first.box.y + first.box.height / 2;
-  const crop = intersect(
-    { x: cx - side / 2, y: cy - side / 2, width: side, height: side },
-    image.width(),
-    image.height(),
-  );
-  if (!crop) return first;
+  const crop = { x: cx - side / 2, y: cy - side / 2, width: side, height: side };
+  /*
+    **사진 밖으로 나가도 그대로 넣는다.** 예전에는 이미지 안으로 잘라 넣었는데(intersect), 그러면
+    얼굴이 화면을 가득 채운 사진에서 크롭이 곧 원본과 같아져 아래 앵커 한계에 다시 걸린다 —
+    두 번째 판이 언제나 실패하고, 하필 정밀도가 가장 필요한 근접 사진에서 그렇게 된다.
+    readLetterboxRGBA는 사진 밖 영역을 검게 채우고 좌표 대응은 그대로 유지한다.
+  */
+  if (!overlapsImage(crop, image.width(), image.height())) return first;
 
   return (await runDetector(image, crop)) ?? first;
 }
 
-/** 사각형을 이미지 안으로 자른다. 남는 것이 없으면 null */
-function intersect(
+/**
+ * 이미지 바깥까지 넓힌 사각형 — 검은 여백이 생기고 얼굴은 그만큼 작게 들어간다.
+ *
+ * **왜 필요한가.** 이 모델(BlazeFace short-range)의 앵커는 얼굴 크기를 입력의 max_scale(0.75)까지만
+ * 표현한다. 얼굴이 프레임을 가득 채우면 그보다 큰 상자를 낼 앵커가 아예 없어서 **검출이 실패한다** —
+ * 흐리거나 어두워서가 아니라 구조적으로 못 찾는다. 카메라로 가이드를 보며 찍으면 얼굴이 화면의
+ * 절반쯤이라 이 한계에 닿지 않지만, **앨범에서 고르는 사진은 대개 얼굴이 화면을 꽉 채운 근접
+ * 사진이다.** 그래서 "카메라로는 넓이가 재지는데 앨범 사진은 안 된다"가 된다.
+ *
+ * 1.7배로 넓히면 프레임을 100% 채운 얼굴도 59%가 되어 앵커 범위 안으로 들어온다.
+ * 첫 판이 실패했을 때만 도므로, 평소 촬영에서는 추론이 늘지 않는다.
+ */
+const WIDEN_EXPAND = 1.7;
+
+function widened(image: SkImage): { x: number; y: number; width: number; height: number } {
+  const w = image.width();
+  const h = image.height();
+  const dx = (w * (WIDEN_EXPAND - 1)) / 2;
+  const dy = (h * (WIDEN_EXPAND - 1)) / 2;
+  return { x: -dx, y: -dy, width: w * WIDEN_EXPAND, height: h * WIDEN_EXPAND };
+}
+
+/** 이 사각형이 사진과 조금이라도 겹치는지 — 겹치지 않으면 넣어 봐야 검은 그림만 본다 */
+function overlapsImage(
   rect: { x: number; y: number; width: number; height: number },
   imageW: number,
   imageH: number,
-): { x: number; y: number; width: number; height: number } | null {
-  const x = Math.max(0, rect.x);
-  const y = Math.max(0, rect.y);
-  const width = Math.min(imageW, rect.x + rect.width) - x;
-  const height = Math.min(imageH, rect.y + rect.height) - y;
-  return width >= 8 && height >= 8 ? { x, y, width, height } : null;
+): boolean {
+  const w = Math.min(imageW, rect.x + rect.width) - Math.max(0, rect.x);
+  const h = Math.min(imageH, rect.y + rect.height) - Math.max(0, rect.y);
+  return w >= 8 && h >= 8;
 }
 
 /** 검출 한 판. src를 주면 그 부분만 잘라서 본다 (좌표는 언제나 원본 기준으로 돌려준다) */

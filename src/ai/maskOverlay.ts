@@ -55,6 +55,8 @@ const JPEG_QUALITY = 85;
  * @param region    분할이 실제로 본 영역 (원본 픽셀). 얼굴 자리에서는 사진 일부(얼굴 관심영역)만
  *                  분할하므로, 마스크를 사진 전체에 늘리면 병변이 엉뚱한 자리에 칠해진다.
  *                  생략하면 예전처럼 사진 전체에 늘린다.
+ *                  rotation이 있으면 그만큼 **되돌려** 분할한 것이므로, 여기서는 그 각도를 다시
+ *                  얹어 그려야 칠한 자리가 사진 속 병변과 맞는다.
  * @returns `data:image/jpeg;base64,...` — 만들지 못하면 null
  */
 export function renderMaskOverlay(
@@ -63,7 +65,7 @@ export function renderMaskOverlay(
   maskSize: number,
   threshold: number,
   regionOf: Int32Array | null = null,
-  region?: { x: number; y: number; width: number; height: number },
+  region?: { x: number; y: number; width: number; height: number; rotation?: number },
 ): string | null {
   const origW = image.width();
   const origH = image.height();
@@ -99,8 +101,24 @@ export function renderMaskOverlay(
       // 면은 paint 알파로 투명하게, 테두리는 그 위에 불투명하게 얹는다.
       const fillPaint = Skia.Paint();
       fillPaint.setAlphaf(OVERLAY_ALPHA);
+
+      /*
+        기울기를 되돌려 분할했으면 그리기도 그만큼 되돌려야 한다 — 잘라낼 때 -rotation이었으므로
+        여기서는 +rotation이다. 이 한 줄이 빠지면 분석은 정확한데 색칠만 각도만큼 밀려서,
+        사용자 눈에는 "모델이 엉뚱한 곳을 짚었다"로 보인다.
+      */
+      const rotation = region?.rotation ?? 0;
+      if (rotation) {
+        canvas.save();
+        canvas.rotate(
+          (rotation * 180) / Math.PI,
+          maskDest.x + maskDest.width / 2,
+          maskDest.y + maskDest.height / 2,
+        );
+      }
       canvas.drawImageRect(fill.image, maskSrc, maskDest, fillPaint);
       canvas.drawImageRect(line.image, maskSrc, maskDest, Skia.Paint());
+      if (rotation) canvas.restore();
       surface.flush();
 
       snapshot = surface.makeImageSnapshot();

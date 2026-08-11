@@ -30,13 +30,23 @@ function blobPath(cx, cy, baseR, jitter, n, rng) {
   return d + 'Z';
 }
 
-export default function LesionThumb({ photo, areaPct = 10, seed = 1, mode = 'photo', size = 64, style }) {
+/**
+ * @param overlay 분석이 실제로 합성해 둔 병변 오버레이 이미지 ({ uri }). 실촬영 기록에만 있다.
+ *
+ * 있으면 **그 이미지를 그대로 보여준다** — 촬영 직후 결과 화면(ExamResultScreen의 PhotoPair)이
+ * 보여주는 바로 그 그림이다. 반투명한 색 면과 흰 테두리로 병변의 실제 모양이 담겨 있다.
+ *
+ * 없으면 예전처럼 흰 점선 윤곽을 그린다. 그건 **넓이 값으로 크기만 흉내 낸 도형**이라 실제 병변
+ * 모양이 아니다 — 시계열이 dump인 데모 폴더를 위해 남겨 둔 길이고, 실제 분석 기록에는 쓰이지
+ * 않아야 한다. 같은 자리에 하나는 측정 결과를, 하나는 지어낸 그림을 놓으면 사용자는 구분할 수 없다.
+ */
+export default function LesionThumb({ photo, overlay = null, areaPct = 10, seed = 1, mode = 'photo', size = 64, style }) {
+  const real = mode === 'overlay' && overlay ? overlay : null;
+  const source = real ?? photo;
   return (
     <View style={[{ width: size, height: size, borderRadius: 10, overflow: 'hidden', backgroundColor: mc.bg }, style]}>
-      {photo && <Image source={photo} style={{ width: '100%', height: '100%' }} resizeMode="cover" />}
-      {mode === 'overlay' && (
-        <OverlayOutline areaPct={areaPct} seed={seed} />
-      )}
+      {source && <Image source={source} style={{ width: '100%', height: '100%' }} resizeMode="cover" />}
+      {mode === 'overlay' && !real && <OverlayOutline areaPct={areaPct} seed={seed} />}
     </View>
   );
 }

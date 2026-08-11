@@ -31,6 +31,7 @@ import {
 import {
   AreaRejectCode,
   Baseline,
+  CapturePath,
   ColorNormalization,
   FrameEvaluation,
   MonitorSession,
@@ -39,12 +40,97 @@ import {
 } from '../monitoring/types';
 import { DUMP_RESULTS, makeDumpBaseline, makeDumpConfidence } from '../exam/dumpAnalysis';
 
-/** 필수 조건이 충족된 뒤, 더 나은 프레임을 노리며 기다리는 시간 */
-const BEST_FRAME_WINDOW_MS = 1200;
-/** 그 사이에 최대 몇 장까지 후보로 담을지 */
-const MAX_CANDIDATES = 3;
-/** 프리뷰 판정 주기 */
-const TICK_MS = 900;
+/**
+ * 자동 셔터의 목표 점수 — 기다린 시간에 따라 내려간다.
+ *
+ * 고정 하한(0.7) 하나만 두면 그 값을 못 넘기는 환경에서 셔터가 **영영 열리지 않는다.** 조명이
+ * 어둡거나 손이 계속 흔들리는 자리에서 실제로 그랬고, 사용자 눈에는 앱이 고장 난 것으로 보인다.
+ *
+ * 그래서 "얼마나 좋아야 하는가"를 시간의 함수로 둔다. 처음에는 좋은 장면을 노리다가, 그런
+ * 장면이 오지 않으면 기대를 낮추고, 끝에는 **지금까지 본 것 중 가장 나은 한 장**을 그냥 찍는다.
+ * 마지막 칸의 목표가 0이라는 것이 이 표의 핵심이다 — 자동 촬영은 반드시 끝난다.
+ *
+ * 대신 그렇게 찍힌 사진은 'fallback'으로 표시되어 신뢰도에서 그 사실을 말한다(scoreConfidence).
+ * 막지 않기로 한 이상, 낮은 품질은 숨기는 것이 아니라 기록하는 쪽이 옳다.
+ */
+const SHUTTER_TARGETS: readonly { until: number; target: number }[] = [
+  { until: 4000, target: GATE.autoShutterSoftScore }, // 0.70 — 좋은 장면을 노린다
+  { until: 7000, target: 0.55 },
+  { until: 10000, target: 0.4 },
+  { until: Infinity, target: 0 }, // 그때까지 중 최선을 채택 (capturePath='fallback')
+];
+
+/**
+ * 화면에 부위가 들어온 뒤 자동 촬영을 아예 하지 않는 시간.
+ *
+ * 사용자가 카메라를 부위에 **갖다 대는 동작 자체**에 시간이 걸린다. 그 사이에도 피부는 이미
+ * 화면에 들어와 있으므로, 조건만 보면 찍을 수 있는 프레임이 나온다 — 그리고 실제로 그렇게
+ * 찍혔다. 사용자가 "여기를 찍겠다"고 자리를 잡기도 전에 촬영이 끝나 버리면, 자동 촬영이
+ * 빠른 것이 아니라 **틀린 곳을 찍는 것**이다.
+ *
+ * 조건으로는 이 시간을 대신할 수 없다. 갖다 대는 도중에도 초점이 맞고 피부가 가득한 순간은
+ * 얼마든지 있기 때문이다. 오직 시간만이 "아직 자리를 잡는 중"을 표현할 수 있다.
+ */
+const SETTLE_MS = 1800;
+/**
+ * 이 시간이 지나면 정지·초점 조건을 내려놓고 그때까지 중 최선을 찍는다.
+ *
+ * 아래 두 조건(멈췄는가·초점이 잡혔는가)은 자동 촬영을 다시 막을 수 있는 힘을 가진다.
+ * 그래서 반드시 끝나는 지점이 함께 있어야 한다 — 이 값이 없으면 손떨림이 심한 사용자나
+ * 초점이 잘 안 잡히는 환경에서 예전처럼 영영 안 찍히는 상태로 돌아간다.
+ */
+const AUTO_DEADLINE_MS = 10000;
+/**
+ * 후보로 담기 위한 최소 정지도.
+ *
+ * 정지를 점수로만 두었더니 **움직이는 중에 찍히는** 문제가 생겼다. 점수는 "그중 어느 것이
+ * 나은가"는 말해도 "이건 아직 찍을 때가 아니다"는 말하지 못한다 — 움직이는 프레임만 있는
+ * 구간에서는 움직이는 프레임이 이긴다. 그래서 담는 단계로 되돌린다.
+ *
+ * 0.95가 아니라 0.93인 것은 틱 주기가 900ms에서 450ms로 줄었기 때문이다. 비교 간격이 절반이면
+ * 같은 손동작에도 상관도가 올라가므로, 같은 엄격도를 유지하려면 오히려 값을 낮춰야 한다.
+ */
+const CANDIDATE_STABILITY = 0.93;
+/**
+ * 이 아래로 떨어지면 **다른 장면으로 옮겨 가는 중**이라고 본다 (frameQuality의 STABILITY_FLOOR와 같은 값).
+ *
+ * 잔떨림과 자리 이동을 갈라야 하는 이유: 팔을 2초쯤 대고 있다가 다리로 옮기면, 그 사이 프레임은
+ * 후보로 담기지 않지만 **팔에서 담아 둔 후보가 버퍼에 그대로 남아 있다.** 다리에서 멈추는
+ * 순간 그중 하나가 최고점으로 뽑히면, 사용자는 다리를 겨누고 있는데 팔 사진이 찍힌다.
+ * 그래서 이 선 아래로 떨어지면 모은 후보를 버리고 자리 잡는 시간도 처음부터 다시 준다.
+ */
+const SCENE_CHANGED_STABILITY = 0.8;
+/**
+ * 초점이 다 잡혔는지 — 이번 프레임의 선명도가 **이 구간에서 본 최고치**의 몇 배 이상인가.
+ *
+ * 절대 임계값(GATE.focusMin)으로는 이걸 판정할 수 없다. 그 값이 아직 캘리브레이션 전이라
+ * 오토포커스가 도는 중의 흐릿한 프레임도 가볍게 넘기기 때문이다. 반면 "지금 이 장면에서
+ * 도달했던 최고 선명도"는 기기·피사체·조명과 무관하게 항상 옳은 기준이다 — 초점이 맞았을 때
+ * 어떤 값이 나오는지를 그 자리에서 직접 관측한 것이라서다.
+ *
+ * SETTLE_MS 동안 최고치가 먼저 쌓이고, 그 뒤부터 이 조건이 실제로 작동한다. 순서가 중요하다:
+ * 최고치를 모으기 전에 이 조건을 걸면 첫 흐릿한 프레임이 스스로 기준이 되어 늘 통과한다.
+ */
+const FOCUS_SETTLED_RATIO = 0.8;
+/**
+ * 넓이를 재는 자리에서 자동 촬영이 넓이 자격에 붙들려 있을 때, 이만큼 지나면 화면에 말한다.
+ *
+ * 이 안내가 없으면 안 된다. 넓이 자격은 **마감(AUTO_DEADLINE_MS)이 지나도 풀리지 않는** 유일한
+ * 조건이라, 얼굴이 제대로 안 담기면 자동 촬영이 정말로 영영 열리지 않는다. 그 상태에서 화면이
+ * 아무 말도 하지 않으면 사용자는 앱이 고장 났다고 판단한다 — 실제로는 "얼굴을 더 담으면 넓이까지
+ * 기록되고, 지금 이대로 찍고 싶으면 버튼을 누르면 된다"는 두 갈래가 다 열려 있는데도.
+ */
+const AREA_HINT_AFTER_MS = 4000;
+/** 채택 후보로 들고 있는 최근 프레임 수 — 가장 좋은 한 장을 고르기 위한 창 */
+const MAX_CANDIDATES = 5;
+/**
+ * 프리뷰 판정 주기.
+ *
+ * 900ms에서 내렸다. 정지 판정(stability)이 **직전 틱과의 비교**라 이 주기가 곧 비교 간격인데,
+ * 0.9초 동안 근접 촬영에서 손이 가만히 있기를 기대하는 것은 무리였다 — 같은 손떨림이라도
+ * 간격이 절반이면 상관도가 크게 올라간다. 덤으로 화면 반응과 촬영까지 걸리는 시간도 절반이 된다.
+ */
+const TICK_MS = 450;
 /**
  * 판정용 한 컷을 이만큼 기다려도 안 오면 그 판은 포기한다.
  *
@@ -141,23 +227,40 @@ const UNMEASURED_CONFIDENCE: SessionConfidence = {
 };
 
 /**
- * 촬영 단계 — 가이드에 "대충" 맞으면 자동으로 찍고, 나머지는 후처리가 흡수한다.
+ * 촬영 단계 — **자동 셔터는 반드시 열린다.** 조건은 "찍을지"가 아니라 "언제 찍을지"만 정한다.
  *
- * 필수 조건은 셋뿐이고 사용자 동작과 1:1로 대응한다 — 피부(가까이/멀리) · 초점(잠깐 멈추기) ·
- * 노출(각도 살짝). 셋이 모두 충족되면 셔터가 열리고, 그 순간부터 짧은 창(BEST_FRAME_WINDOW_MS)
- * 동안 후보 프레임을 모아 권장 점수가 가장 높은 장면을 채택한다.
+ * 예전에는 품질 셋(피부·초점·노출)과 정렬 넷이 **한 순간에 동시에** 참이어야 셔터가 열렸다.
+ * 하나하나는 타당한 조건이었지만 곱이 문제였다 — 각각 80%씩 통과해도 아홉 개면 한 틱당 13%이고,
+ * 그 위에 권장 점수 하한이 하나 더 있었다. 실기기에서 자동 촬영이 사실상 되지 않은 원인은
+ * 임계값이 아니라 이 구조였다.
  *
- * 초점 게이트에는 "정지했는가"가 함께 들어 있다. 밝은 곳에서는 흔들리는 손도 또렷하게 찍히므로
- * 한 장의 선명도만으로는 움직임을 걸러낼 수 없어, 직전 틱 프레임과의 상관도를 함께 본다.
+ * 지금 구조는 이렇다:
  *
- * 거리·각도를 지난번과 맞추라는 요구는 없앴다 — 면적 측정을 걷어내면서 필요가 사라졌다.
- * 구도(병변 위치·크기) 게이트도 없앴다 — 병변이 없는 정상 피부는 통과할 수 없고, 병변이
- * 작아지면(호전) 오히려 게이트에 걸리는 기준이었다.
- * 조명 차이는 후처리(computeColorNormalization)가 게인으로 흡수하고, 증상이 여러 곳에
- * 흩어진 경우도 analyzeLocal이 덩어리별로 나눠 보므로 사용자에게 시키지 않는다.
+ *   · 막는 것 — SAFETY 셋뿐이다(피부 20% · 렌즈 가림 · 암흑). "피부 사진이 아닌 것"만 걸러낸다.
+ *   · 기다리는 것 — 자리를 잡을 틈(SETTLE_MS) 동안은 아무리 좋은 프레임이 와도 찍지 않고,
+ *     그 뒤로도 **멈췄고 초점이 잡힌** 프레임만 후보로 담는다. 이 둘은 점수로 대신할 수 없다 —
+ *     점수는 "어느 것이 나은가"만 말하지 "아직 때가 아니다"를 말하지 못해서, 움직이는 프레임만
+ *     있는 구간에서는 움직이는 프레임이 이겨 버린다(실제로 그렇게 찍혔다).
+ *   · 고르는 것 — 담긴 후보 중 가장 좋은 한 장을 채택한다.
+ *   · 언제 — 목표 점수가 시간에 따라 내려간다(SHUTTER_TARGETS). AUTO_DEADLINE_MS가 지나면
+ *     정지·초점 조건까지 내려놓고 그때까지 중 최선을 찍는다.
  *
- * 자동 셔터를 기다리지 않고 직접 찍을 수도 있다(수동 셔터). 필수 조건을 못 넘긴 프레임은
- * scoreConfidence가 신뢰도 상한을 씌우므로, 품질이 낮은 기록이 추세를 흔들지는 않는다.
+ * 예외가 하나 있다. **넓이를 재는 자리(얼굴)에서는 넓이까지 기록될 프레임만 자동으로 찍고,
+ * 이 조건은 시간이 지나도 풀리지 않는다.** 다른 조건들과 성격이 다르기 때문이다 — 흔들림이나
+ * 초점은 "조금 나쁜 사진"을 만들 뿐이지만, 얼굴이 덜 담긴 사진은 넓이 추이에서 통째로 빠진다.
+ * 넓이를 보려고 얼굴을 등록한 사용자에게 "찍히긴 했는데 넓이는 없다"를 반복해 주는 것은
+ * 자동 촬영이 제 일을 못 한 것이다. 그래서 그 자리에서는 자동 촬영이 끝나지 않을 수 있고,
+ * 그렇기 때문에 붙들려 있다는 사실을 화면이 말한다(AREA_HINT_AFTER_MS) — 수동 셔터는 늘 열려 있다.
+ *
+ * 정렬(얼굴 가이드)도 셔터를 막지 않는다. 배율·위치·기울기는 넓이를 d·v로 나누는 순간 계산에서
+ * 사라지므로 애초에 측정의 자격이 아니었고(evaluateAreaEligibility의 같은 주석), 기울기는 이제
+ * 분석 단계에서 되돌린다(extractNormalizedRGB의 rotation). 가이드 도형은 유도용으로 남는다 —
+ * 맞추면 더 좋은 사진이 되지만, 안 맞아도 찍힌다.
+ *
+ * 막던 것을 점수로 바꾼 대가는 신뢰도에서 치른다. 낮은 품질로 찍혔다는 사실, 목표에 못 미친 채
+ * 시간이 다 되어 찍혔다는 사실이 전부 기록에 남는다(scoreConfidence의 capturePath).
+ * 피부가 적게 담긴 사진은 분류 입력을 피부 쪽으로 좁혀(skinCropOf) 촬영이 아니라 후처리에서
+ * 해결하고, 조명 차이는 게인으로 흡수한다(computeColorNormalization).
  *
  * 갤러리에서 고르는 길은 앞 단계(CaptureSourceScreen)에서 갈라진다. source='album'으로 들어오면
  * 카메라를 아예 켜지 않고 앨범만 연다 — 고를 사진에는 가이드가 낄 자리가 없기 때문이다.
@@ -201,6 +304,13 @@ export default function MonitorCaptureScreen({
   const [armed, setArmed] = useState(false);
   /** 판정 루프가 계속 실패할 때 그 사실을 화면에 드러낸다 — 조용히 멈춰 있는 것이 제일 나쁘다 */
   const [liveError, setLiveError] = useState<string | null>(null);
+  /**
+   * 넓이 자격 때문에 자동 촬영이 한동안 열리지 않고 있는지.
+   *
+   * 이 조건은 시간이 지나도 풀리지 않으므로, 사용자에게 지금 무엇이 필요한지와
+   * 그냥 찍는 길이 있다는 것을 함께 알려야 한다.
+   */
+  const [areaHeld, setAreaHeld] = useState(false);
   const missStreak = useRef(0);
   /** 직전 틱 프레임의 지문 — 화면이 멈췄는지는 프레임 사이에만 있는 정보라 여기 들고 있어야 한다 */
   const prevSig = useRef<Float32Array | null>(null);
@@ -238,6 +348,10 @@ export default function MonitorCaptureScreen({
   const cameraRef = useRef<CameraView>(null);
   const candidates = useRef<Candidate[]>([]);
   const windowStart = useRef<number | null>(null);
+  /** 지금 구간에서 도달한 최고 선명도 — 초점이 아직 오르는 중인지 판정하는 기준 (FOCUS_SETTLED_RATIO) */
+  const bestSharpness = useRef(0);
+  /** 넓이 자격 때문에 자동 촬영이 붙들리기 시작한 시각 — 오래 끌면 화면에 알린다 */
+  const areaBlockedSince = useRef<number | null>(null);
   const busy = useRef(false);
   const cancelled = useRef(false);
   const { addSession } = useMonitoring();
@@ -276,7 +390,19 @@ export default function MonitorCaptureScreen({
    * 촬영을 마친 뒤에 흐름이 막히는 일이 없어야 하기 때문이다.
    */
   const finalize = useCallback(
-    (chosen: Candidate) => {
+    (
+      chosen: Candidate,
+      capturePath: CapturePath,
+      /**
+       * 넓이 자격을 판정할 때 쓸 판정 결과 — 방향을 바로잡은 이미지에서 다시 잰 것이다.
+       *
+       * 품질 점수(chosen.evaluation)와 갈라 두는 이유: 그쪽은 여러 후보 중 이 한 장을 고른
+       * 근거이고 정지도(직전 프레임과의 비교)를 담고 있어서, 한 장만 다시 재면 그 정보가
+       * 사라진다. 반대로 넓이 자격은 **좌표가 맞는 이미지**에서 재야만 의미가 있다.
+       * 없으면 예전처럼 촬영 프레임의 판정을 그대로 쓴다.
+       */
+      areaEval?: FrameEvaluation,
+    ) => {
       const sessionId = newId('sess');
       // 조명 보정 게인 — 사진은 그대로 두고, 분석 모델에 넣을 때만 적용한다
       const colorNorm: ColorNormalization = chosen.evaluation
@@ -286,15 +412,15 @@ export default function MonitorCaptureScreen({
       const confidence = DUMP_RESULTS
         ? makeDumpConfidence(sessionId)
         : chosen.evaluation
-          ? scoreConfidence(chosen.evaluation, colorNorm, baseline)
+          ? scoreConfidence(chosen.evaluation, colorNorm, baseline, capturePath)
           : UNMEASURED_CONFIDENCE;
 
       /*
         넓이를 회차 간 비교해도 되는 촬영인지는 여기서 확정한다 — 정렬·조명은 촬영 시점의
         정보라 나중에 사진만 보고는 알 수 없다. 넓이를 재는 자리가 아니면 아예 판단하지 않는다.
       */
-      const areaEligible =
-        scaleKind && chosen.evaluation ? evaluateAreaEligibility(chosen.evaluation, baseline) : undefined;
+      const forArea = areaEval ?? chosen.evaluation;
+      const areaEligible = scaleKind && forArea ? evaluateAreaEligibility(forArea, baseline) : undefined;
 
       const created: MonitorSession = {
         id: sessionId,
@@ -305,6 +431,7 @@ export default function MonitorCaptureScreen({
         processedUri: chosen.uri,
         confidence,
         softScore: chosen.evaluation?.softScore ?? 0,
+        capturePath,
         colorNorm,
         scale: chosen.scale ?? undefined,
         areaEligible,
@@ -318,6 +445,16 @@ export default function MonitorCaptureScreen({
             ? baselineFromCapture(sessionId, chosen.uri, chosen.evaluation.metrics, {
                 scale: chosen.scale,
                 facing: scaleKind ? facing : undefined,
+                // 이 사진에 부위가 담긴 정도 — 다음 회차가 맞춰야 할 구도의 기준이 된다
+                covered: areaEligible?.covered,
+                /*
+                  이 사진의 촬영 배율 — 몸통에서 다음 회차가 맞춰야 할 거리의 기준이다.
+                  넓이 자격 판정과 같은 프레임에서 재야 하므로 forArea의 frameSize를 쓴다.
+                */
+                sOfMinSide:
+                  chosen.scale && forArea && forArea.frameSize.width > 0
+                    ? chosen.scale.s / Math.min(forArea.frameSize.width, forArea.frameSize.height)
+                    : undefined,
               })
             : undefined,
       );
@@ -355,7 +492,7 @@ export default function MonitorCaptureScreen({
           setMeasureError(humanError(e, '품질을 재지 못했어요'));
         }
       }
-      finalize({ uri, evaluation, scale });
+      finalize({ uri, evaluation, scale }, src === 'album' ? 'album' : 'manual');
     },
     [baseline, scaleKind, finalize],
   );
@@ -416,7 +553,10 @@ export default function MonitorCaptureScreen({
     // 카메라를 바꾸면 이전 카메라로 모아 둔 후보는 버린다
     candidates.current = [];
     windowStart.current = null;
+    bestSharpness.current = 0;
+    areaBlockedSince.current = null;
     missStreak.current = 0;
+    setAreaHeld(false);
     prevSig.current = null;
     setArmed(false);
     setLiveError(null);
@@ -425,12 +565,18 @@ export default function MonitorCaptureScreen({
       if (busy.current || cancelled.current) return;
       busy.current = true;
       try {
-        // 필수 조건을 이미 통과한 상태에서는 그대로 채택할 수 있도록 화질을 올려 찍는다
-        const armed = windowStart.current != null;
         const camera = cameraRef.current;
         if (!camera) return;
+        /*
+          판정 프레임을 항상 기록용 화질로 찍는다.
+
+          예전에는 조건을 통과하기 전까지 0.4로 찍다가 통과한 뒤에만 0.85로 올렸다 — 채택될 수
+          있는 프레임이 그때부터였기 때문이다. 지금은 **safe인 프레임이면 무엇이든 채택될 수
+          있으므로** 그 구분이 성립하지 않는다. 낮은 화질로 찍은 판정용 프레임이 그대로 기록
+          사진이 되는 일만은 없어야 한다.
+        */
         const photo = await withTimeout(
-          camera.takePictureAsync({ quality: armed ? 0.85 : 0.4, skipProcessing: true, shutterSound: false }),
+          camera.takePictureAsync({ quality: 0.85, skipProcessing: true, shutterSound: false }),
           FRAME_TIMEOUT_MS,
           '카메라',
         );
@@ -459,37 +605,146 @@ export default function MonitorCaptureScreen({
         if (!prev) return;
 
         /*
-          넓이를 재는 자리에서는 정렬까지 맞아야 셔터가 열린다. 어긋난 채로 자동 촬영이 나가면
-          그 사진의 넓이는 추세에서 빠지는데, 사용자는 앱이 알아서 잘 찍었다고 믿게 된다.
+          화면의 초록 표시. **셔터가 열렸다는 뜻이 아니다** — 셔터는 safe이기만 하면 이미 열려
+          있다. 이건 "지금 찍으면 좋은 사진"이라는 표시라, 품질과 정렬을 모두 본다. 사용자가
+          자세를 맞추는 데 쓰는 신호는 여전히 필요하고, 다만 그것이 촬영의 전제조건은 아니다.
         */
-        const ready = evaluation.hardPass && (evaluation.align?.ok ?? true);
-
-        if (ready) {
+        const good = evaluation.hardPass && (evaluation.align?.ok ?? true);
+        if (good) {
           missStreak.current = 0;
           setArmed(true);
         } else if (++missStreak.current >= 2) {
           setArmed(false);
         }
 
-        if (ready && evaluation.softScore >= GATE.autoShutterSoftScore) {
-          if (windowStart.current == null) windowStart.current = Date.now();
-          candidates.current.push({ uri: photo.uri, evaluation, scale: measured.scale });
+        /*
+          촬영할 수 없는 프레임이면 여태 모은 것을 버리고 시계도 되돌린다.
+
+          시계를 되돌리는 것이 중요하다. 목표 점수는 기다린 시간에 따라 내려가는데, 그 시간이
+          **찍을 수 있는 상태로 버틴 시간**이 아니라 화면에 들어온 뒤의 절대 시간이면 이런 일이
+          생긴다: 카메라를 켠 채 10초 동안 딴 데를 보다가 피부에 갖다 대는 순간, 목표는 이미
+          0으로 내려가 있어서 **첫 프레임이 그대로 찍힌다.** 사용자는 자세를 잡을 새도 없었는데
+          앱은 "충분히 기다렸다"고 판단한 것이다. 모아 둔 후보도 다른 장면이라 쓸 수 없다.
+        */
+        if (!evaluation.safe) {
+          candidates.current = [];
+          windowStart.current = null;
+          bestSharpness.current = 0;
+          areaBlockedSince.current = null;
+          setAreaHeld(false);
+          return;
+        }
+        // 다른 자리로 옮겨 가는 중이면 여태 모은 것은 **다른 부위의 사진**이라 쓸 수 없다.
+        // 초점 기준도 그 자리의 것이므로 함께 버리고, 자리 잡는 시간을 처음부터 다시 준다.
+        if (evaluation.stability < SCENE_CHANGED_STABILITY) {
+          candidates.current = [];
+          windowStart.current = null;
+          bestSharpness.current = 0;
+          return;
         }
 
-        const started = windowStart.current;
-        if (started == null || candidates.current.length === 0) return;
+        if (windowStart.current == null) windowStart.current = Date.now();
+        // 이 구간에서 도달한 최고 선명도 — 초점이 다 잡혔는지를 재는 자기 자신의 기준이 된다
+        bestSharpness.current = Math.max(bestSharpness.current, evaluation.metrics.sharpness);
+
+        const elapsed = Date.now() - windowStart.current;
+        const pastDeadline = elapsed >= AUTO_DEADLINE_MS;
+
+        /*
+          아직 찍을 때가 아닌 프레임은 후보로도 담지 않는다.
+
+          점수만으로는 이걸 표현할 수 없다 — 움직이는 프레임밖에 없는 구간에서는 움직이는
+          프레임이 이기고, 그게 그대로 채택된다. "부위에 갖다 대는 중"과 "초점이 도는 중"은
+          더 나은 후보를 고를 문제가 아니라 **아직 기다릴 문제**다.
+
+          다만 이 둘은 자동 촬영을 다시 막을 수 있으므로, 마감 뒤에는 내려놓는다.
+        */
+        const still = evaluation.stability >= CANDIDATE_STABILITY;
+        const focusSettled = evaluation.metrics.sharpness >= bestSharpness.current * FOCUS_SETTLED_RATIO;
+        if (!pastDeadline && !(still && focusSettled)) return;
+
+        /*
+          넓이를 재는 자리(지금은 얼굴)에서는 **넓이까지 기록될 프레임만** 자동으로 찍는다.
+
+          이 조건만은 마감이 지나도 풀리지 않는다. 다른 조건들과 성격이 다르기 때문이다 —
+          흔들림이나 초점은 "조금 나쁜 사진"을 만들 뿐이라 그럴 바엔 찍는 게 낫지만, 얼굴이
+          덜 담긴 사진은 **넓이 추이에서 통째로 빠진다.** 넓이를 보려고 얼굴을 등록한 사용자에게
+          "찍히긴 했는데 넓이는 없다"를 반복해서 주는 것은 자동 촬영이 일을 안 한 것이다.
+
+          대신 두 가지를 반드시 함께 둔다: 수동 셔터는 언제나 열려 있고, 이 조건에 붙들려 있다는
+          사실을 화면이 말한다(AREA_HINT_AFTER_MS). 그러지 않으면 조용히 멈춘 앱이 된다.
+
+          ⚠️ 여기서 보는 프레임은 EXIF 방향이 반영되기 전이라, 최종 판정(방향을 바로잡은 뒤 다시
+             재는 것)과 covered가 조금 다를 수 있다. 이건 어디까지나 **미리보기 판정**이고,
+             기록에 남는 자격은 finalize가 정한다.
+        */
+        const areaReady =
+          !scaleKind || evaluateAreaEligibility(evaluation, baseline, { quiet: true }).ok;
+        if (!areaReady) {
+          if (areaBlockedSince.current == null) areaBlockedSince.current = Date.now();
+          if (Date.now() - areaBlockedSince.current >= AREA_HINT_AFTER_MS) setAreaHeld(true);
+          return;
+        }
+        areaBlockedSince.current = null;
+        setAreaHeld(false);
+
+        candidates.current.push({ uri: photo.uri, evaluation, scale: measured.scale });
+        // 최근 것만 들고 있는다 — 오래된 프레임은 지금 사용자가 잡고 있는 자세와 다르다
+        if (candidates.current.length > MAX_CANDIDATES) candidates.current.shift();
+
+        // 자리를 잡을 틈. 이 시간 안에는 아무리 좋은 프레임이 와도 찍지 않는다 —
+        // 갖다 대는 도중에도 좋은 프레임은 나오고, 그건 사용자가 겨냥한 자리가 아니다.
+        if (elapsed < SETTLE_MS) return;
+
+        const target = SHUTTER_TARGETS.find((t) => elapsed < t.until)?.target ?? 0;
 
         const softOf = (c: Candidate) => c.evaluation?.softScore ?? 0;
         const best = candidates.current.reduce((a, b) => (softOf(b) > softOf(a) ? b : a));
-        const windowOver = Date.now() - started >= BEST_FRAME_WINDOW_MS;
-        if (softOf(best) >= GATE.excellentSoftScore || windowOver || candidates.current.length >= MAX_CANDIDATES) {
-          cancelled.current = true;
-          setSource('camera');
-          setPhase('processing');
-          // 판정 프레임은 skipProcessing으로 찍어 EXIF 방향이 반영돼 있지 않다.
-          // 채택이 확정된 이 한 장만 바로잡는다 (매 프레임 하면 너무 비싸다).
-          finalize({ ...best, uri: await normalizeOrientation(best.uri) });
+        // 아주 좋은 장면은 목표와 무관하게 즉시 확정한다 — 더 기다려서 나아질 것이 없다
+        const excellent = softOf(best) >= GATE.excellentSoftScore;
+        if (!excellent && softOf(best) < target) return;
+
+        cancelled.current = true;
+        setSource('camera');
+        setPhase('processing');
+        // 판정 프레임은 skipProcessing으로 찍어 EXIF 방향이 반영돼 있지 않다.
+        // 채택이 확정된 이 한 장만 바로잡는다 (매 프레임 하면 너무 비싸다).
+        const uri = await normalizeOrientation(best.uri);
+
+        /*
+          방향을 바로잡은 **뒤에** 자를 다시 찾는다.
+
+          판정 루프가 보는 프레임은 EXIF 방향이 픽셀에 반영되기 전이라, 세로로 든 폰에서는
+          가로로 누워 있다(Skia는 EXIF를 적용하지 않는다). 그 상태에서 찾은 얼굴 좌표를 방향이
+          바로잡힌 사진에 그대로 쓰면 **ROI가 90° 어긋난 자리에 놓인다** — 분석은 얼굴이 아닌
+          곳을 잘라 보고, 넓이 자격도 엉뚱한 프레임 크기로 판정된다. 수동 촬영 경로가 멀쩡했던
+          것은 그쪽이 방향을 먼저 바로잡고 재기 때문이다(commitPhoto). 이제 두 경로가 같아진다.
+
+          다시 재지 못하면 예전 값을 그대로 쓴다 — 좌표가 어긋날 수는 있어도, 여기서 실패로
+          되돌리면 방금 찍은 사진이 통째로 사라진다.
+        */
+        let scale = best.scale;
+        let areaEval: FrameEvaluation | undefined;
+        if (scaleKind) {
+          try {
+            const aligned = await withSkImage(uri, (img) => analyzeFrame(img, scaleKind, baseline));
+            scale = aligned.scale;
+            areaEval = aligned.evaluation;
+          } catch (e: any) {
+            console.warn('[capture] 방향 보정 뒤 자를 다시 찾지 못했어요', e?.message ?? e);
+          }
         }
+
+        /*
+          'fallback'은 **채택된 사진이 원래 노리던 품질에 못 미친다**는 뜻이다. 경과 시간으로
+          가르지 않는다 — 8초쯤 걸렸어도 마지막에 좋은 장면이 잡혔다면 그건 정상 촬영이고,
+          그 사진에 낮은 신뢰도를 씌우면 기록이 사실과 달라진다.
+        */
+        finalize(
+          { ...best, uri, scale },
+          softOf(best) < GATE.autoShutterSoftScore ? 'fallback' : 'auto',
+          areaEval,
+        );
       } catch (e: any) {
         // 한 프레임 실패는 다음 주기에 다시 시도하지만, 조용히 삼키지는 않는다.
         // 예전에는 여기서 통째로 삼켜서 — Skia 서피스 고갈처럼 계속 실패하는 상황일 때
@@ -514,8 +769,11 @@ export default function MonitorCaptureScreen({
     setMode('camera');
     candidates.current = [];
     windowStart.current = null;
+    bestSharpness.current = 0;
+    areaBlockedSince.current = null;
     cancelled.current = false;
     missStreak.current = 0;
+    setAreaHeld(false);
     prevSig.current = null;
     setArmed(false);
     setLiveError(null);
@@ -542,6 +800,7 @@ export default function MonitorCaptureScreen({
     return (
       <ReviewView
         target={target}
+        scaleKind={scaleKind}
         session={session}
         error={error}
         source={source}
@@ -638,10 +897,19 @@ export default function MonitorCaptureScreen({
           매 틱 바뀌던 판정 안내는 소리로 옮겼다(useCaptureVoice). 여기는 촬영 내내 그대로인
           한 줄만 남긴다 — 계속 바뀌는 글은 카메라를 대고 있는 자세에서 어차피 읽히지 않는다.
         */}
-        <Text style={styles.hint}>
-          {scaleKind === 'face'
-            ? '가이드에 얼굴을 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
-            : '가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요'}
+        {/*
+          넓이 자격에 붙들려 있으면 그 사실을 여기서 말한다 — 이 조건은 기다린다고 풀리지 않으므로
+          **무엇을 하면 되는지**와 **그냥 찍는 길**을 함께 줘야 한다. 둘 중 하나만 주면,
+          사용자는 영영 안 찍히는 화면 앞에서 기다리거나 넓이를 포기하게 된다.
+        */}
+        <Text style={[styles.hint, areaHeld && styles.hintHeld]}>
+          {areaHeld
+            ? `${scaleKind === 'face' ? '얼굴' : '양 어깨'}가 더 담겨야 넓이까지 기록돼요 — 조금 더 멀리서 잡거나, 아래 버튼을 눌러 그냥 찍어도 돼요`
+            : scaleKind === 'face'
+              ? '가이드에 얼굴을 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
+              : scaleKind === 'torso'
+                ? '양 어깨가 들어오게 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
+                : '가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요'}
         </Text>
 
         <Pressable style={styles.closeBtn} onPress={onCancel}>
@@ -672,10 +940,14 @@ export default function MonitorCaptureScreen({
       </View>
 
       <View style={styles.bottomBar}>
+        {/*
+          "조건이 맞으면 찍힌다"고 더 이상 말하지 않는다 — 사실이 아니게 됐고, 그 말은 사용자를
+          기다리게 만든다. 지금 하는 일은 좋은 순간을 고르는 것뿐이라 그렇게만 말한다.
+        */}
         <Text style={styles.bottomHint}>
           {armed
-            ? '조건이 맞았어요 — 가장 좋은 순간을 골라 자동으로 찍는 중'
-            : '조건이 맞으면 자동으로 찍혀요. 가운데 버튼을 눌러 직접 찍어도 돼요'}
+            ? '좋은 상태예요 — 잠깐 그대로 멈춰주세요'
+            : '부위에 대고 잠깐 멈추면 자동으로 찍혀요. 직접 눌러도 돼요'}
         </Text>
         <View style={styles.bottomRow}>
           <Pressable
@@ -695,8 +967,10 @@ export default function MonitorCaptureScreen({
             onPress={shootNow}
             disabled={!cameraReady}
           >
+            {/* 이 버튼이 하는 일은 늘 같다(직접 촬영) — 초록 테두리가 "지금 상태가 좋다"를 말한다.
+                예전의 '자동 촬영' 문구는 버튼이 모드를 바꾸는 것처럼 읽혀서 걷어냈다. */}
             <Text style={[styles.shutterText, armed && styles.shutterTextArmed]}>
-              {!cameraReady ? '준비 중' : armed ? '자동 촬영' : '촬영'}
+              {!cameraReady ? '준비 중' : '촬영'}
             </Text>
           </Pressable>
           {/* 오른쪽은 비워 둔다 — 셔터가 화면 가운데에 오도록 (앨범 버튼이 있던 자리) */}
@@ -733,17 +1007,41 @@ function GateBar({ label, value, ok }: { label: string; value?: number; ok?: boo
  * **고칠 수 있는 것만 말한다.** 이유마다 손쓸 방법이 전혀 다른데 한 문장으로 뭉뚱그리면,
  * 사용자는 될 리 없는 일을 몇 번씩 반복하게 된다. (null이면 위 두 줄로 충분한 경우다)
  */
-const AREA_ADVICE: Record<AreaRejectCode, string | null> = {
+const AREA_ADVICE_FACE: Record<AreaRejectCode, string | null> = {
   noFace: '얼굴이 사진에 작게 나왔거나 다른 사람이 함께 찍혔으면 얼굴이 크게 나오도록 다시 찍어주세요.',
-  resolution: '얼굴이 더 크게 나오도록 가까이서 찍어주세요 — 화질이 모자라면 경계가 뭉개집니다.',
-  cropped: '얼굴 전체가 화면 안에 들어와야 해요 — 턱이나 이마가 잘리면 그쪽 병변이 빠집니다.',
+  // 이마 끝이 조금 잘린 정도는 이제 통과한다 — 여기 걸린 것은 볼이나 턱처럼 병변이 있는 살이
+  // 상당히 빠진 사진이라, "조금 더 멀리"가 실제로 통하는 조언이다
+  cropped: '조금 더 멀리서 얼굴이 더 많이 담기도록 찍어주세요 — 볼이나 턱이 빠지면 그쪽 병변이 빠집니다.',
+  framingChanged: '지난번과 비슷한 거리에서 찍어주세요 — 담긴 정도가 달라지면 넓이가 변한 것처럼 보여요.',
   partialBody: null,
   pose: '정면을 보고 다시 찍어주세요 — 고개 각도는 사진을 고쳐서 되돌릴 수 없어요.',
   lighting: null,
 };
 
+const AREA_ADVICE_TORSO: Record<AreaRejectCode, string | null> = {
+  noFace: '양 어깨가 화면에 들어오게 찍어주세요 — 몸통만 크게 담기면 사람을 못 찾을 수 있어요.',
+  cropped: '조금 더 멀리서 몸통이 더 많이 담기도록 찍어주세요.',
+  framingChanged: '지난번과 비슷한 거리에서 찍어주세요 — 담긴 정도가 달라지면 넓이가 변한 것처럼 보여요.',
+  partialBody: '양 어깨가 화면 안에 들어오게 조금 더 멀리서 찍어주세요 — 골반까지는 필요 없어요.',
+  pose: '몸을 정면으로 두고 다시 찍어주세요 — 튼 각도는 사진을 고쳐서 되돌릴 수 없어요.',
+  lighting: null,
+};
+
+/**
+ * 부위에 맞는 조언을 고른다.
+ *
+ * 예전에는 표 하나를 부위와 무관하게 썼다. 그래서 **몸통을 찍었는데 "얼굴이 크게 나오도록
+ * 다시 찍어주세요"가 뜨고**, 사용자 눈에는 얼굴 로직이 그대로 돌고 있는 것처럼 보였다.
+ * 판정 자체는 부위를 따라가고 있었는데 문구만 얼굴에 박혀 있었던 것이다 — 화면이 거짓말을 하면
+ * 그 아래 무엇이 옳게 돌아가든 소용이 없다.
+ */
+function areaAdviceOf(code: AreaRejectCode, kind: ScaleKind | null): string | null {
+  return (kind === 'torso' ? AREA_ADVICE_TORSO : AREA_ADVICE_FACE)[code];
+}
+
 function ReviewView({
   target,
+  scaleKind,
   session,
   error,
   source,
@@ -753,6 +1051,11 @@ function ReviewView({
   onContinue,
 }: {
   target: MonitorTarget;
+  /**
+   * 이 자리가 무엇을 자로 쓰는지. **session.scale에서 읽으면 안 된다** — 그쪽은 자를 찾았을
+   * 때만 채워지므로, 정작 조언이 가장 필요한 "자를 못 찾음"에서 언제나 비어 있다.
+   */
+  scaleKind: ScaleKind | null;
   session: MonitorSession | null;
   error: string | null;
   /** 앨범에서 고른 사진이면 "다시"의 목적지가 카메라가 아니라 앨범이어야 한다 */
@@ -827,15 +1130,22 @@ function ReviewView({
         */}
         {session.areaEligible &&
           (session.areaEligible.ok ? (
-            <Text style={styles.okText}>병변 넓이도 함께 기록돼요 — 지난 회차와 견줄 수 있어요</Text>
+            <Text style={styles.okText}>
+              병변 넓이도 함께 기록돼요 — 지난 회차와 견줄 수 있어요
+              {session.areaEligible.lowRes
+                ? '\n(원본 해상도가 낮아 값이 조금 흔들릴 수 있어요)'
+                : ''}
+            </Text>
           ) : (
             <View style={styles.warnBox}>
               <Text style={styles.warnText}>• {session.areaEligible.reason}</Text>
               <Text style={styles.warnText}>
                 • 이 사진의 등급·증상 판정은 그대로 기록돼요. 넓이 변화 그래프에서만 빠집니다.
               </Text>
-              {session.areaEligible.code && AREA_ADVICE[session.areaEligible.code] && (
-                <Text style={styles.warnText}>• {AREA_ADVICE[session.areaEligible.code]}</Text>
+              {session.areaEligible.code && areaAdviceOf(session.areaEligible.code, scaleKind) && (
+                <Text style={styles.warnText}>
+                  • {areaAdviceOf(session.areaEligible.code, scaleKind)}
+                </Text>
               )}
             </View>
           ))}
@@ -886,6 +1196,14 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  /** 자동 촬영이 붙들려 있을 때 — 배경을 깔아 "지금 읽어야 하는 줄"로 만든다 */
+  hintHeld: {
+    backgroundColor: 'rgba(20,23,28,0.6)',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    lineHeight: 20,
   },
   closeBtn: {
     position: 'absolute',

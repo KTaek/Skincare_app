@@ -73,7 +73,7 @@ export default function PhotoZoomModal({ visible, record, initialPage = 0, onClo
             {PAGES.map((p) => (
               <View key={p.mode} style={[styles.page, { width: box.width }]}>
                 <View style={styles.imgWrap} pointerEvents="none">
-                  <LesionThumb photo={record.photo} areaPct={record.lesionAreaPct} seed={record.seed} mode={p.mode} size={photoSize} />
+                  <LesionThumb photo={record.photo} overlay={record.overlay} areaPct={record.lesionAreaPct} seed={record.seed} mode={p.mode} size={photoSize} />
                 </View>
               </View>
             ))}

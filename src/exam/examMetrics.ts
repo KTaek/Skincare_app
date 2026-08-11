@@ -98,5 +98,11 @@ export function toFolderMetrics(result: LocalAnalysisResult, area?: AreaEligibil
     // 어긋나게 찍힌 회차는 값을 남기지 않는다 — 추세선에서 빼는 가장 단순하고 확실한 방법이다
     faceAreaIndex: areaUsable ? faceAreaIndex(result) : null,
     faceAreaKind: areaUsable ? faceAreaKind(result) : null,
+    /*
+      해상도가 낮아 값이 흔들릴 수 있는 회차라는 표시. **값은 그대로 남긴다** —
+      해상도는 넓이를 틀리게 만들지 않고 흔들리게만 하므로(monitoring/types의 lowRes 주석),
+      빼는 대신 표시해서 추세가 튀었을 때 이유를 댈 수 있게 한다.
+    */
+    lowRes: areaUsable && !!area?.lowRes,
   };
 }

@@ -467,7 +467,8 @@ export default function MonitoringFolderScreen({ navigation, route }) {
         */}
         {areaTrackable && (
           <View onLayout={(e) => setAreaCardW(e.nativeEvent.layout.width)}>
-            <AreaTrendCard records={folder.records} width={areaCardW} />
+            {/* 위 날짜 띠에서 고른 회차의 넓이를 보여준다 — 다른 카드들과 같은 회차를 가리켜야 한다 */}
+            <AreaTrendCard records={folder.records} width={areaCardW} selectedId={selectedRecord.id} />
           </View>
         )}
 
@@ -483,8 +484,8 @@ export default function MonitoringFolderScreen({ navigation, route }) {
               <Text style={styles.photoCaption}>촬영 이미지 (원본)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(1)}>
-              <LesionThumb photo={selectedRecord.photo} areaPct={selectedRecord.lesionAreaPct} seed={selectedRecord.seed} mode="overlay" size={PHOTO_SIZE} />
-              <Text style={styles.photoCaption}>마스크 오버레이 이미지</Text>
+              <LesionThumb photo={selectedRecord.photo} overlay={selectedRecord.overlay} areaPct={selectedRecord.lesionAreaPct} seed={selectedRecord.seed} mode="overlay" size={PHOTO_SIZE} />
+              <Text style={styles.photoCaption}>증상 부위 표시</Text>
             </TouchableOpacity>
           </View>
         </View>

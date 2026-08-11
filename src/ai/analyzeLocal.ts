@@ -1,10 +1,10 @@
 import type { SkImage } from '@shopify/react-native-skia';
-import { withSkImage, extractNormalizedRGB } from './skiaPixels';
+import { withSkImage, extractNormalizedRGB, type CropRect } from './skiaPixels';
 import { runSegModel, runClsModel } from './tfliteService';
 import { maskToBbox, maskRectToOriginal, type MaskRect } from './maskToBbox';
 import { buildLesionRegions } from './lesionRegions';
 import { renderMaskOverlay } from './maskOverlay';
-import { roiOf, SCALE_SPEC, type ScaleFrame, type ScaleRoi } from './scaleFrame';
+import { roiOf, tiltOf, SCALE_SPEC, type ScaleFrame, type ScaleRoi } from './scaleFrame';
 import { decodeSign } from './dex';
 import { labels, SIGN_KEYS, IGA_GRADE_TO_SEVERITY, type SignKey } from './labels';
 
@@ -143,8 +143,64 @@ export interface AnalyzeOptions {
 /**
  * 분할이 실제로 본 영역. 얼굴 관심영역이거나 사진 전체다.
  * 마스크 격자 좌표를 원본으로 되돌릴 때 이 사각형이 기준이 된다.
+ *
+ * rotation이 있으면 **그만큼 되돌려 잘라 본 것**이다 — 고개가 기울어 찍힌 사진을 반듯하게 세워
+ * 분할한다. 그러면 마스크 좌표는 "기울기가 없는 세계"의 것이 되므로, 원본으로 되돌릴 때 그
+ * 기울기를 다시 얹어야 한다(localToImage). 이 되돌리기를 빠뜨리면 마스크가 실제 병변에서
+ * 각도만큼 밀려 칠해진다 — 분석은 맞는데 그림만 틀리는, 알아채기 어려운 실패다.
  */
-type Region = { x: number; y: number; width: number; height: number };
+type Region = { x: number; y: number; width: number; height: number; rotation?: number };
+
+/**
+ * 분할이 본 영역의 좌표계 → 원본 이미지 좌표.
+ *
+ * 잘라낼 때 -rotation으로 돌렸으므로 되돌릴 때는 +rotation이다. 회전이 없으면 예전과 똑같이
+ * 오프셋만 더한다.
+ */
+function localToImage(src: Region, lx: number, ly: number): { x: number; y: number } {
+  const t = src.rotation ?? 0;
+  if (!t) return { x: src.x + lx, y: src.y + ly };
+  const cx = src.x + src.width / 2;
+  const cy = src.y + src.height / 2;
+  const dx = src.x + lx - cx;
+  const dy = src.y + ly - cy;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  return { x: cx + dx * c - dy * s, y: cy + dx * s + dy * c };
+}
+
+/**
+ * 분할 좌표계의 사각형 하나를 원본에서 쓸 두 가지 모양으로 바꾼다.
+ *
+ *   crop — 중증도 모델이 잘라 쓸 자리. 기울기를 그대로 들고 가서 **반듯하게 잘린다.**
+ *   box  — 화면에 그릴 축 정렬 상자. 돌아간 사각형의 네 귀퉁이를 감싸므로 회전이 있으면 조금
+ *          커지는데, 화면 표시용이라 그 편이 안전하다 (덜 감싸면 병변이 상자 밖으로 나간다).
+ */
+function localRectToImage(src: Region, r: { x1: number; y1: number; x2: number; y2: number }) {
+  const width = r.x2 - r.x1;
+  const height = r.y2 - r.y1;
+  const center = localToImage(src, (r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2);
+  const crop: CropRect = {
+    x: center.x - width / 2,
+    y: center.y - height / 2,
+    width,
+    height,
+    rotation: src.rotation,
+  };
+
+  const corners = [
+    localToImage(src, r.x1, r.y1),
+    localToImage(src, r.x2, r.y1),
+    localToImage(src, r.x2, r.y2),
+    localToImage(src, r.x1, r.y2),
+  ];
+  const xs = corners.map((p) => p.x);
+  const ys = corners.map((p) => p.y);
+  return {
+    crop,
+    box: { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) },
+  };
+}
 
 /**
  * 임계값 근처를 부분 가중으로 세는 구간.
@@ -172,7 +228,7 @@ async function runStage1(image: SkImage, colorGain?: readonly number[], region?:
     margin: labels.crop_margin,
     minRatio: labels.min_crop_ratio,
   });
-  const bbox = { x1: local.x1 + src.x, y1: local.y1 + src.y, x2: local.x2 + src.x, y2: local.y2 + src.y };
+  const { crop: bboxCrop, box: bbox } = localRectToImage(src, local);
 
   let on = 0;
   let soft = 0;
@@ -185,13 +241,15 @@ async function runStage1(image: SkImage, colorGain?: readonly number[], region?:
   }
   const maskAreaPct = mask.length > 0 ? Math.round((on / mask.length) * 1000) / 10 : 0;
 
-  return { origW, origH, src, mask, maskOn: on, maskSoft: soft, bbox, found, maskAreaPct };
+  return { origW, origH, src, mask, maskOn: on, maskSoft: soft, bbox, bboxCrop, found, maskAreaPct };
 }
 
-/** 마스크 격자 사각형 → 원본 픽셀 사각형. 분할이 본 영역이 사진 일부일 수 있으므로 오프셋을 얹는다 */
+/**
+ * 마스크 격자 사각형 → 원본에서 쓸 크롭과 표시용 상자.
+ * 분할이 본 영역이 사진 일부일 수 있고 기울어 있을 수도 있으므로 localRectToImage에 맡긴다.
+ */
 function maskRectToImage(rect: MaskRect, maskSize: number, src: Region) {
-  const local = maskRectToOriginal(rect, maskSize, maskSize, src.width, src.height);
-  return { x1: local.x1 + src.x, y1: local.y1 + src.y, x2: local.x2 + src.x, y2: local.y2 + src.y };
+  return localRectToImage(src, maskRectToOriginal(rect, maskSize, maskSize, src.width, src.height));
 }
 
 /** 카메라 미리보기 중 주기적으로 호출 — 병변 위치 박스만 가볍게 계산 (Stage2 분류는 생략) */
@@ -269,10 +327,18 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
   const startedAt = Date.now();
   const { colorGain, scale, gradeSeverity = true } = opts;
 
-  // 자가 있으면 관심영역만 잘라 분할한다 — 그 영역이 정사각형이라 종횡비 왜곡이 없다
-  const roi = scale ? roiOf(scale, image.width(), image.height()) : undefined;
+  /*
+    자가 있으면 관심영역만 잘라 분할한다 — 그 영역이 정사각형이라 종횡비 왜곡이 없다.
+    기울기(theta)도 함께 넘겨 반듯하게 세워서 본다: 촬영 때 수평을 맞추라고 요구하는 대신
+    아는 각도를 여기서 되돌린다. 앨범에서 고른 사진처럼 안내를 받을 기회가 없던 사진에도
+    똑같이 적용된다.
+  */
+  const roi = scale
+    ? { ...roiOf(scale, image.width(), image.height()), rotation: tiltOf(scale) }
+    : undefined;
 
-  const { origW, origH, src, mask, maskOn, maskSoft, bbox, found, maskAreaPct } = await runStage1(image, colorGain, roi);
+  const { origW, origH, src, mask, maskOn, maskSoft, bbox, bboxCrop, found, maskAreaPct } =
+    await runStage1(image, colorGain, roi);
   const size = labels.img_size_seg;
 
   /*
@@ -320,17 +386,16 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
 
   const rects = maskRegions.length
     ? maskRegions.map((r) => ({
-        bbox: maskRectToImage(r.crop, size, src),
+        ...maskRectToImage(r.crop, size, src),
         share: maskOn > 0 ? r.pixels / maskOn : 1,
         areaPct: Math.round((r.pixels / (size * size)) * 1000) / 10,
         mergedBlobs: r.mergedBlobs,
         foreignPct: r.foreignPct,
       }))
-    : [{ bbox, share: 1, areaPct: maskAreaPct, mergedBlobs: 0, foreignPct: 0 }];
+    : [{ crop: bboxCrop, box: bbox, share: 1, areaPct: maskAreaPct, mergedBlobs: 0, foreignPct: 0 }];
 
   const regions: LesionRegionResult[] = [];
-  for (const { bbox: rect, share, areaPct, mergedBlobs, foreignPct } of rects) {
-    const cropRect = { x: rect.x1, y: rect.y1, width: rect.x2 - rect.x1, height: rect.y2 - rect.y1 };
+  for (const { crop: cropRect, box, share, areaPct, mergedBlobs, foreignPct } of rects) {
     /*
       등급을 매기지 않는 촬영(아토피가 아닌 질환)에서는 Stage2를 **아예 돌리지 않는다.**
       돌려서 버리는 것과 다르다 — 판정 단위마다 384px 추론이 한 번씩 붙으므로 그냥 비용이다.
@@ -359,7 +424,16 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
     }
 
     regions.push({
-      bbox: { ...cropRect, imageWidth: origW, imageHeight: origH },
+      // 화면에 그리는 상자는 축 정렬된 box를 쓴다 — cropRect는 기울기를 들고 있어서
+      // 그대로 그리면 돌아간 사각형을 축 정렬로 잘못 그리게 된다
+      bbox: {
+        x: box.x1,
+        y: box.y1,
+        width: box.x2 - box.x1,
+        height: box.y2 - box.y1,
+        imageWidth: origW,
+        imageHeight: origH,
+      },
       signs,
       igaGrade: iga.grade,
       igaGradeName: iga.gradeName,
