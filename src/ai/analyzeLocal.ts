@@ -119,6 +119,25 @@ export interface AnalyzeOptions {
   colorGain?: readonly number[];
   /** 촬영 때 찾아 둔 자 (얼굴·몸통 자리에서만) */
   scale?: ScaleFrame | null;
+
+  /**
+   * 중증도(4가지 증상·IGA)를 매길지. 기본은 매긴다.
+   *
+   * false면 **분할은 그대로 하고 등급만 비운다.** 두 모델이 하는 일이 다르기 때문이다:
+   *
+   *   seg_lesion_512 — "어디가 병변인가". 아토피 병변으로 학습했지만 경계를 찾는 일이라
+   *                    다른 질환에서도 어느 정도 통한다. 무엇보다 **사용자가 판단 근거를 봐야**
+   *                    하고, 넓이 추이는 질환과 무관하게 성립한다("이번 달에 줄었나").
+   *   sev_cls_384    — "얼마나 심한가". 아토피 채점 기준(EASI 계열)으로 학습해서, 여드름이나
+   *                    건선에 그 등급을 붙이면 근거 없는 숫자가 된다.
+   *
+   * 그래서 아토피가 아닌 질환에서는 이것만 끈다. 예전에는 분할까지 함께 껐는데, 그러면 화면이
+   * "증상 부위를 찾지 못했어요"를 띄워 **앱이 고장 난 것처럼** 보였다 — 실제로는 찾은 것을
+   * 안 보여준 것이었다.
+   *
+   * ⚠️ 분할 모델의 다른 질환에서의 정확도는 검증되지 않았다. 화면은 이 사실을 함께 말해야 한다.
+   */
+  gradeSeverity?: boolean;
 }
 
 /**
@@ -217,55 +236,30 @@ export async function normalSkinResult(uri: string): Promise<LocalAnalysisResult
 }
 
 /**
- * 질환 분류 1순위가 "정상"도 "아토피피부염"도 아닐 때 쓰는 결과.
+ * 아토피가 아닌 질환의 결과 — **부위 표시는 하고, 등급만 비운다.**
  *
- * 증상 4가지·IGA를 매기는 Stage2 모델은 아토피피부염의 중증도 채점 기준(홍반·구진·긁은
- * 상처·태선화)으로 학습돼 있어서, 건선·여드름·주사·지루피부염 같은 다른 질환 사진에 그대로
- * 돌리면 근거 없는 등급이 나온다. 그래서 이 경로에서는 Stage2를 아예 부르지 않는다. 사진 위
- * 병변 위치 표시에만 쓰는 Stage1(분할)은 가볍게 그대로 돌려서 bbox는 채운다.
+ * 예전에는 분할까지 통째로 껐다(maskUri·maskAreaPct·scaleArea가 전부 비어 있었다). 그러면 결과
+ * 화면이 "증상 부위를 찾지 못했어요"를 띄우는데, 사용자 눈에는 **모델이 실패한 것**으로 보인다 —
+ * 실제로는 찾아 놓고 안 보여준 것이었다.
+ *
+ * 부위 표시를 살리는 이유는 둘이다:
+ *   · **판단 근거.** 앱이 무엇을 보고 그렇게 말했는지 사용자가 확인할 수 있어야 한다.
+ *   · **넓이 추이.** "이번 달에 넓이가 줄었나"는 질환 이름과 무관하게 성립한다.
+ *
+ * 등급(4가지 증상·IGA)만 끄는 것은 그 모델이 아토피 채점 기준으로 학습됐기 때문이다 —
+ * 여드름에 그 등급을 붙이면 근거 없는 숫자가 된다. 화면도 severitySupported로 그 블록을 감춘다.
+ *
+ * ⚠️ 분할 모델도 아토피 병변으로 학습됐다. 다른 질환에서의 정확도는 검증되지 않았으므로,
+ *    화면은 "아토피 기준으로 학습된 모델의 표시"라는 사실을 함께 말해야 한다.
  */
 export async function unsupportedDiseaseResult(
   uri: string,
   colorGain?: readonly number[],
+  scale?: AnalyzeOptions['scale'],
 ): Promise<LocalAnalysisResult> {
-  const { origW, origH, bbox: rawBbox, found } = await withSkImage(uri, (image) => runStage1(image, colorGain));
-  const bbox: LesionBox = found
-    ? { x: rawBbox.x1, y: rawBbox.y1, width: rawBbox.x2 - rawBbox.x1, height: rawBbox.y2 - rawBbox.y1, imageWidth: origW, imageHeight: origH }
-    : { x: 0, y: 0, width: origW, height: origH, imageWidth: origW, imageHeight: origH };
-  const signs: SignResult[] = SIGN_KEYS.map((sign) => ({
-    sign,
-    grade: 0,
-    gradeName: labels.grade_names_by_sign[sign][0],
-  }));
-  const igaGradeName = labels.grade_names_by_sign.iga[0];
-
-  return {
-    signs,
-    igaGrade: 0,
-    igaGradeName,
-    severity: IGA_GRADE_TO_SEVERITY[0] ?? 1,
-    bbox,
-    maskAreaPct: 0,
-    scaleArea: null,
-    maskUri: null,
-    regions: [{ bbox, signs, igaGrade: 0, igaGradeName, share: 1 }],
-    worstRegionIndex: 0,
-    droppedRegions: 0,
-    inferenceTimeMs: 0,
-  };
+  return analyzeLocal(uri, { colorGain, scale, gradeSeverity: false });
 }
 
-/**
- * 촬영된 사진 전체 분석: Stage1(분할) → 판정 단위별 crop → Stage2(분류) → DEX 등급 산출.
- *
- * 증상이 여러 곳에 떨어져 있으면 단위마다 따로 잘라 등급을 매기고, 그중 가장 나쁜 것을
- * 대표값으로 올린다. 하나의 큰 사각형으로 뭉뚱그리면 사이의 정상 피부가 섞여 들어가
- * 등급이 실제보다 낮게 나오기 때문이다. 무엇을 한 단위로 볼지는 lesionRegions.ts가 정한다.
- *
- * opts.scale을 주면(얼굴·몸통 자리) 그 관심영역만 잘라 분석하고, 배율이 상쇄된 넓이 지수
- * (scaleArea)를 함께 낸다. 기존 호출부(scale 없이 부르는 곳)는 예전과 같은 사진 전체 분석을
- * 그대로 받는다.
- */
 export async function analyzeLocal(uri: string, opts: AnalyzeOptions = {}): Promise<LocalAnalysisResult> {
   // 이미지 한 장을 두 단계가 함께 쓰므로 바깥에서 열고, 끝나면 withSkImage가 확실히 해제한다
   return withSkImage(uri, (image) => analyzeImage(image, opts));
@@ -273,7 +267,7 @@ export async function analyzeLocal(uri: string, opts: AnalyzeOptions = {}): Prom
 
 async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<LocalAnalysisResult> {
   const startedAt = Date.now();
-  const { colorGain, scale } = opts;
+  const { colorGain, scale, gradeSeverity = true } = opts;
 
   // 자가 있으면 관심영역만 잘라 분할한다 — 그 영역이 정사각형이라 종횡비 왜곡이 없다
   const roi = scale ? roiOf(scale, image.width(), image.height()) : undefined;
@@ -337,21 +331,32 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
   const regions: LesionRegionResult[] = [];
   for (const { bbox: rect, share, areaPct, mergedBlobs, foreignPct } of rects) {
     const cropRect = { x: rect.x1, y: rect.y1, width: rect.x2 - rect.x1, height: rect.y2 - rect.y1 };
-    const stage2Input = extractNormalizedRGB(
-      image,
-      cropRect,
-      labels.img_size_cls,
-      labels.imagenet_mean,
-      labels.imagenet_std,
-      colorGain,
-    );
-    const clsOut = await runClsModel(stage2Input);
-
-    const signs: SignResult[] = SIGN_KEYS.map((key) => {
-      const decoded = decodeSign(clsOut[key], labels.dex_thresholds_by_sign[key], labels.grade_names_by_sign[key]);
-      return { sign: key, grade: decoded.grade, gradeName: decoded.gradeName };
-    });
-    const iga = decodeSign(clsOut.iga, labels.dex_thresholds_by_sign.iga, labels.grade_names_by_sign.iga);
+    /*
+      등급을 매기지 않는 촬영(아토피가 아닌 질환)에서는 Stage2를 **아예 돌리지 않는다.**
+      돌려서 버리는 것과 다르다 — 판정 단위마다 384px 추론이 한 번씩 붙으므로 그냥 비용이다.
+      비운 등급은 0(없음)으로 두고, 화면은 severitySupported로 그 블록을 통째로 감춘다.
+    */
+    let signs: SignResult[];
+    let iga: { grade: number; gradeName: string };
+    if (gradeSeverity) {
+      const stage2Input = extractNormalizedRGB(
+        image,
+        cropRect,
+        labels.img_size_cls,
+        labels.imagenet_mean,
+        labels.imagenet_std,
+        colorGain,
+      );
+      const clsOut = await runClsModel(stage2Input);
+      signs = SIGN_KEYS.map((key) => {
+        const decoded = decodeSign(clsOut[key], labels.dex_thresholds_by_sign[key], labels.grade_names_by_sign[key]);
+        return { sign: key, grade: decoded.grade, gradeName: decoded.gradeName };
+      });
+      iga = decodeSign(clsOut.iga, labels.dex_thresholds_by_sign.iga, labels.grade_names_by_sign.iga);
+    } else {
+      signs = SIGN_KEYS.map((key) => ({ sign: key, grade: 0, gradeName: labels.grade_names_by_sign[key][0] }));
+      iga = { grade: 0, gradeName: labels.grade_names_by_sign.iga[0] };
+    }
 
     regions.push({
       bbox: { ...cropRect, imageWidth: origW, imageHeight: origH },

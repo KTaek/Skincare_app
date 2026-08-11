@@ -6,9 +6,20 @@ import { CameraType, CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { AppColors } from '../theme';
 import { useMonitoring } from '../context/MonitoringContext';
+import type { SkImage } from '@shopify/react-native-skia';
 import { withSkImage } from '../ai/skiaPixels';
 import { normalizeOrientation } from '../ai/imageOrientation';
-import { evaluateFrame, GATE, measureImageQuality } from '../monitoring/frameQuality';
+import { humanError } from '../ai/errorText';
+import { detectScaleFrame, isScaleAvailable, preloadScaleModel } from '../ai/scaleDetect';
+import { roiOf, type ScaleFrame, type ScaleKind } from '../ai/scaleFrame';
+import { scaleKindOf } from '../monitoring/bodyParts';
+import ScaleGuideOverlay from '../components/ScaleGuideOverlay';
+import {
+  evaluateAreaEligibility,
+  evaluateFrame,
+  GATE,
+  measureImageQuality,
+} from '../monitoring/frameQuality';
 import { useCaptureVoice } from '../monitoring/captureVoice';
 import {
   baselineFromCapture,
@@ -18,6 +29,8 @@ import {
   scoreConfidence,
 } from '../monitoring/postProcess';
 import {
+  AreaRejectCode,
+  Baseline,
   ColorNormalization,
   FrameEvaluation,
   MonitorSession,
@@ -61,10 +74,56 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
 /** 사진이 어디서 왔는지 — 리뷰 화면의 "다시" 버튼이 카메라로 갈지 앨범으로 갈지가 여기서 갈린다 */
 type PhotoSource = 'camera' | 'album';
 
+/**
+ * 프레임 한 장을 재는 한 자리 — 자 검출 → 관심영역 → 품질 측정 → 판정 순서다.
+ *
+ * 이 순서인 이유: 자가 있는 자리에서는 품질도 **분석에 실제로 들어갈 영역**에서 재야 하기
+ * 때문이다. 프레임 전체로 재면 뒤쪽 창문이 하얗게 날아갔다는 이유로 노출 게이트가 막고, 배경이
+ * 넓다는 이유로 피부 게이트가 영영 안 열린다 — 정작 분석에 들어가는 것은 얼굴뿐인데도.
+ *
+ * 자를 못 찾으면 관심영역 없이 프레임 전체를 재고, 정렬 판정만 "찾지 못함"이 된다.
+ */
+async function analyzeFrame(
+  image: SkImage,
+  /** 이 자리가 무엇을 자로 쓰는지. null이면 넓이를 재지 않는 자리라 자를 찾지 않는다 */
+  kind: ScaleKind | null,
+  baseline?: Baseline,
+  prevSignature?: Float32Array | null,
+): Promise<{ evaluation: FrameEvaluation; scale: ScaleFrame | null; width: number; height: number }> {
+  const width = image.width();
+  const height = image.height();
+
+  const scale = kind ? await detectScaleFrame(image, kind) : null;
+  const roi = scale ? roiOf(scale, width, height) : undefined;
+
+  const metrics = measureImageQuality(image, { roi });
+  const evaluation = evaluateFrame(
+    metrics,
+    baseline,
+    prevSignature,
+    kind
+      ? {
+          kind,
+          frame: scale,
+          imageWidth: width,
+          imageHeight: height,
+          /*
+            이 앱은 프리뷰에 지난 사진을 깔지 않는다(고스트를 걷어낸 이유는 아래 화면 주석 참고).
+            그래서 구도 목표는 항상 표준 가이드 도형이고, 자세만 기준 세션과 견준다.
+          */
+          reference: baseline?.scale,
+        }
+      : undefined,
+  );
+  return { evaluation, scale, width, height };
+}
+
 /** 촬영 후보 한 장. 품질 판정에 실패해도 사진은 살리므로 evaluation은 없을 수 있다. */
 interface Candidate {
   uri: string;
   evaluation: FrameEvaluation | null;
+  /** 이 프레임에서 찾은 자 — 분석 단계가 관심영역과 면적 정규화에 쓴다 */
+  scale?: ScaleFrame | null;
 }
 
 type Phase = 'preview' | 'processing' | 'review';
@@ -113,12 +172,20 @@ const UNMEASURED_CONFIDENCE: SessionConfidence = {
 export default function MonitorCaptureScreen({
   target,
   source: initialSource,
+  measureArea = true,
   onCancel,
   onComplete,
 }: {
   target: MonitorTarget;
   /** 앞 단계(촬영 방법)에서 고른 방식 — 'album'이면 카메라를 켜지 않고 바로 갤러리를 연다 */
   source: PhotoSource;
+  /**
+   * 이 촬영에서 병변 넓이를 잴지. 기본은 잰다(부위가 허락하면).
+   *
+   * 부위만으로 판단할 수 없는 경우가 하나 있어서 밖에서 받는다 — 바로 스캔은 기록으로 남지 않아
+   * 견줄 회차가 영영 없는데, 임시 대상의 부위는 다른 자리로 잡혀 있다.
+   */
+  measureArea?: boolean;
   onCancel: () => void;
   /** 후처리까지 끝난 사진을 상위 흐름(분석·기록 저장)으로 넘긴다 */
   onComplete: (processedUri: string, session: MonitorSession) => void;
@@ -178,6 +245,33 @@ export default function MonitorCaptureScreen({
   const baseline = target.baseline;
 
   /**
+   * 검출 모델을 쓸 수 없다고 판명됐는지 (웹 미리보기, 번들 누락, 출력 규격 불일치).
+   *
+   * 상태로 들고 있어야 하는 이유: 모델 로딩 실패는 렌더 중이 아니라 나중에 드러난다. 그때
+   * 화면이 다시 그려지지 않으면 자 측정이 켜진 채로 남아 — 검출은 매번 실패하므로 —
+   * "보이지 않아요"만 띄우며 자동 셔터가 영영 열리지 않는다. 기능 하나가 없는 것과 촬영이
+   * 막히는 것은 무게가 전혀 다른 실패다.
+   */
+  const [scaleBroken, setScaleBroken] = useState(false);
+  /**
+   * 이 자리에서 정렬·면적 측정을 무엇을 자로 삼아 켤지 (지금은 얼굴 / 안 켬).
+   * 모델을 못 불러오면 조용히 예전 그대로 동작한다 — 넓이 기능이 없다고 촬영이 막히면 안 된다.
+   */
+  const scaleKind: ScaleKind | null =
+    DUMP_RESULTS || scaleBroken || !measureArea ? null : scaleKindOf(target.part);
+  /** 마지막 판정 프레임의 크기 — 화면 가이드를 프레임 좌표와 맞추는 데 쓴다 */
+  const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+
+  // 넓이를 재는 자리에 들어오면 검출 모델을 미리 올려 둔다 — 첫 틱이 모델 로딩을 기다리지 않도록.
+  // 못 올리면 그 자리에서 자 측정을 끈다 (실패를 판정 루프까지 끌고 가지 않는다).
+  useEffect(() => {
+    if (!scaleKind) return;
+    preloadScaleModel(scaleKind).then(() => {
+      if (!isScaleAvailable(scaleKind)) setScaleBroken(true);
+    });
+  }, [scaleKind]);
+
+  /**
    * 고른 사진을 이번 세션으로 확정한다. 여기서는 실패할 수 있는 일을 하지 않는다 —
    * 촬영을 마친 뒤에 흐름이 막히는 일이 없어야 하기 때문이다.
    */
@@ -195,6 +289,13 @@ export default function MonitorCaptureScreen({
           ? scoreConfidence(chosen.evaluation, colorNorm, baseline)
           : UNMEASURED_CONFIDENCE;
 
+      /*
+        넓이를 회차 간 비교해도 되는 촬영인지는 여기서 확정한다 — 정렬·조명은 촬영 시점의
+        정보라 나중에 사진만 보고는 알 수 없다. 넓이를 재는 자리가 아니면 아예 판단하지 않는다.
+      */
+      const areaEligible =
+        scaleKind && chosen.evaluation ? evaluateAreaEligibility(chosen.evaluation, baseline) : undefined;
+
       const created: MonitorSession = {
         id: sessionId,
         targetId: target.id,
@@ -205,6 +306,8 @@ export default function MonitorCaptureScreen({
         confidence,
         softScore: chosen.evaluation?.softScore ?? 0,
         colorNorm,
+        scale: chosen.scale ?? undefined,
+        areaEligible,
       };
 
       addSession(
@@ -212,13 +315,16 @@ export default function MonitorCaptureScreen({
         DUMP_RESULTS
           ? makeDumpBaseline(sessionId, chosen.uri)
           : chosen.evaluation
-            ? baselineFromCapture(sessionId, chosen.uri, chosen.evaluation.metrics)
+            ? baselineFromCapture(sessionId, chosen.uri, chosen.evaluation.metrics, {
+                scale: chosen.scale,
+                facing: scaleKind ? facing : undefined,
+              })
             : undefined,
       );
       setSession(created);
       setPhase('review');
     },
-    [addSession, baseline, target.id],
+    [addSession, baseline, scaleKind, facing, target.id],
   );
 
   /**
@@ -235,21 +341,23 @@ export default function MonitorCaptureScreen({
       // 방향을 먼저 바로잡는다 — 이 uri가 곧 기록 사진이자 분석 입력이다
       const uri = await normalizeOrientation(rawUri);
       let evaluation: FrameEvaluation | null = null;
+      let scale: ScaleFrame | null = null;
       if (!DUMP_RESULTS) {
         try {
-          evaluation = await withSkImage(uri, (img) => evaluateFrame(measureImageQuality(img), baseline));
+          // 자를 함께 찾는다 — 이 값이 있어야 분석이 관심영역만 보고 넓이를 정규화할 수 있다
+          const measured = await withSkImage(uri, async (img) => analyzeFrame(img, scaleKind, baseline));
+          evaluation = measured.evaluation;
+          scale = measured.scale;
         } catch (e: any) {
           // 품질을 못 재도 촬영 자체는 살린다 — 다만 왜 못 쟀는지는 남긴다.
           // 앨범 사진은 형식이 제각각(스크린샷·다운로드·특이한 컬러프로파일)이라 여기 걸리기 쉽고,
           // 조용히 삼키면 원인 모를 50점짜리 기록만 남는다.
-          const msg = e?.message ?? String(e);
-          console.warn('[capture] 품질 측정 실패:', msg);
-          setMeasureError(msg);
+          setMeasureError(humanError(e, '품질을 재지 못했어요'));
         }
       }
-      finalize({ uri, evaluation });
+      finalize({ uri, evaluation, scale });
     },
-    [baseline, finalize],
+    [baseline, scaleKind, finalize],
   );
 
   const shootNow = useCallback(async () => {
@@ -264,7 +372,7 @@ export default function MonitorCaptureScreen({
       );
       if (photo) await commitPhoto(photo.uri, 'camera');
     } catch (e: any) {
-      setError(e?.message ?? '사진을 찍지 못했어요');
+      setError(humanError(e, '사진을 찍지 못했어요'));
       setPhase('review');
     }
   }, [commitPhoto, cameraReady]);
@@ -328,13 +436,21 @@ export default function MonitorCaptureScreen({
         );
         if (!photo || cancelled.current) return;
 
-        // 게이트가 모델을 쓰지 않으므로 여기서는 픽셀만 읽으면 된다 —
-        // 예전에는 매 틱 512×512 세그 추론이 돌았지만 이제 필요 없다
-        const metrics = await withSkImage(photo.uri, (img) => measureImageQuality(img));
+        /*
+          피부·초점·노출 게이트는 모델을 쓰지 않으므로 픽셀만 읽으면 된다 (예전에는 매 틱
+          512×512 세그 추론이 돌았지만 그 게이트는 걷어냈다). 넓이를 재는 자리에서만 128px 얼굴
+          검출이 하나 붙는데, 걷어낸 세그와 비교하면 입력이 16분의 1이라 틱 주기에 부담이 없다.
+        */
         const prev = prevSig.current;
-        prevSig.current = metrics.signature;
-        const evaluation = evaluateFrame(metrics, baseline, prev);
+        const measured = await withSkImage(photo.uri, (img) => analyzeFrame(img, scaleKind, baseline, prev));
+        const { evaluation } = measured;
+        prevSig.current = evaluation.metrics.signature;
         if (cancelled.current) return;
+        // 모델이 도중에 못 쓰게 됐으면(출력 규격 불일치 등) 여기서 알아채고 자 측정을 끈다
+        if (scaleKind && !isScaleAvailable(scaleKind)) setScaleBroken(true);
+        setFrameSize((f) =>
+          f.w === measured.width && f.h === measured.height ? f : { w: measured.width, h: measured.height },
+        );
         setLive(evaluation);
         setLiveError(null);
 
@@ -342,16 +458,22 @@ export default function MonitorCaptureScreen({
         // 첫 틱만으로 자동 촬영이 나가는 일이 없도록 이번 판은 표시만 하고 넘긴다
         if (!prev) return;
 
-        if (evaluation.hardPass) {
+        /*
+          넓이를 재는 자리에서는 정렬까지 맞아야 셔터가 열린다. 어긋난 채로 자동 촬영이 나가면
+          그 사진의 넓이는 추세에서 빠지는데, 사용자는 앱이 알아서 잘 찍었다고 믿게 된다.
+        */
+        const ready = evaluation.hardPass && (evaluation.align?.ok ?? true);
+
+        if (ready) {
           missStreak.current = 0;
           setArmed(true);
         } else if (++missStreak.current >= 2) {
           setArmed(false);
         }
 
-        if (evaluation.hardPass && evaluation.softScore >= GATE.autoShutterSoftScore) {
+        if (ready && evaluation.softScore >= GATE.autoShutterSoftScore) {
           if (windowStart.current == null) windowStart.current = Date.now();
-          candidates.current.push({ uri: photo.uri, evaluation });
+          candidates.current.push({ uri: photo.uri, evaluation, scale: measured.scale });
         }
 
         const started = windowStart.current;
@@ -372,9 +494,8 @@ export default function MonitorCaptureScreen({
         // 한 프레임 실패는 다음 주기에 다시 시도하지만, 조용히 삼키지는 않는다.
         // 예전에는 여기서 통째로 삼켜서 — Skia 서피스 고갈처럼 계속 실패하는 상황일 때
         // 판정 패널이 영영 멈춰 있는데도 아무 단서가 남지 않았다.
-        const msg = e?.message ?? String(e);
-        console.warn('[capture] 프레임 판정 실패:', msg);
-        if (!cancelled.current) setLiveError(msg);
+        // 화면에는 한 줄만 — 프리뷰 위에 자바 스택이 뜨면 카메라가 통째로 가려진다 (errorText.ts)
+        if (!cancelled.current) setLiveError(humanError(e, '판정을 하지 못했어요'));
       } finally {
         busy.current = false;
       }
@@ -386,7 +507,7 @@ export default function MonitorCaptureScreen({
       cancelled.current = true;
       clearInterval(id);
     };
-  }, [mode, phase, permission?.granted, cameraReady, facing, baseline, finalize]);
+  }, [mode, phase, permission?.granted, cameraReady, facing, baseline, scaleKind, finalize]);
 
   /** 확인 화면에서 다시 찍기 — 앨범으로 들어왔더라도 여기서는 카메라로 갈아탄다 */
   const retake = () => {
@@ -490,14 +611,38 @@ export default function MonitorCaptureScreen({
           animateShutter={false}
           onCameraReady={() => setCameraReady(true)}
           // 카메라를 못 띄우면 판정 루프도 영영 못 돈다 — 조용히 회색 막대만 두지 않고 알린다
-          onMountError={(e: any) => setLiveError(e?.message ?? '카메라를 열지 못했어요')}
+          onMountError={(e: any) => setLiveError(humanError(e, '카메라를 열지 못했어요'))}
         />
+
+        {/*
+          넓이를 재는 자리에서만 나오는 가이드 도형.
+
+          사용자가 맞춰야 하는 사각형이 곧 분석에 들어가는 영역이고, 정렬 게이트가 겨냥하는 목표도
+          같은 자리다(둘 다 scaleFrame의 standardRoi를 쓴다) — 화면과 판정이 다른 곳을 보면
+          "초록인데 왜 안 찍히지"가 된다.
+
+          지난 사진을 반투명하게 깔던 고스트는 이 앱에서 걷어냈다(위 화면 주석). 그래서 목표는
+          항상 이 표준 도형이고, 그만큼 정렬 게이트도 첫 사진의 구도가 아니라 표준 구도를 잰다.
+        */}
+        {scaleKind && (
+          <ScaleGuideOverlay
+            kind={scaleKind}
+            imageWidth={frameSize.w}
+            imageHeight={frameSize.h}
+            mirrored={facing === 'front'}
+            ok={!!live?.align?.ok}
+          />
+        )}
 
         {/*
           매 틱 바뀌던 판정 안내는 소리로 옮겼다(useCaptureVoice). 여기는 촬영 내내 그대로인
           한 줄만 남긴다 — 계속 바뀌는 글은 카메라를 대고 있는 자세에서 어차피 읽히지 않는다.
         */}
-        <Text style={styles.hint}>가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요</Text>
+        <Text style={styles.hint}>
+          {scaleKind === 'face'
+            ? '가이드에 얼굴을 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
+            : '가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요'}
+        </Text>
 
         <Pressable style={styles.closeBtn} onPress={onCancel}>
           <MaterialIcons name="chevron-left" size={24} color="#FFFFFF" />
@@ -582,6 +727,21 @@ function GateBar({ label, value, ok }: { label: string; value?: number; ok?: boo
   );
 }
 
+/**
+ * 넓이가 빠진 이유별로 사용자가 할 수 있는 일 한 줄.
+ *
+ * **고칠 수 있는 것만 말한다.** 이유마다 손쓸 방법이 전혀 다른데 한 문장으로 뭉뚱그리면,
+ * 사용자는 될 리 없는 일을 몇 번씩 반복하게 된다. (null이면 위 두 줄로 충분한 경우다)
+ */
+const AREA_ADVICE: Record<AreaRejectCode, string | null> = {
+  noFace: '얼굴이 사진에 작게 나왔거나 다른 사람이 함께 찍혔으면 얼굴이 크게 나오도록 다시 찍어주세요.',
+  resolution: '얼굴이 더 크게 나오도록 가까이서 찍어주세요 — 화질이 모자라면 경계가 뭉개집니다.',
+  cropped: '얼굴 전체가 화면 안에 들어와야 해요 — 턱이나 이마가 잘리면 그쪽 병변이 빠집니다.',
+  partialBody: null,
+  pose: '정면을 보고 다시 찍어주세요 — 고개 각도는 사진을 고쳐서 되돌릴 수 없어요.',
+  lighting: null,
+};
+
 function ReviewView({
   target,
   session,
@@ -657,6 +817,29 @@ function ReviewView({
             ))}
           </View>
         )}
+
+        {/*
+          넓이를 쟀는지 여부를 **양쪽 다** 말한다.
+
+          못 쟀을 때만 말하면 사용자는 "말이 없으면 잘 된 것"인지 "원래 안 재는 것"인지 알 수
+          없다. 특히 앨범에서 고른 사진은 가이드를 볼 기회가 없어 스스로 판단할 근거가 전혀 없다 —
+          이 사진이 추세에 들어갔는지는 지금 이 화면에서만 알 수 있고, 나중에는 못 고친다.
+        */}
+        {session.areaEligible &&
+          (session.areaEligible.ok ? (
+            <Text style={styles.okText}>병변 넓이도 함께 기록돼요 — 지난 회차와 견줄 수 있어요</Text>
+          ) : (
+            <View style={styles.warnBox}>
+              <Text style={styles.warnText}>• {session.areaEligible.reason}</Text>
+              <Text style={styles.warnText}>
+                • 이 사진의 등급·증상 판정은 그대로 기록돼요. 넓이 변화 그래프에서만 빠집니다.
+              </Text>
+              {session.areaEligible.code && AREA_ADVICE[session.areaEligible.code] && (
+                <Text style={styles.warnText}>• {AREA_ADVICE[session.areaEligible.code]}</Text>
+              )}
+            </View>
+          ))}
+
         {/* 품질이 낮아도 진행은 막지 않는다 — 권하기만 하고 선택은 사용자에게 맡긴다 */}
         {!confidence.usable && (
           <Text style={styles.rejectText}>
@@ -788,6 +971,8 @@ const styles = StyleSheet.create({
   warnBox: { marginTop: 14, backgroundColor: '#FFFFFF', borderRadius: 14, padding: 14 },
   warnText: { fontSize: 13, color: AppColors.ink, lineHeight: 20 },
   rejectText: { marginTop: 10, fontSize: 13, fontWeight: '700', color: AppColors.sev3, textAlign: 'center' },
+  /** 넓이가 함께 기록됐다는 확인 — 경고와 같은 자리에 두되 색으로 성격을 가른다 */
+  okText: { marginTop: 10, fontSize: 12.5, color: AppColors.greenMuted, lineHeight: 19, fontWeight: '600' },
   processingTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', textAlign: 'center' },
   processingSub: { color: 'rgba(255,255,255,0.7)', fontSize: 13, textAlign: 'center' },
 });

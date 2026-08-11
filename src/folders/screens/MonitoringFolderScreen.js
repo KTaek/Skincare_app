@@ -7,10 +7,13 @@ import {
   SKIN_SEGMENTS, ITCH_SEGMENTS, SLEEP_SEGMENTS, SYMPTOM_SEGMENTS_BASE, SYMPTOMS, CHART_SERIES,
 } from '../theme';
 import { useFolder, folderHasSeverity } from '../store';
+import { useMonitoring } from '../../context/MonitoringContext';
 import { useProfile } from '../../context/ProfileContext';
 import { useRoutines } from '../../context/RoutineContext';
 import { plainSiteLabel } from '../../models';
 import { MetricCard, MetricRow, EmptyMetricCard } from '../../components/MetricCard';
+import AreaTrendCard from '../components/AreaTrendCard';
+import { supportsAreaTracking } from '../../monitoring/bodyParts';
 import TrendChart, {
   TrendChartLegend, TrendChartYAxis, chartContentWidth, POINT_W, Y_AXIS_W,
 } from '../components/TrendChart';
@@ -227,6 +230,14 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   const [zoomPage, setZoomPage] = useState(0);
   const { healthConnected } = useProfile();
   const { adherenceRate } = useRoutines();
+  // 이 폴더가 지켜보는 자리가 넓이를 잴 수 있는 곳인지 — 촬영 화면과 **같은 판단**을 쓴다.
+  // 대상을 못 찾으면 잴 수 없는 것으로 본다 (기본값을 부위 하나로 두면 그 부위가 측정 가능해지는
+  // 순간 "못 잰다"가 "잰다"로 조용히 뒤집힌다).
+  const { findTarget } = useMonitoring();
+  const areaPart = findTarget(folder?.targetId)?.part;
+  const areaTrackable = areaPart ? supportsAreaTracking(areaPart) : false;
+  /** 넓이 카드의 SVG는 픽셀 폭이 필요하다(퍼센트로 못 그린다) — 실제로 차지한 폭을 재서 넘긴다 */
+  const [areaCardW, setAreaCardW] = useState(0);
   // 날짜 칸 줄과 그래프가 같은 가로 스크롤 하나를 공유한다(아래 참고) — 처음 열렸을 때(또는 새로
   // 촬영해 기록이 늘었을 때) 오른쪽 끝(오늘)으로 자동 스크롤하기 위한 참조.
   const scrollRef = useRef(null);
@@ -446,6 +457,19 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           </View>
           <TrendChartLegend series={chartSeries} />
         </View>
+
+        {/*
+          병변 넓이 추이 — 넓이를 잴 수 있는 자리(지금은 얼굴)의 폴더에서만 나온다.
+
+          결합 그래프(TrendChart)에 못 올리는 값이라 카드를 따로 둔다: 넓이는 상한이 없고, 그날 한
+          장에서 읽는 값이 아니라 첫 촬영과 견줘야만 의미가 생긴다. 잴 수 없는 자리에서는 영영
+          채워지지 않을 카드를 띄우지 않는다.
+        */}
+        {areaTrackable && (
+          <View onLayout={(e) => setAreaCardW(e.nativeEvent.layout.width)}>
+            <AreaTrendCard records={folder.records} width={areaCardW} />
+          </View>
+        )}
 
         {/* 선택된 날짜의 촬영 이미지 — 원본과 병변 마스크 오버레이를 나란히 보여준다. 사진을 탭하면
             크게 확대해서 볼 수 있다(원본 탭 → 사진 페이지, 오버레이 탭 → overlay 페이지). */}

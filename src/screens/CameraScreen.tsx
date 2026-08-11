@@ -180,14 +180,25 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
           : isNormalSkin
             ? await normalSkinResult(cap.photoUri)
             : isAtopic
-              ? await analyzeLocal(cap.photoUri, { colorGain })
-              : await unsupportedDiseaseResult(cap.photoUri, colorGain);
+              /*
+                촬영 때 찾아 둔 자를 함께 넘긴다. 이게 있으면 분할이 **관심영역만** 보고(사진
+                전체를 512로 누르지 않는다) 병변 넓이를 부위 크기로 나눈 지수까지 나온다 —
+                회차 간 비교가 되는 유일한 넓이다. 없으면 예전과 똑같이 사진 전체를 분석한다.
+              */
+              ? await analyzeLocal(cap.photoUri, { colorGain, scale: cap.session.scale })
+              /*
+                아토피가 아닌 질환 — **부위 표시와 넓이는 그대로 하고 등급만 비운다.**
+                자(scale)도 함께 넘겨야 관심영역을 크롭하고 넓이 지수가 나온다: 넓이 추이는
+                질환 이름과 무관하게 성립하고, 사용자는 앱이 무엇을 보고 판단했는지 볼 수 있어야 한다.
+              */
+              : await unsupportedDiseaseResult(cap.photoUri, colorGain, cap.session.scale);
 
         // 경과 이어서 기록은 이미 이어붙일 폴더가 정해져 있으므로 바로 오늘 기록으로 남긴다
         if (cap.kind === 'followUp' && cap.folderId) {
           recordExam({
             folderId: cap.folderId,
-            ...toFolderMetrics(local),
+            // 가이드와 어긋나게 찍혔으면 넓이만 빼고 나머지는 그대로 남긴다
+            ...toFolderMetrics(local, cap.session.areaEligible),
             itchVas: cap.itchVas,
             photoUri: cap.photoUri,
           });
@@ -228,7 +239,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     });
     recordExam({
       folderId: id,
-      ...toFolderMetrics(analysis.local),
+      ...toFolderMetrics(analysis.local, capture.session.areaEligible),
       itchVas: capture.itchVas,
       photoUri: capture.photoUri,
     });

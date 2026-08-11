@@ -1,3 +1,4 @@
+import type { ScaleFrame } from '../ai/scaleFrame';
 import { GATE } from './frameQuality';
 import { SKIN_GATE } from './skinMask';
 import {
@@ -66,12 +67,30 @@ export function computeColorNormalization(
 }
 
 /** 이번 촬영을 이 자리의 기준(baseline)으로 삼는다 — 다음 촬영의 조명 보정이 여기서 나온다 */
-export function baselineFromCapture(sessionId: string, uri: string, metrics: ImageQualityMetrics): Baseline {
+export function baselineFromCapture(
+  sessionId: string,
+  uri: string,
+  metrics: ImageQualityMetrics,
+  /**
+   * 넓이를 재는 자리에서만 채워지는 것들.
+   *
+   * scale — 이 자리의 자 기하(d/v 비율·비대칭). 다음 촬영의 **자세 게이트 기준**이 된다.
+   *   사람마다 얼굴 비례가 다르므로 자세는 절대 기준으로 잴 수 없고, 반드시 자기 첫 사진과
+   *   견줘야 한다. 배율(areaRef)은 기록용이다 — 면적은 매 회차 자기 사진의 d·v로 나눈다.
+   * facing — 전면/후면은 화각이 달라 같은 거리에서도 원근 왜곡이 다르다. 카메라가 바뀌면
+   *   면적 비교 자체가 성립하지 않으므로 기준을 남기고 이어찍기에서 잠근다.
+   */
+  extra: { scale?: ScaleFrame | null; facing?: 'front' | 'back' } = {},
+): Baseline {
   return {
     sessionId,
     processedUri: uri,
     skinReference: metrics.skinMedians,
     brightness: metrics.brightness,
+    scale: extra.scale
+      ? { areaRef: extra.scale.areaRef, ratio: extra.scale.ratio, asym: extra.scale.asym }
+      : undefined,
+    facing: extra.facing,
   };
 }
 

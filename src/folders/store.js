@@ -304,10 +304,14 @@ export function ensureFolder({ targetId, name, disease }) {
  * 이어받고, "이번 검사에서 실제로 등록했는지"는 결과 화면이 따로 판단한다.
  *
  * @param {{ folderId: string, iga: number, redness: number, bumps: number, scratch: number,
- *           thickening: number, itchVas: number|null, areaPct: number, photoUri?: string }} args
+ *           thickening: number, itchVas: number|null, areaPct: number,
+ *           faceAreaIndex?: number|null, faceAreaKind?: 'face'|'torso'|null, photoUri?: string }} args
  * @returns {{ record: any, hasSleepSource: boolean }|null}
  */
-export function recordExam({ folderId, iga, redness, bumps, scratch, thickening, itchVas, areaPct, photoUri }) {
+export function recordExam({
+  folderId, iga, redness, bumps, scratch, thickening, itchVas, areaPct,
+  faceAreaIndex = null, faceAreaKind = null, photoUri,
+}) {
   const folder = folders.find((f) => f.id === folderId);
   if (!folder) return null;
 
@@ -330,13 +334,34 @@ export function recordExam({ folderId, iga, redness, bumps, scratch, thickening,
     scratch: clamp(round1(scratch), 0, 10),
     thickening: clamp(round1(thickening), 0, 10),
     lesionAreaPct: clamp(round1(areaPct), 0.5, 100),
+    /*
+      배율이 상쇄된 넓이 지수 — 이것만이 회차 간 비교에 쓸 수 있다.
+      lesionAreaPct는 사진 대비 %라 10cm만 가까이 가도 두 배가 된다.
+
+      상한을 두지 않는다(얼굴 크기 d·v 대비 지수라 100을 넘을 수 있다). 그리고 없는 값은 0이
+      아니라 null이어야 한다 — "못 쟀다"와 "없다"는 다르다. 0으로 채우면 그래프가 "병변이
+      사라졌다"고 말하게 된다.
+    */
+    lesionAreaFaceIndex: faceAreaIndex == null ? null : Math.max(0, round1(faceAreaIndex)),
+    /** 그 지수를 무엇으로 나눴는지. 없으면 얼굴 — 이 필드가 생기기 전 기록은 전부 얼굴이었다 */
+    lesionAreaScaleKind: faceAreaIndex == null ? null : faceAreaKind ?? 'face',
     photo: photoUri ? { uri: photoUri } : (last ? last.photo : null),
   };
 
-  const idx = folder.records.findIndex((r) => r.date === date);
-  const records = idx >= 0
-    ? folder.records.map((r, i) => (i === idx ? record : r))
-    : [...folder.records, record].sort((a, b) => a.dayOffset - b.dayOffset);
+  /*
+    촬영 한 번이 기록 하나다 — 같은 날 두 번 찍어도 덮어쓰지 않는다.
+
+    예전에는 날짜가 같으면 덮어썼다. "하루에 한 줄"은 그래프를 단순하게 만들지만 대가가 컸다:
+    아침에 찍은 사진이 저녁에 찍으면 **소리 없이 사라진다.** 사용자는 저장 완료를 봤는데 기록에는
+    없으니 앱이 사진을 잃어버린 것으로 보인다.
+
+    넓이 추이에는 더 직접적인 문제가 있다. 같은 날 여러 번 찍으면 잰 회차가 영영 한 개라
+    "기준이 되는 첫 촬영이 기록됐어요"에서 다음으로 넘어가질 못한다 — 하루 안에서는 넓이 기능이
+    아예 동작하지 않는 셈이다.
+
+    같은 날 기록이 여럿이면 시간 순으로 나란히 쌓인다(ts로 뒷순위를 가른다).
+  */
+  const records = [...folder.records, record].sort((a, b) => a.dayOffset - b.dayOffset || a.ts - b.ts);
   folders = folders.map((f) => (f.id === folder.id ? { ...f, records } : f));
   emit();
   return { record, hasSleepSource: !!last };
