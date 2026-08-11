@@ -96,7 +96,10 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   const { healthConnected } = useProfile();
   // 이 폴더가 지켜보는 자리가 넓이를 잴 수 있는 곳인지 — 촬영 화면과 같은 판단을 쓴다
   const { findTarget } = useMonitoring();
-  const areaTrackable = supportsAreaTracking(findTarget(folder?.targetId)?.part ?? 'chest');
+  // 대상을 못 찾으면 잴 수 없는 것으로 본다 — 예전에는 'chest'를 기본값으로 뒀는데, 몸통이
+  // 측정 가능해지면서 그 값이 "못 잰다"의 자리에서 "잰다"로 뒤집혔다
+  const areaPart = findTarget(folder?.targetId)?.part;
+  const areaTrackable = areaPart ? supportsAreaTracking(areaPart) : false;
   // 날짜 칸 줄과 그래프가 같은 가로 스크롤 하나를 공유한다(아래 참고) — 처음 열렸을 때(또는 새로
   // 촬영해 기록이 늘었을 때) 오른쪽 끝(오늘)으로 자동 스크롤하기 위한 참조.
   const scrollRef = useRef(null);
@@ -230,7 +233,7 @@ export default function MonitoringFolderScreen({ navigation, route }) {
         </View>
 
         {/* 병변 넓이 변화 — 위 결합 그래프와 축을 나눠 둔 이유는 AreaTrendCard 주석 참고.
-            넓이를 잴 수 있는 자리(지금은 얼굴)의 폴더에서만 보여준다. 팔·다리 폴더에 이 카드를
+            넓이를 잴 수 있는 자리(얼굴·몸통)의 폴더에서만 보여준다. 팔·다리 폴더에 이 카드를
             띄우면 영영 채워지지 않을 자리를 계속 비워 두게 되고, "찍으면 볼 수 있다"는 안내가
             그 폴더에서는 거짓말이 된다. */}
         {areaTrackable && (

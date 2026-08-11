@@ -23,12 +23,22 @@ import {
 } from '../folders/theme';
 import { folderNameOf } from '../folders/targets';
 import { getFolder } from '../folders/store';
-import { areaTrendOf, fmtPct, LOD, verdictOf } from '../folders/areaTrend';
+import {
+  areaTrendOf,
+  changePhrase,
+  coveragePctOf,
+  fmtCoverage,
+  fmtPct,
+  verdictOf,
+} from '../folders/areaTrend';
 import { plainSiteLabel } from '../models';
 import { GRADE_NAMES_KO } from '../ai/labels';
 import type { LocalAnalysisResult } from '../ai/analyzeLocal';
 import { REGION_COLORS } from '../ai/maskOverlay';
 import { ExamAnalysis, ExamCapture } from '../exam/examTypes';
+import type { AreaEligibility } from '../monitoring/types';
+import { SCALE_SPEC, type ScaleKind } from '../ai/scaleFrame';
+import { scaleKindOf } from '../monitoring/bodyParts';
 import { DUMP_RESULTS } from '../exam/dumpAnalysis';
 import { igaDisplayValue, itchDisplayValue, SIGN_DISPLAY, SIGN_ORDER, signDisplayValue } from '../exam/examMetrics';
 import { useMonitoring } from '../context/MonitoringContext';
@@ -148,8 +158,20 @@ export default function ExamResultScreen({
           계산은 폴더 화면의 카드와 **같은 모듈**(folders/areaTrend)을 쓴다. 두 화면이 따로
           계산하면 언젠가 어긋나고, 그때 사용자는 어느 쪽을 믿어야 할지 알 수 없다.
         */}
-        {isFollowUp && linkedFolder && (
-          <AreaChangeCard folderId={linkedFolder.id} eligible={session.areaEligible} />
+        {isFollowUp && linkedFolder ? (
+          <AreaChangeCard
+            folderId={linkedFolder.id}
+            local={analysis.local}
+            eligible={session.areaEligible}
+          />
+        ) : (
+          // 견줄 회차가 아직 없는 촬영(신규 기록)에도 "지금 얼마나 넓은가"는 말해 줄 수 있다.
+          // 넓이를 잴 수 있는 자리인지는 부위가 정하므로(바로 스캔은 아예 재지 않는다) 함께 넘긴다.
+          <AreaCoverageCard
+            local={analysis.local}
+            kind={isQuick ? null : scaleKindOf(target.part)}
+            eligible={session.areaEligible}
+          />
         )}
 
         {/* 판정 단위가 둘 이상이거나 제외된 덩어리가 있을 때만 — 하나면 위 카드가 곧 그 하나다 */}
@@ -274,59 +296,125 @@ function PhotoZoom({ uri, label, onClose }: { uri: string; label: string; onClos
 
 /** 촬영·후처리 신뢰도 배지 — 낮은 기록은 추세에서 가중치를 낮춰야 하므로 결과에도 계속 달고 다닌다 */
 /**
- * 이번 촬영의 병변 넓이가 첫 촬영 대비 얼마나 달라졌는지 한 줄로.
+ * 이번 촬영의 병변 넓이 — **지금 얼마나 넓은지**와 **첫 촬영에서 얼마나 달라졌는지**를 함께.
+ *
+ * 두 숫자를 같이 두는 이유: 변화율만 있으면 "42% 줄었다"가 무엇에서 무엇으로 줄었는지 알 수
+ * 없고, 절대량만 있으면 그게 좋아지는 중인지 알 수 없다. "얼굴의 20%, 처음보다 42% 감소"가
+ * 되어야 한 줄로 상태가 그려진다.
+ *
+ * 다만 두 숫자의 성격이 다르다는 것을 화면도 알아야 한다 — 부위 대비 %는 그 부위의 넓이를 성인
+ * 평균 비례로 어림한 값이고(scaleFrame의 areaOverAreaRef), 변화율은 그 어림이 위아래에서
+ * 상쇄돼 남지 않는 값이다. 그래서 큰 숫자 옆의 판정 배지는 **변화율**에만 붙인다.
  *
  * 폴더의 AreaTrendCard와 같은 계산(folders/areaTrend)을 쓰고, 여기서는 그래프 없이 숫자와
  * 판정만 보여준다 — 결과 화면은 "오늘 어땠나"를 훑는 자리이고, 흐름을 보는 것은 폴더의 일이다.
  *
- * 네 가지 상태를 모두 말한다. 잰 경우만 말하면 나머지 셋에서 화면이 조용해지는데,
- * 사용자는 그때 "아직 계산 중인가", "기능이 없나"를 알 수 없다.
+ * **어떤 사진에서도 숫자 하나는 보여준다**(areaShowOf). 게이트를 못 넘었다고 화면이 조용해지면
+ * 사용자는 "계산 중인가", "기능이 없나"를 알 수 없고, 몇 번 그러면 기능을 쓰지 않게 된다.
+ * 못 넘은 것은 대개 회차 간 비교 자격이지 그 한 장의 값이 아니므로, 값은 보여주고 추이에서만 뺀다.
  */
 function AreaChangeCard({
   folderId,
+  local,
   eligible,
 }: {
   folderId: string;
+  /** 이번 사진의 분석 결과 — 게이트를 못 넘은 회차에서도 어림값은 보여줄 수 있다 */
+  local: LocalAnalysisResult;
   /** 촬영 시점에 판단한 이번 장의 측정 자격 — 못 쟀으면 그 이유가 들어 있다 */
-  eligible?: { ok: boolean; reason?: string };
+  eligible?: AreaEligibility;
 }) {
   // 이 화면이 뜨기 전에 recordExam이 이미 오늘 기록을 넣어 두었다 — 그래서 마지막 회차가 이번 촬영이다
   const trend = areaTrendOf(getFolder(folderId)?.records ?? []);
 
   const body = () => {
+    /*
+      게이트를 못 넘은 회차 — 예전에는 여기서 "못 쟀어요" 한 줄로 끝났다. 그런데 못 넘은 이유는
+      대개 **회차 간 비교 자격**이지 이 한 장의 값이 아니다. 그래서 숫자는 보여주고(어림값),
+      추이에서만 뺀다. 지난번까지의 추이는 그대로 아래에 남는다 — 이번 한 장이 빠졌다고 지금까지
+      쌓인 흐름을 감출 이유가 없다.
+    */
     if (eligible && !eligible.ok) {
+      const show = areaShowOf(local, eligible);
       return (
         <>
-          <Text style={styles.areaNote}>이번 사진은 넓이를 재지 못했어요 — {eligible.reason}</Text>
-          <Text style={styles.areaNote}>위 등급·증상 결과는 그대로 기록됐어요.</Text>
+          <View style={styles.areaRow}>
+            <Text style={styles.areaValue}>{show.text}</Text>
+          </View>
+          <Text style={styles.areaNote}>
+            {show.level === 'frame'
+              ? `몸통 크기를 재지 못해 사진 대비로 보여드려요 — ${eligible.reason}`
+              : `어림값이에요 — ${eligible.reason}. 이 값은 변화 추이에 넣지 않았어요.`}
+          </Text>
+          {trend && !trend.baselineOnly && (
+            <Text style={styles.areaNote}>
+              지난 회차까지의 추이는 그대로예요 — {changePhrase(trend.latest.delta, trend.kind)}{' '}
+              (첫 촬영 대비 {fmtPct(trend.latest.delta)}).
+            </Text>
+          )}
         </>
       );
     }
     if (!trend) return <Text style={styles.areaNote}>아직 넓이를 잰 촬영이 없어요.</Text>;
-    if (trend.baselineOnly) {
-      return (
-        <Text style={styles.areaNote}>
-          기준이 되는 첫 촬영이 기록됐어요. 다음에 같은 자리를 한 번 더 찍으면 변화가 보여요.
-        </Text>
-      );
-    }
 
     const { delta } = trend.latest;
-    const verdict = verdictOf(delta);
-    return (
-      <>
-        <View style={styles.areaRow}>
-          <Text style={styles.areaValue}>{fmtPct(delta)}</Text>
+    // 배지는 변화율에만 붙는다 — 기준 한 장뿐이면 견줄 것이 없으므로 배지도 없다
+    const verdict = trend.baselineOnly ? null : verdictOf(delta, trend.kind);
+
+    // 부위 대비 %는 "잰 회차"면 언제나 나온다 — 기준 한 장뿐이어도 오늘의 넓이는 말해 줄 수 있다
+    const coverage = (
+      <View style={styles.areaRow}>
+        <Text style={styles.areaValue}>
+          {trend.latest.noun}의 {fmtCoverage(trend.latest.coveragePct)}
+        </Text>
+        {verdict && (
           <View style={[styles.areaPill, { backgroundColor: verdict.color }]}>
             <Text style={[styles.areaPillText, verdict.lightBg && { color: mc.ink }]}>{verdict.ko}</Text>
           </View>
-        </View>
+        )}
+      </View>
+    );
+
+    if (!verdict) {
+      return (
+        <>
+          {coverage}
+          <Text style={styles.areaNote}>
+            병변 부위를 모두 합친 넓이가 {trend.latest.noun} 전체에서 차지하는 비율이에요.
+          </Text>
+          <Text style={styles.areaNote}>
+            기준이 되는 첫 촬영이 기록됐어요. 다음에 같은 자리를 한 번 더 찍으면 변화가 보여요.
+          </Text>
+          {trend.latest.lowRes && <Text style={styles.areaNote}>{LOW_RES_NOTE}</Text>}
+          <Text style={styles.areaNote}>{COVERAGE_CAVEAT}</Text>
+        </>
+      );
+    }
+
+    const base = trend.points[0];
+    return (
+      <>
+        {coverage}
+        {/*
+          변화율은 말(감소/증가)과 숫자(-42%)를 함께 적는다. 말만 있으면 얼마나인지 모르고,
+          부호 붙은 숫자만 있으면 "-42%가 좋은 건가"를 한 번 더 생각해야 한다.
+        */}
+        <Text style={styles.areaChange}>
+          {changePhrase(delta, trend.kind)} <Text style={styles.areaChangeExact}>(첫 촬영 대비 {fmtPct(delta)})</Text>
+        </Text>
+        <Text style={styles.areaNote}>
+          기준은 {fmtRecordDate(base.record.ts)}의 첫 촬영이에요 — 그때는 {base.noun}의{' '}
+          {fmtCoverage(base.coveragePct)}였어요. (직전 촬영이 아니라 항상 첫 촬영과 견줍니다)
+        </Text>
         {/* 띠 안이면 왜 방향을 말하지 않는지 밝힌다 — 안 그러면 "±30%는 왜 변화가 아니지"가 된다 */}
         <Text style={styles.areaNote}>
           {verdict.tone === 'same'
-            ? `${fmtPct(-LOD)} ~ ${fmtPct(LOD)} 안의 움직임은 측정 오차와 구분되지 않아 변화로 보지 않아요.`
-            : '촬영 거리와 상관없이 얼굴 크기를 기준으로 잰 값이에요.'}
+            ? `${fmtPct(-trend.lod)} ~ ${fmtPct(trend.lod)} 안의 움직임은 측정 오차와 구분되지 않아 변화로 보지 않아요.`
+            : `변화율은 촬영 거리와 상관없이 ${trend.latest.noun} 크기를 기준으로 잰 값이에요.`}
         </Text>
+        {/* 화질로 흔들릴 수 있는 값은 그 사실을 값 옆에 남긴다 — 나중에는 물어볼 데가 없다 */}
+        {(trend.latest.lowRes || base.lowRes) && <Text style={styles.areaNote}>{LOW_RES_NOTE}</Text>}
+        <Text style={styles.areaNote}>{COVERAGE_CAVEAT}</Text>
       </>
     );
   };
@@ -334,14 +422,125 @@ function AreaChangeCard({
   return (
     <View style={[monitoringCard(), styles.card]}>
       <View style={styles.areaHead}>
-        <Text style={styles.cardLabel}>병변 넓이 변화</Text>
-        <Text style={styles.areaSub}>첫 촬영 대비</Text>
+        <Text style={styles.cardLabel}>병변 넓이</Text>
+        <Text style={styles.areaSub}>{trend ? `${trend.latest.noun} 대비` : '부위 대비'} · 첫 촬영 대비</Text>
       </View>
       {body()}
     </View>
   );
 }
 
+/**
+ * 부위 대비 %에 항상 따라붙는 단서.
+ *
+ * 이 값의 분모(부위의 넓이)는 재지 않고 성인 평균 비례로 어림한 것이라, 사람에 따라 실제와
+ * 몇 %p 어긋난다. 반면 변화율은 그 어림이 상쇄돼 남지 않는다 — 사용자가 어느 숫자를 얼마나
+ * 믿어야 하는지 알려면 이 차이를 말해 줘야 한다.
+ */
+/**
+ * 사용자가 해상도 게이트를 열고 잰 회차에 붙는 단서.
+ *
+ * 기준 회차가 그렇게 잰 것이면 **모든 회차의 변화율**이 함께 흔들린다 — 분모이기 때문이다.
+ * 그래서 이번 회차뿐 아니라 기준 회차의 표시도 함께 본다.
+ */
+const LOW_RES_NOTE =
+  '작게 찍힌 사진에서 잰 값이 섞여 있어요 — 실제 변화보다 값이 더 흔들릴 수 있어요.';
+
+const COVERAGE_CAVEAT =
+  '부위 대비 %는 그 부위 크기를 평균 비례로 어림해 환산한 값이라 사람에 따라 조금 다를 수 있어요. 변화율은 이 어림과 무관해요.';
+
+/** 기준 회차의 날짜 — "6월 1일". 연도는 붙이지 않는다 (같은 폴더 안이라 헷갈릴 일이 거의 없다) */
+function fmtRecordDate(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+}
+
+/**
+ * 이 사진에서 보여줄 수 있는 넓이 — **세 등급 중 하나는 언제나 나온다.**
+ *
+ * 이 함수가 생긴 이유가 중요하다. 예전에는 게이트를 하나라도 못 넘으면 넓이를 아예 보여주지
+ * 않았는데, 몸통에서는 그 조건이 많아 대부분의 사진이 아무 숫자도 못 봤다. 그러면 사용자는
+ * 기능을 쓰다가 포기하고, 포기하면 추이도 없다 — 정확도를 지키려다 측정 자체를 잃는다.
+ *
+ * 그래서 **볼 권리와 견줄 자격을 나눈다**:
+ *
+ *   exact — 게이트를 다 통과했다. 숫자를 그대로 보여주고 추이에도 넣는다.
+ *   rough — 자는 쟀지만(어깨·골반을 찾았다) 정렬·조명이 어긋났다. 그 사진 한 장 안에서는 여전히
+ *           "몸통의 몇 %"가 맞다 — 어긋난 것은 **회차 간 비교 자격**이지 이 한 장의 값이 아니다.
+ *           그래서 "약"을 붙여 보여주고 추이에서만 뺀다.
+ *   frame — 자를 못 찾았다. 부위 대비로는 말할 수 없으므로 **사진 대비**로 바꿔 말한다.
+ *           촬영 거리에 따라 통째로 달라지는 값이라 회차 비교는 불가능하고, 그 사실을 함께 적는다.
+ */
+type AreaShow =
+  | { level: 'exact' | 'rough'; noun: string; text: string }
+  | { level: 'frame'; noun: null; text: string };
+
+function areaShowOf(local: LocalAnalysisResult, eligible?: AreaEligibility): AreaShow {
+  const area = local.scaleArea;
+  if (area && area.index > 0) {
+    const noun = SCALE_SPEC[area.kind].noun;
+    const pct = fmtCoverage(coveragePctOf(area.index, area.kind));
+    return eligible?.ok ?? true
+      ? { level: 'exact', noun, text: `${noun}의 ${pct}` }
+      : { level: 'rough', noun, text: `${noun}의 약 ${pct}` };
+  }
+  // 자가 없으면 분모를 사진으로 바꾼다 — 없는 값을 지어내는 것이 아니라 다른 값을 말하는 것이다
+  return { level: 'frame', noun: null, text: `사진의 ${fmtCoverage(local.maskAreaPct)}` };
+}
+
+/**
+ * 견줄 회차가 없는 촬영(신규 기록)의 넓이 — 변화 없이 "지금 얼마나 넓은가"만.
+ *
+ * 이 값은 오늘 한 장에서 나오므로 폴더도 기준 회차도 필요 없다. 반대로 **변화는 말할 수 없다** —
+ * 그건 AreaChangeCard의 일이고, 두 번째 촬영부터 나온다.
+ *
+ * **못 잰 경우에도 카드를 띄운다.** 예전에는 조용히 사라지게 두었는데, 그러면 사용자는 "이 앱은
+ * 첫 기록에서는 넓이를 안 재는구나"와 "이번엔 못 쟀구나"를 구분할 수 없다. 특히 첫 촬영은 이후
+ * 모든 회차의 기준이 되는 사진이라, 못 쟀다는 사실을 **그 자리에서** 알아야 다시 찍을 수 있다 —
+ * 나중에는 되돌릴 방법이 없다.
+ *
+ * 넓이를 아예 잴 수 없는 자리(팔·다리)에서만 카드가 없다. 그건 이번 촬영의 문제가 아니라
+ * 그 부위에 자가 될 뼈 기준점이 없다는 뜻이라, 매번 말해 봐야 사용자가 할 수 있는 일이 없다.
+ */
+function AreaCoverageCard({
+  local,
+  kind,
+  eligible,
+}: {
+  local: LocalAnalysisResult;
+  /** 이 자리가 무엇을 자로 쓰는지. null이면 넓이를 재지 않는 자리라 카드 자체가 없다 */
+  kind: ScaleKind | null;
+  eligible?: AreaEligibility;
+}) {
+  if (!kind) return null;
+  const show = areaShowOf(local, eligible);
+
+  return (
+    <View style={[monitoringCard(), styles.card]}>
+      <View style={styles.areaHead}>
+        <Text style={styles.cardLabel}>병변 넓이</Text>
+        <Text style={styles.areaSub}>{show.noun ? `${show.noun} 대비` : '사진 대비'}</Text>
+      </View>
+
+      <View style={styles.areaRow}>
+        <Text style={styles.areaValue}>{show.text}</Text>
+      </View>
+
+      {/*
+        설명은 한 줄만 둔다. 이 화면에서 넓이는 훑고 지나가는 값이고, 자세한 단서는 추이를 볼 때
+        (폴더 카드에서) 필요하다 — 여기서 네 줄을 쌓으면 정작 숫자가 안 읽힌다.
+      */}
+      <Text style={styles.areaNote}>
+        {show.level === 'exact'
+          ? `병변을 모두 합친 넓이가 ${show.noun} 전체에서 차지하는 비율이에요.`
+          : show.level === 'rough'
+            ? `어림값이에요 — ${eligible?.reason ?? '촬영 조건이 지난번과 달라요'}. 이 값은 변화 추이에 넣지 않았어요.`
+            : '몸통 크기를 재지 못해 사진에서 차지하는 비율로 보여드려요 — 촬영 거리에 따라 달라지는 값이라 회차끼리 비교할 수 없어요.'}
+      </Text>
+      {eligible?.override && <Text style={styles.areaNote}>{LOW_RES_NOTE}</Text>}
+    </View>
+  );
+}
 
 function ConfidencePill({ score, tier }: { score: number; tier: 'high' | 'medium' | 'low' }) {
   const color = tier === 'high' ? mc.sev1 : tier === 'medium' ? mc.sev2 : mc.sev3;
@@ -910,6 +1109,8 @@ const styles = StyleSheet.create({
   areaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
   areaValue: { fontSize: 26, fontWeight: '800', color: mc.ink },
   areaPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  areaChange: { marginTop: 6, fontSize: 15, fontWeight: '800', color: mc.ink },
+  areaChangeExact: { fontSize: 13, fontWeight: '600', color: mc.sub },
   areaPillText: { fontSize: 12, fontWeight: '700', color: '#FFFFFF' },
   areaNote: { marginTop: 8, fontSize: 12, color: mc.sub, lineHeight: 18 },
   warnText: { fontSize: 12.5, color: mc.ink, lineHeight: 19 },

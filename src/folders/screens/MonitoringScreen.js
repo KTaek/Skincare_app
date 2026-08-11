@@ -1,9 +1,9 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { monitoringColors as mc, monitoringCard } from '../theme';
-import { useFolders } from '../store';
+import { useFolders, useFoldersHydrated } from '../store';
 import { useMonitoring } from '../../context/MonitoringContext';
 import { plainSiteLabel } from '../../models';
 
@@ -16,6 +16,7 @@ import { plainSiteLabel } from '../../models';
  */
 export default function MonitoringScreen({ navigation }) {
   const folders = useFolders();
+  const hydrated = useFoldersHydrated();
   const { findTarget } = useMonitoring();
 
   const rows = folders
@@ -46,7 +47,14 @@ export default function MonitoringScreen({ navigation }) {
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 24 }}>
-        {rows.length === 0 ? (
+        {/* 저장된 기록을 아직 못 읽었으면 "없다"고 말하지 않는다 — 기록이 있는 사용자에게
+            그 한 순간이 "다 사라졌다"로 읽힌다 (folders/store의 hydrated 주석) */}
+        {!hydrated ? (
+          <View style={[monitoringCard(), styles.emptyCard]}>
+            <ActivityIndicator color={mc.greenTop} />
+            <Text style={styles.emptyHint}>기록을 불러오는 중이에요</Text>
+          </View>
+        ) : rows.length === 0 ? (
           <View style={[monitoringCard(), styles.emptyCard]}>
             <MaterialIcons name="accessibility-new" size={30} color={mc.sub} />
             <Text style={styles.emptyTitle}>아직 지켜보는 자리가 없어요</Text>

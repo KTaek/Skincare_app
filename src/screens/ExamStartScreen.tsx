@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
 import { plainSiteLabel } from '../models';
-import { useFolders } from '../folders/store';
+import { useFolders, useFoldersHydrated } from '../folders/store';
 import { useMonitoring } from '../context/MonitoringContext';
 import { MonitorTarget } from '../monitoring/types';
 
@@ -35,6 +35,7 @@ export default function ExamStartScreen({
   const [picked, setPicked] = useState<'new' | 'followUp' | 'quick' | null>(initialPick);
   const [pickedFolderId, setPickedFolderId] = useState<string | null>(null);
   const folders = useFolders();
+  const hydrated = useFoldersHydrated();
   const { findTarget } = useMonitoring();
 
   /**
@@ -92,7 +93,18 @@ export default function ExamStartScreen({
             <View style={{ height: 18 }} />
             <Text style={styles.listLabel}>최근 기록</Text>
             <View style={{ height: 8 }} />
-            {candidates.length === 0 ? (
+            {/*
+              저장된 기록을 아직 못 읽었으면 "없다"고 말하지 않는다. 앱을 켜자마자 이 화면에
+              들어오면 불러오기가 끝나기 전이라, 기록이 있는 사용자에게 "아직 없어요"가 잠깐
+              스쳐 지나간다 — 그 한 순간이 "내 기록이 사라졌다"로 읽힌다.
+            */}
+            {!hydrated ? (
+              <View style={[cardDecoration(), styles.emptyCard]}>
+                <ActivityIndicator color={AppColors.greenMuted} />
+                <View style={{ height: 8 }} />
+                <Text style={styles.emptyHint}>기록을 불러오는 중이에요</Text>
+              </View>
+            ) : candidates.length === 0 ? (
               <View style={[cardDecoration(), styles.emptyCard]}>
                 <MaterialIcons name="folder-open" size={28} color={AppColors.sub} />
                 <View style={{ height: 8 }} />

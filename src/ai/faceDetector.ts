@@ -1,4 +1,5 @@
-import { loadTensorflowModel, type TensorflowModel } from 'react-native-fast-tflite';
+import { type TensorflowModel } from 'react-native-fast-tflite';
+import { createModelSlot } from './modelLoader';
 import type { SkImage } from '@shopify/react-native-skia';
 import { readLetterboxRGBA, unletterbox, type Letterbox } from './skiaPixels';
 import faceMeta from '../../assets/models/face_labels.json';
@@ -66,33 +67,31 @@ const META = faceMeta as {
 const SIZE = META.img_size;
 const NUM_COORDS = META.num_coords;
 
-let modelPromise: Promise<TensorflowModel> | null = null;
-/** 한 번 실패하면 다시 시도하지 않는다 — 매 틱마다 같은 실패를 되풀이할 이유가 없다 */
-let unavailable = false;
+const slot = createModelSlot('face_det_128', () => require('../../assets/models/face_det_128.tflite'));
 
-function getModel(): Promise<TensorflowModel> {
-  if (!modelPromise) {
-    modelPromise = loadTensorflowModel(require('../../assets/models/face_det_128.tflite'), []);
-  }
-  return modelPromise;
-}
+/**
+ * 되살릴 수 없는 고장 — 출력 규격이 예상과 다른 경우다. 로딩 실패는 여기 들어가지 않는다:
+ * 개발 중에는 모델을 Metro에서 받아 오므로 연결이 끊겨 실패할 수 있고, 그건 다시 시도하면
+ * 되는 일이다(modelLoader.ts).
+ */
+let broken = false;
 
 /**
  * 얼굴 검출을 쓸 수 있는지. false면 얼굴 모드(고스트·정렬 게이트·면적 측정)를 켜지 않는다.
- * 한 번이라도 로딩에 실패해야 false가 되므로, 처음에는 낙관적으로 true다.
+ * 몇 번을 시도해도 못 받았거나 출력 규격이 어긋났을 때만 false다.
  */
 export function isFaceDetectionAvailable(): boolean {
-  return !unavailable;
+  return !broken && !slot.hopeless;
 }
 
 /** 촬영 화면에 들어올 때 미리 불러 두면 첫 틱의 지연이 사라진다 */
 export async function preloadFaceModel(): Promise<void> {
-  if (unavailable) return;
+  if (!isFaceDetectionAvailable()) return;
   try {
-    await getModel();
+    await slot.get();
   } catch (e: any) {
-    unavailable = true;
-    console.warn('[face] 모델을 불러오지 못했어요 — 얼굴 정렬/면적 측정을 끕니다:', e?.message ?? e);
+    // 여기서 끄지 않는다 — 다음 시도에 받아질 수 있다 (slot이 연속 실패를 세고 있다)
+    console.warn('[face] 모델을 아직 못 불러왔어요 (다시 시도합니다):', e?.message ?? e);
   }
 }
 
@@ -157,14 +156,13 @@ async function runDetector(
   image: SkImage,
   src?: { x: number; y: number; width: number; height: number },
 ): Promise<FaceDetection | null> {
-  if (unavailable) return null;
+  if (!isFaceDetectionAvailable()) return null;
 
   let model: TensorflowModel;
   try {
-    model = await getModel();
+    model = await slot.get();
   } catch (e: any) {
-    unavailable = true;
-    console.warn('[face] 모델을 불러오지 못했어요 — 얼굴 정렬/면적 측정을 끕니다:', e?.message ?? e);
+    console.warn('[face] 모델을 아직 못 불러왔어요:', e?.message ?? e);
     return null;
   }
 
@@ -188,7 +186,7 @@ async function runDetector(
     else if (arr.length === anchors.length) scores = arr;
   }
   if (!regressors || !scores) {
-    unavailable = true;
+    broken = true;
     console.warn('[face] 모델 출력 모양이 예상과 달라요 — 얼굴 정렬/면적 측정을 끕니다');
     return null;
   }

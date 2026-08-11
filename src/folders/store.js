@@ -7,13 +7,21 @@
  * 폴더는 사용자가 직접 만들지 않는다 — 카메라 탭의 "신규 검사"(부위 선택 → 질환 등록 →
  * 가려움 문진 → 촬영 → 결과)를 끝낸 뒤 결과 화면에서 "경과 기록에 연동"을 누르면
  * ensureFolder가 "{부위} {질환}" 이름으로 만들고 recordExam이 그 검사의 실측값을 첫 기록으로
- * 넣는다. 프리셋 폴더 2개는 UI 흐름 시연용 dump 시계열이다.
+ * 넣는다.
  *
- * ⚠️ 세션 메모리에만 유지된다(앱 재시작 시 초기화).
+ * ── 저장 ──────────────────────────────────────────────────
+ *
+ * 앱을 껐다 켜도 남는다(AsyncStorage). 화면은 여전히 메모리의 folders를 읽고, 저장은 바뀔 때마다
+ * 뒤에서 따라간다 — 화면이 저장을 기다리게 만들면 촬영 직후의 흐름이 저장 속도에 묶인다.
+ *
+ * 불러오기는 비동기라 첫 렌더에는 빈 배열이 보인다. 그 순간이 "기록이 없음"과 구분되지 않으므로
+ * hydrated 플래그를 함께 내보내고, 목록 화면은 그것으로 "불러오는 중"과 "아직 없음"을 가른다.
+ *
+ * 예시(dump) 폴더는 없다. 예전에는 UI 흐름을 보여주려고 프리셋 두 개를 넣어 두었는데, 저장이
+ * 붙은 뒤로는 그 둘이 **지워지지 않는 남의 기록**처럼 남는다.
  */
 import { useSyncExternalStore } from 'react';
-import { ATOPIC_PHOTOS, CHEEK_PHOTOS } from './dumpPhotos';
-import { DEMO_TARGETS, folderNameOf } from './targets';
+import { FOLDERS_KEY, deletePhotos, loadSaved, persistPhoto, saveLater } from './persist';
 
 const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -31,7 +39,6 @@ export const daysBetween = (fromKey, toKey) => {
 };
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const round1 = (v) => Math.round(v * 10) / 10;
-const lerp = (a, b, t) => a + (b - a) * t;
 
 /** 문자열 -> 32bit 정수 시드 (간단 해시) */
 function hashStr(s) {
@@ -53,129 +60,57 @@ export function makeRng(seed) {
   };
 }
 
-/**
- * 촬영 시작일부터 spanDays 동안 captureCount번 촬영했다고 가정하고
- * 3개 지표(수면 점수 · 가려움 VAS · 피부 종합 상태 IGA)의 dump 시계열을 생성한다.
- * 실제 사용자는 매일 촬영하지 않으므로 날짜 간격을 일부러 들쭉날쭉하게 만든다.
- *
- * from -> to로 밋밋하게 한쪽으로만 줄어들면 비현실적이라, 물결(wave) 성분을 얹어
- * 중간중간 좋아졌다 나빠졌다 하는 변동을 준다. 처음/마지막 기록은 폴더가 의도한
- * from/to 값 그대로 남도록 물결의 진폭을 양 끝에서 0으로 줄이는 envelope을 곱한다.
- */
-function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to, photos }) {
-  const rng = makeRng(seedBase);
+/*
+  폴더 목록. 처음에는 비어 있고, 저장된 것을 불러오면 채워진다.
 
-  // 0일차, 마지막 날은 반드시 포함 + 중간은 불규칙 간격으로 샘플링
-  const offsets = new Set([0, spanDays]);
-  while (offsets.size < captureCount) {
-    offsets.add(Math.round(1 + rng() * (spanDays - 2)));
-  }
-  const sorted = Array.from(offsets).sort((a, b) => a - b);
+  hydrated는 "불러오기가 끝났는가"다. 이것이 없으면 앱을 켠 직후의 빈 배열과 정말로 기록이 없는
+  상태를 화면이 구분할 수 없어서, 기록이 있는 사용자에게 잠깐 "아직 기록이 없어요"가 스쳐 지나간다.
+*/
+let folders = [];
+let hydrated = false;
 
-  const wavePhase = rng() * Math.PI * 2;
-  const waveFreq = 2.2 + rng() * 2.3; // 전체 구간 동안 오르내림이 대략 2~4.5회 정도 반복
-
-  return sorted.map((offset, i) => {
-    const t = sorted.length > 1 ? i / (sorted.length - 1) : 1;
-    const noise = () => (rng() - 0.5);
-    const envelope = Math.sin(t * Math.PI); // 0(양 끝) ~ 1(중간) — 첫/최근 기록은 from/to 값을 그대로 유지
-    const wave = (phaseOffset) => Math.sin(t * Math.PI * waveFreq + wavePhase + phaseOffset) * envelope;
-
-    const sleepSpan = Math.max(6, Math.abs(to.sleep - from.sleep));
-    const itchSpan = Math.max(1.5, Math.abs(to.itch - from.itch));
-    const igaSpan = Math.max(1, Math.abs(to.iga - from.iga));
-
-    // 수면 점수(삼성헬스, 0~100, 정수) · 가려움 VAS(0~10, 정수) — 둘 다 그대로 나올 수 있는 값이다.
-    const sleepScore = clamp(Math.round(lerp(from.sleep, to.sleep, t) + wave(0) * sleepSpan * 0.4 + noise() * sleepSpan * 0.14), 0, 100);
-    const itchVas = clamp(Math.round(lerp(from.itch, to.itch, t) + wave(1.3) * itchSpan * 0.4 + noise() * itchSpan * 0.14), 0, 10);
-    // 피부 종합 상태(IGA) — 모델은 5단계(0~4) 확률의 기댓값을 계산해서 쓰지만, 화면·기록에 실제로
-    // 남는 값(igaGrade)은 그 기댓값을 등급 경계로 이산화한 정수다(src/ai/dex.ts의 bucketize) —
-    // 1.7 같은 소수는 실제로는 절대 나오지 않으므로, dump도 정수 등급만 뽑는다.
-    const igaContinuous = clamp(lerp(from.iga, to.iga, t) + wave(2.6) * igaSpan * 0.4 + noise() * igaSpan * 0.14, 0, 4);
-    const iga = Math.round(igaContinuous);
-
-    // 세부 증상(피부 붉기 · 오돌토돌함 · 긁은 상처 · 피부 두꺼워짐) — 모델은 sign마다 4단계
-    // (None~Severe, 0~3)만 예측하므로 화면 스케일(0~10)로 옮겨도 {0, 3.3, 6.7, 10} 네 값만
-    // 나올 수 있다(examMetrics.signDisplayValue와 같은 식). 종합 점수(iga)를 중심으로 등급을
-    // 흔들어, 같은 날이라도 증상별로 조금씩 다른 등급이 나오게 한다.
-    const symptomNoise = (phaseOffset) => wave(phaseOffset) * 0.9 + noise() * 1.1;
-    const gradeToDisplay10 = (grade) => Math.round((grade / 3) * 100) / 10;
-    const symptomGrade = (phaseOffset) => Math.round(clamp((iga * 3) / 4 + symptomNoise(phaseOffset), 0, 3));
-    const redness = gradeToDisplay10(symptomGrade(3.1));
-    const bumps = gradeToDisplay10(symptomGrade(4.4));
-    const scratch = gradeToDisplay10(symptomGrade(5.7));
-    const thickening = gradeToDisplay10(symptomGrade(7.0));
-
-    const date = addDaysKey(startKey, offset);
-    return {
-      id: `${startKey}-${offset}`,
-      seed: hashStr(`${startKey}-${offset}-${seedBase}`),
-      date,
-      dayOffset: offset,
-      ts: new Date(date).getTime(),
-      sleepScore,
-      itchVas,
-      iga,
-      redness,
-      bumps,
-      scratch,
-      thickening,
-      // LesionThumb의 사진 오버레이 윤곽선 크기에만 쓰는 dump 값 — IGA 단계가 높을수록 넓게 잡는다.
-      // UI 지표/그래프에는 더 이상 "병변 면적"으로 노출하지 않는다.
-      lesionAreaPct: clamp(round1(3 + iga * 6 + noise() * 3), 0.5, 45),
-      // 촬영 순서(i, 시간순 정렬됨)에 맞춰 실제 사진을 1:1로 매칭 — 그려낸 이미지가 아니라 실제 dump 이미지
-      photo: photos[i % photos.length],
-    };
-  });
-}
-
-function makeFolder({ id, targetId, name, spanDaysAgoStart, spanDays, captureCount, from, to, photos }) {
-  const startDate = addDaysKey(todayKey(), -spanDaysAgoStart);
-  const seedBase = hashStr(id + name);
-  return {
-    id,
-    targetId,
-    name,
-    startDate,
-    createdTs: Date.now(),
-    records: generateRecords(startDate, seedBase, { spanDays, captureCount, from, to, photos }),
-  };
-}
-
-/** 데모 폴더도 실제 등록으로 만들어진 폴더와 똑같이 "{부위} {질환}" 이름을 쓴다 */
-const demoName = (t) => folderNameOf(t.label, t.diagnosis?.disease);
-
-// ── 프리셋 폴더 2개 (dump) ───────────────────────────────────────────────
-let folders = [
-  makeFolder({
-    id: 'f1',
-    targetId: DEMO_TARGETS[0].id, // 팔 건선
-    name: demoName(DEMO_TARGETS[0]),
-    spanDaysAgoStart: 53,
-    spanDays: 53,
-    captureCount: 14,
-    from: { sleep: 58, itch: 7, iga: 3.8 },
-    to: { sleep: 84, itch: 2, iga: 0.4 },
-    photos: ATOPIC_PHOTOS,
-  }),
-  makeFolder({
-    id: 'f2',
-    targetId: DEMO_TARGETS[1].id, // 머리 주사
-    name: demoName(DEMO_TARGETS[1]),
-    spanDaysAgoStart: 21,
-    spanDays: 21,
-    captureCount: 7,
-    from: { sleep: 82, itch: 2, iga: 0.8 },
-    to: { sleep: 68, itch: 5, iga: 3.6 },
-    photos: CHEEK_PHOTOS,
-  }),
-];
 const listeners = new Set();
 function emit() { listeners.forEach((l) => l()); }
 function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
+/** 바뀐 것을 알리고 저장을 예약한다 — 모든 변경이 이 문을 지난다 */
+function commit() {
+  emit();
+  saveLater(FOLDERS_KEY, () => folders);
+}
+
+/**
+ * 저장된 폴더를 불러온다. 앱이 뜰 때 한 번만 돈다(아래 즉시 실행).
+ *
+ * 실패해도 빈 상태로 시작한다 — 저장이 깨졌다고 앱이 안 뜨는 것이 가장 나쁘다.
+ */
+async function hydrate() {
+  const saved = await loadSaved(FOLDERS_KEY);
+  if (Array.isArray(saved)) {
+    /*
+      불러온 것을 그냥 대입하지 않는다.
+
+      앱을 켜자마자 촬영해 기록을 남기면, 그 기록이 메모리에 들어간 뒤에 불러오기가 끝날 수 있다.
+      그때 통째로 덮어쓰면 방금 만든 폴더가 **저장되기도 전에 사라진다.** 저장된 것을 먼저 놓고,
+      그 사이에 생긴 것만 뒤에 붙인다.
+    */
+    const savedIds = new Set(saved.map((f) => f.id));
+    folders = [...folders.filter((f) => !savedIds.has(f.id)), ...saved];
+  }
+  hydrated = true;
+  // 사이에 생긴 폴더가 있었다면 그것까지 포함해 저장해 둔다
+  commit();
+}
+hydrate();
+
 export function getFolders() { return folders; }
+export function isHydrated() { return hydrated; }
 export function useFolders() { return useSyncExternalStore(subscribe, getFolders); }
+/** 저장된 기록을 다 불러왔는지 — 목록 화면이 "불러오는 중"과 "아직 없음"을 가르는 데 쓴다 */
+export function useFoldersHydrated() {
+  useSyncExternalStore(subscribe, getFolders);
+  return hydrated;
+}
 export function getFolder(id) { return folders.find((f) => f.id === id) || null; }
 export function useFolder(id) {
   useFolders(); // 변경 시 리렌더 트리거용 구독
@@ -212,8 +147,11 @@ export function useLatestMonitoringRecord() {
 }
 
 export function deleteFolder(id) {
+  const gone = folders.find((f) => f.id === id);
   folders = folders.filter((f) => f.id !== id);
-  emit();
+  commit();
+  // 폴더가 사라지면 그 사진들도 쓸 곳이 없다 — 문서 폴더에 남겨 두면 용량만 먹는다
+  if (gone) deletePhotos(gone.records.map((r) => r.photo?.uri));
 }
 
 /**
@@ -229,8 +167,12 @@ export function deleteFolder(id) {
 export function ensureFolder({ targetId, name }) {
   const existing = getFolderByTarget(targetId);
   if (existing) {
-    // 질환명이 바뀌었으면(모델이 추정한 이름이 새로 붙는 경우 등) 폴더 이름도 따라간다
-    if (existing.name !== name) folders = folders.map((f) => (f.id === existing.id ? { ...f, name } : f));
+    // 질환명이 바뀌었으면(모델이 추정한 이름이 새로 붙는 경우 등) 폴더 이름도 따라간다.
+    // 이름 변경은 그 자체로 저장돼야 한다 — 뒤이을 recordExam이 없을 수도 있다.
+    if (existing.name !== name) {
+      folders = folders.map((f) => (f.id === existing.id ? { ...f, name } : f));
+      commit();
+    }
     return existing.id;
   }
   const id = `f_${targetId}`;
@@ -241,7 +183,7 @@ export function ensureFolder({ targetId, name }) {
 /**
  * 카메라 탭 검사 결과(온디바이스 모델의 **실측값**)를 폴더의 오늘 기록으로 남긴다.
  *
- * addRecord가 만드는 dump 수치와 달리 iga·세부 증상·병변 면적이 전부 실제 분석 결과다.
+ * iga·세부 증상·병변 면적이 전부 온디바이스 모델의 실측값이다 (지어낸 수치는 없다).
  * 같은 날 이미 기록이 있으면(하루 여러 번 검사) 새로 덮어쓴다.
  *
  * 수면 점수는 검사가 만들어내는 값이 아니라 삼성헬스 연동 값이라, 직전 기록의 값을 이어받는다.
@@ -256,11 +198,13 @@ export function ensureFolder({ targetId, name }) {
  *
  * @param {{ folderId: string, iga: number, redness: number, bumps: number, scratch: number,
  *           thickening: number, itchVas: number|null, areaPct: number,
- *           faceAreaIndex?: number|null, photoUri?: string }} args
+ *           faceAreaIndex?: number|null, faceAreaKind?: 'face'|'torso'|null,
+ *           faceAreaLowRes?: boolean, photoUri?: string }} args
  * @returns {{ record: any, hasSleepSource: boolean }|null}
  */
 export function recordExam({
-  folderId, iga, redness, bumps, scratch, thickening, itchVas, areaPct, faceAreaIndex = null, photoUri,
+  folderId, iga, redness, bumps, scratch, thickening, itchVas, areaPct,
+  faceAreaIndex = null, faceAreaKind = null, faceAreaLowRes = false, photoUri,
 }) {
   const folder = folders.find((f) => f.id === folderId);
   if (!folder) return null;
@@ -287,6 +231,21 @@ export function recordExam({
     // 상한을 두지 않는다 — 얼굴 크기(d·v) 대비 지수라 100을 넘을 수 있다.
     // 그리고 없는 값은 0이 아니라 null이어야 한다("못 쟀다"와 "없다"는 다르다).
     lesionAreaFaceIndex: faceAreaIndex == null ? null : Math.max(0, round1(faceAreaIndex)),
+    /*
+      이 지수를 무엇으로 나눴는지 (얼굴 자 / 몸통 자).
+
+      없으면 얼굴로 본다 — 이 필드가 생기기 전의 기록은 전부 얼굴 자리였기 때문이다.
+      화면이 "부위의 몇 %"를 환산할 때 이 값이 없으면 6배 틀린 숫자가 나온다.
+    */
+    lesionAreaScaleKind: faceAreaIndex == null ? null : faceAreaKind ?? 'face',
+    /*
+      해상도 게이트를 사용자가 직접 열고 잰 회차인지.
+
+      값을 빼지 않고 표시만 남기는 이유: 얼굴이 작게 찍히면 마스크 경계가 뭉개져 넓이가 흔들리지만,
+      한쪽으로 치우친 편향이 생기지는 않는다. 버리기엔 아까운 값이라 남기되, 추세에서 이 점이 튀면
+      왜 튀는지 설명할 수 있어야 한다.
+    */
+    lesionAreaLowRes: faceAreaIndex != null && !!faceAreaLowRes,
     photo: photoUri ? { uri: photoUri } : (last ? last.photo : null),
   };
 
@@ -305,62 +264,25 @@ export function recordExam({
   */
   const records = [...folder.records, record].sort((a, b) => a.dayOffset - b.dayOffset || a.ts - b.ts);
   folders = folders.map((f) => (f.id === folder.id ? { ...f, records } : f));
-  emit();
+  commit();
+
+  /*
+    사진을 오래 남는 자리로 옮기고, 끝나면 그 경로로 기록을 갱신한다.
+
+    기다리지 않는 이유: 복사는 수십 ms가 걸릴 수 있는데 이 함수가 끝나야 결과 화면이 뜬다.
+    먼저 캐시 경로로 기록을 만들어 화면을 띄우고, 복사가 끝나면 조용히 경로만 바꾼다 —
+    두 경로 모두 같은 사진이라 화면에는 아무 차이가 없다.
+  */
+  if (record.photo?.uri) {
+    persistPhoto(record.photo.uri).then((uri) => {
+      if (!uri || uri === record.photo.uri) return;
+      folders = folders.map((f) =>
+        f.id !== folder.id
+          ? f
+          : { ...f, records: f.records.map((r) => (r.id === record.id ? { ...r, photo: { uri } } : r)) },
+      );
+      commit();
+    });
+  }
   return { record, hasSleepSource: !!last };
-}
-
-/**
- * "오늘의 피부 상태 기록" 버튼으로 방금 촬영한 사진을 폴더에 새 기록으로 추가한다.
- * 아직 실제 분석 파이프라인이 없어(온디바이스 모델 연동 전) 마지막 기록 값을 기준으로 살짝
- * 흔들어 오늘치 dump 수치를 만든다 — 프리셋 폴더의 시계열 생성과 같은 잡음 스타일이다.
- * 같은 날 이미 기록이 있으면(하루 여러 번 촬영) 새로 덮어쓴다.
- *
- * @param {string} folderId
- * @param {{ uri: string }} photo — 카메라/앨범에서 방금 고른 사진
- */
-export function addRecord(folderId, photo) {
-  const folder = folders.find((f) => f.id === folderId);
-  if (!folder) return null;
-
-  const date = todayKey();
-  const dayOffset = daysBetween(folder.startDate, date);
-  const last = folder.records[folder.records.length - 1];
-  const rng = makeRng(hashStr(`${folderId}-${date}-${Date.now()}`));
-  const jitter = (span, amt) => (rng() - 0.5) * span * amt;
-
-  const sleepScore = clamp(Math.round((last ? last.sleepScore : 75) + jitter(100, 0.12)), 0, 100);
-  const itchVas = clamp(Math.round((last ? last.itchVas : 3) + jitter(10, 0.12)), 0, 10);
-  const iga = clamp(round1((last ? last.iga : 1.5) + jitter(4, 0.12)), 0, 4);
-  const skin10 = iga * 2;
-  const symptomNoise = () => jitter(3, 0.4);
-  const redness = clamp(round1(skin10 + symptomNoise()), 0, 10);
-  const bumps = clamp(round1(skin10 + symptomNoise()), 0, 10);
-  const scratch = clamp(round1(skin10 + symptomNoise()), 0, 10);
-  const thickening = clamp(round1(skin10 + symptomNoise()), 0, 10);
-
-  const record = {
-    id: `${folderId}-${date}-${Date.now()}`,
-    seed: hashStr(`${folderId}-${date}-${Date.now()}`),
-    date,
-    dayOffset,
-    ts: Date.now(),
-    sleepScore,
-    itchVas,
-    iga,
-    redness,
-    bumps,
-    scratch,
-    thickening,
-    lesionAreaPct: clamp(round1(3 + iga * 6 + jitter(3, 0.4)), 0.5, 45),
-    photo,
-  };
-
-  const existingIdx = folder.records.findIndex((r) => r.date === date);
-  const records = existingIdx >= 0
-    ? folder.records.map((r, i) => (i === existingIdx ? record : r))
-    : [...folder.records, record].sort((a, b) => a.dayOffset - b.dayOffset);
-
-  folders = folders.map((f) => (f.id === folderId ? { ...f, records } : f));
-  emit();
-  return record;
 }

@@ -4,7 +4,7 @@ import { runSegModel, runClsModel } from './tfliteService';
 import { maskToBbox, maskRectToOriginal, type MaskRect } from './maskToBbox';
 import { buildLesionRegions } from './lesionRegions';
 import { renderMaskOverlay } from './maskOverlay';
-import { faceRoiOf, type FaceFrame, type FaceRoi } from './faceFrame';
+import { roiOf, SCALE_SPEC, type ScaleFrame, type ScaleRoi } from './scaleFrame';
 import { decodeSign } from './dex';
 import { labels, SIGN_KEYS, IGA_GRADE_TO_SEVERITY, type SignKey } from './labels';
 
@@ -56,15 +56,15 @@ export interface LocalAnalysisResult {
    * 분할 마스크가 **분석에 들어간 영역**에서 차지하는 넓이 비율 (%).
    * bbox 넓이가 아니라 마스크 픽셀 수라서, 길게 번진 증상이 사각형으로 과대평가되지 않는다.
    *
-   * 보통 그 영역은 사진 전체지만, 얼굴 자리에서는 얼굴 관심영역이다. 어느 쪽이든 이 값은
-   * **회차 간 비교에 쓸 수 없다** — 조금만 가까이 가도 값이 커진다. 비교에 쓸 값은 faceArea다.
+   * 보통 그 영역은 사진 전체지만, 자가 있는 자리에서는 그 관심영역이다. 어느 쪽이든 이 값은
+   * **회차 간 비교에 쓸 수 없다** — 조금만 가까이 가도 값이 커진다. 비교에 쓸 값은 scaleArea다.
    */
   maskAreaPct: number;
   /**
-   * 배율이 상쇄된 병변 넓이 = 100 × 병변 넓이 ÷ (안간거리 × 눈-입 거리).
-   * 얼굴을 찾아 관심영역으로 분석했을 때만 나온다 (그 외에는 null).
+   * 배율이 상쇄된 병변 넓이 = 100 × 병변 넓이 ÷ (자의 가로 × 세로).
+   * 자(얼굴 또는 몸통)를 찾아 관심영역으로 분석했을 때만 나온다 (그 외에는 null).
    */
-  faceArea: FaceAreaResult | null;
+  scaleArea: ScaleAreaResult | null;
   /**
    * 사진 위에 분할 마스크를 겹쳐 그린 이미지 (data URI).
    * 마스크를 못 찾았거나 합성에 실패하면 null — 그때는 원본만 보여준다.
@@ -89,21 +89,23 @@ export interface LocalAnalysisResult {
  */
 const MAX_REGIONS = 3;
 
-export interface FaceAreaResult {
+export interface ScaleAreaResult {
+  /** 무엇을 자로 삼아 잰 값인지 — 화면이 "얼굴의 20%"인지 "몸통의 20%"인지 가르는 데 쓴다 */
+  kind: ScaleFrame['kind'];
   /** 100 × 병변 넓이 ÷ (d·v). 단위 없는 지수 — 배율이 상쇄돼 회차 간 비교가 된다 */
   index: number;
   /** 병변 넓이 (원본 픽셀²) — 지수를 다시 풀어 보고 싶을 때를 위해 남긴다 */
   lesionPixels: number;
-  /** 이번 사진의 얼굴 면적 자 (d·v, 원본 픽셀²) */
+  /** 이번 사진의 면적 자 (d·v, 원본 픽셀²) */
   areaRef: number;
-  /** 분석에 실제로 쓴 얼굴 관심영역 */
-  roi: FaceRoi;
+  /** 분석에 실제로 쓴 관심영역 */
+  roi: ScaleRoi;
 }
 
 /**
  * 분석 옵션.
  *
- * face를 주면 얼굴 관심영역만 잘라 분할을 돌리고, 그 넓이를 얼굴 크기로 나눈 지수를 함께 낸다.
+ * scale을 주면 그 관심영역만 잘라 분할을 돌리고, 넓이를 자로 나눈 지수를 함께 낸다.
  * 관심영역을 쓰는 것이 정확도에서도 이득이다 — 정사각형이라 종횡비 왜곡이 없고, 얼굴이 512
  * 격자를 가득 채워 유효 해상도가 서너 배 오르며, 머리카락·목·옷·배경의 오검출이 입력 단계에서
  * 사라지고, 세그 모델의 학습 분포(피부가 화면의 94.5%)에 훨씬 가까워진다.
@@ -111,8 +113,8 @@ export interface FaceAreaResult {
 export interface AnalyzeOptions {
   /** 촬영 후처리에서 계산한 조명 보정 게인 — 세션 간 색 비교를 맞춘다 */
   colorGain?: readonly number[];
-  /** 촬영 때 찾아 둔 얼굴 기하 (얼굴 자리에서만) */
-  face?: FaceFrame | null;
+  /** 촬영 때 찾아 둔 자 (얼굴·몸통 자리에서만) */
+  scale?: ScaleFrame | null;
 }
 
 /**
@@ -190,10 +192,10 @@ export async function analyzeLocal(uri: string, opts: AnalyzeOptions = {}): Prom
 
 async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<LocalAnalysisResult> {
   const startedAt = Date.now();
-  const { colorGain, face } = opts;
+  const { colorGain, scale } = opts;
 
-  // 얼굴 자리면 관심영역만 잘라 분할한다 — 그 영역이 정사각형이라 종횡비 왜곡이 없다
-  const roi = face ? faceRoiOf(face, image.width(), image.height()) : undefined;
+  // 자가 있으면 관심영역만 잘라 분할한다 — 그 영역이 정사각형이라 종횡비 왜곡이 없다
+  const roi = scale ? roiOf(scale, image.width(), image.height()) : undefined;
 
   const { origW, origH, src, mask, maskOn, maskSoft, bbox, found, maskAreaPct } = await runStage1(image, colorGain, roi);
   const size = labels.img_size_seg;
@@ -202,18 +204,19 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
     배율이 상쇄된 넓이.
 
     마스크 한 칸이 가리는 실제 넓이는 (관심영역 넓이 / 512²)이다. 그것을 다 더하면 병변의
-    원본 픽셀 넓이가 되고, 얼굴의 d·v로 나누면 배율이 사라진다 — 같은 병변을 두 배 가까이서
+    원본 픽셀 넓이가 되고, 자의 d·v로 나누면 배율이 사라진다 — 같은 병변을 두 배 가까이서
     찍으면 넓이도 d·v도 똑같이 네 배가 되므로 몫은 그대로다.
   */
-  const faceArea: FaceAreaResult | null =
-    face && roi
+  const scaleArea: ScaleAreaResult | null =
+    scale && roi
       ? (() => {
           const perCell = (roi.width * roi.height) / (size * size);
           const lesionPixels = maskSoft * perCell;
           return {
-            index: Math.round((lesionPixels / face.areaRef) * 1000) / 10,
+            kind: scale.kind,
+            index: Math.round((lesionPixels / scale.areaRef) * 1000) / 10,
             lesionPixels,
-            areaRef: face.areaRef,
+            areaRef: scale.areaRef,
             roi,
           };
         })()
@@ -296,7 +299,7 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
     severity: IGA_GRADE_TO_SEVERITY[worst.igaGrade] ?? 1,
     bbox: worst.bbox,
     maskAreaPct,
-    faceArea,
+    scaleArea,
     maskUri,
     regions,
     worstRegionIndex: worstIndex,

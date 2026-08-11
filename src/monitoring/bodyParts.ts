@@ -1,4 +1,5 @@
 import { BodyRegion } from '../models';
+import type { ScaleKind } from '../ai/scaleFrame';
 import { applyMat3, dot, Mat3, rotationMatrix, transposeMat3, v3, Vec3 } from '../three/geom3d';
 
 /**
@@ -195,10 +196,16 @@ const define = (group: PartGroupId, defs: SpotDef[]) => {
 };
 
 /**
- * 병변 넓이 추이를 잴 수 있는 부위인지 — 지금은 얼굴뿐이다.
+ * 이 부위의 넓이를 무엇을 자로 삼아 잴 것인가 — 잴 수 없으면 null.
  *
- * 넓이를 회차 간 비교하려면 시간에 따라 변하지 않는 자가 필요한데(ai/faceFrame.ts), 그 자가 되어
- * 줄 랜드마크가 있는 곳은 얼굴밖에 없다. 팔오금이나 등에는 눈·입에 해당하는 것이 없다.
+ * 넓이를 회차 간 비교하려면 시간에 따라 변하지 않는 자가 필요하다(ai/scaleFrame.ts). 지금 그
+ * 조건을 만족하는 랜드마크가 있는 곳은 둘이다:
+ *
+ *   얼굴 — 눈 둘과 입 (두개골)
+ *   몸통 — 양 어깨와 양 골반 (견봉간거리와 척추)
+ *
+ * 팔오금·오금처럼 뼈 기준점이 없는 자리는 여전히 잴 수 없다. 팔꿈치·손목을 자로 쓰는 방법이
+ * 있긴 하지만 팔은 굽히는 각도에 따라 투영이 통째로 바뀌어서, 자보다 자세가 먼저 문제가 된다.
  *
  * 촬영 화면과 폴더 화면이 **같은 판단**을 써야 한다. 한쪽만 얼굴로 치면 "넓이를 기록했다"고
  * 해 놓고 볼 곳이 없거나, 반대로 영영 채워지지 않을 카드를 띄우게 된다.
@@ -206,8 +213,29 @@ const define = (group: PartGroupId, defs: SpotDef[]) => {
  * part로 가르는 이유: 지금 등록 흐름은 네 덩어리 id("coarse:head")를 만들고 예전 기록에는
  * 세밀한 id("head:face")가 남아 있다. 둘 다 part는 'head'라 한 줄로 끝난다.
  */
+export function scaleKindOf(part: BodyPartId): ScaleKind | null {
+  if (part === 'head') return 'face';
+  /*
+    몸통 자를 쓰는 것은 'chest'뿐이다 — 지점으로는 "가슴/복부"(앞)와 "등"(뒤).
+    앞뒤는 폴더가 따로라 한 추세에 섞이지 않는다.
+
+    'abdomen'을 넣지 않은 이유가 중요하다. 그 부위에 달린 지점은 셋인데 전부 조건이 깨진다:
+
+      · 왼쪽/오른쪽 허리 — 옆에서 찍는 자리다. 옆모습에서는 어깨너비 d가 투영으로 뭉개져서
+        자 자체가 성립하지 않는다 (얼굴에서 옆모습을 기준 사진으로 쓸 수 없는 것과 같다).
+      · 엉덩이 — 골반선 아래라 관심영역(어깨중점~골반중점을 감싸는 1.6s 정사각형) 밖으로 거의
+        벗어난다. 그대로 켜면 병변이 분석 영역에 들어오지도 않은 채 "넓이 0"이 기록된다.
+
+    두 경우 다 자를 다시 정의해야 하는 문제라(옆면은 어깨-골반 한쪽 변, 엉덩이는 골반 기준),
+    지금 자로 억지로 켜는 것보다 꺼 두는 편이 맞다.
+  */
+  if (part === 'chest') return 'torso';
+  return null;
+}
+
+/** 병변 넓이 추이를 잴 수 있는 부위인지 */
 export function supportsAreaTracking(part: BodyPartId): boolean {
-  return part === 'head';
+  return scaleKindOf(part) !== null;
 }
 
 /** 선택 화면에서 상자를 줄 단위로 묶어 준다 */

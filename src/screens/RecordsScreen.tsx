@@ -4,7 +4,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { AppColors, cardDecoration } from '../theme';
 import { plainSiteLabel } from '../models';
-import { useFolders } from '../folders/store';
+import { useFolders, useFoldersHydrated } from '../folders/store';
 import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
 import LesionThumb from '../folders/components/LesionThumb';
 import { useMonitoring } from '../context/MonitoringContext';
@@ -31,6 +31,7 @@ function todayCellKey(): string {
 
 export default function RecordsScreen() {
   const folders = useFolders();
+  const hydrated = useFoldersHydrated();
   const navigation = useNavigation<any>();
   const [view, setView] = useState(() => new Date());
   // 캘린더를 누르기 전에도 오늘 기록이 바로 보이도록, 기본 선택 날짜를 오늘로 둔다.
@@ -80,7 +81,15 @@ export default function RecordsScreen() {
       <ActionBox
         icon="timeline"
         title="경과 관찰"
-        caption={folders.length ? `${folders.length}곳을 지켜보고 있어요` : '아직 지켜보는 자리가 없어요'}
+        /* 불러오기 전에는 "없다"고 말하지 않는다 — 기록이 있는 사용자가 그 문장을 보면
+           사라진 줄 안다 (folders/store의 hydrated 주석) */
+        caption={
+          !hydrated
+            ? '기록을 불러오는 중이에요'
+            : folders.length
+              ? `${folders.length}곳을 지켜보고 있어요`
+              : '아직 지켜보는 자리가 없어요'
+        }
         trailing="chevron-right"
         accent
         onPress={() => navigation.navigate('Monitoring')}

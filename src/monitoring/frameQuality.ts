@@ -4,16 +4,22 @@ import { estimateSkin, SKIN_GATE } from './skinMask';
 import {
   alignTargetFor,
   evaluateAlign,
-  ALIGN_GATE,
-  faceRoiFits,
-  MIN_FACE_SCALE_PX,
+  roiFits,
+  SCALE_SPEC,
   type AlignEvaluation,
-  type FaceFrame,
-  type FaceFraming,
+  type ScaleFrame,
+  type ScaleFraming,
   type PoseReference,
-  type FaceRoi,
-} from '../ai/faceFrame';
-import { Baseline, FrameEvaluation, HardGateKey, ImageQualityMetrics } from './types';
+  type ScaleRoi,
+} from '../ai/scaleFrame';
+import {
+  AreaEligibility,
+  AreaRejectCode,
+  Baseline,
+  FrameEvaluation,
+  HardGateKey,
+  ImageQualityMetrics,
+} from './types';
 
 /**
  * 촬영 게이트 임계값.
@@ -89,8 +95,13 @@ export const GATE = {
    * 평소에는 밝기가 권장 조건(soft)이다 — 조명 보정이 게인으로 흡수하고, 등급 판정은 그 정도
    * 차이를 견딘다. 면적은 사정이 다르다: 밝기가 달라지면 세그 마스크의 경계가 통째로 밀려서
    * 병변이 커지거나 작아진 것처럼 보인다. 그 오차는 보정으로 되돌릴 수 없다.
+   *
+   * 부위마다 다르게 두는 이유는 **변화 문턱이 다르기 때문**이다. 몸통은 자 자체의 잡음이 커서
+   * 문턱이 ±44%(얼굴 ±30%)인데, 조명 조건만 얼굴과 똑같이 조이면 통과하지 못하는 사진만 늘고
+   * 얻는 것은 이미 문턱에 덮인 정밀도다. 실내 조명이 회차마다 조금씩 다른 것은 정상이다.
    */
   areaBrightnessDelta: 0.1,
+  areaBrightnessDeltaTorso: 0.18,
 } as const;
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -120,7 +131,7 @@ const STABILITY_FLOOR = 0.8;
  */
 export function measureImageQuality(
   image: SkImage,
-  opts: { sampleSize?: number; roi?: FaceRoi } = {},
+  opts: { sampleSize?: number; roi?: ScaleRoi } = {},
 ): ImageQualityMetrics {
   const sampleSize = opts.sampleSize ?? 160;
   const w = image.width();
@@ -223,7 +234,7 @@ export function frameSimilarity(a?: Float32Array | null, b?: Float32Array | null
  * roi가 있으면 그 안의 가운데를 잰다. 얼굴 촬영에서 화면 정중앙은 코끝인데, 초점이 맞아야 하는
  * 것은 피부 전체이고 배경이 섞여 들면 값이 흔들린다 — 관심영역 안에서 재야 기준이 같아진다.
  */
-function measureSharpness(image: SkImage, sampleSize: number, roi?: FaceRoi): number {
+function measureSharpness(image: SkImage, sampleSize: number, roi?: ScaleRoi): number {
   const rx = roi?.x ?? 0;
   const ry = roi?.y ?? 0;
   const w = roi?.width ?? image.width();
@@ -263,17 +274,19 @@ function measureSharpness(image: SkImage, sampleSize: number, roi?: FaceRoi): nu
   return lapVar / grayVar;
 }
 
-/** 얼굴 자리를 찍을 때만 넘어오는 정렬 판정 재료 */
-export interface FaceContext {
-  frame: FaceFrame | null;
+/** 넓이를 재는 자리(얼굴·몸통)에서만 넘어오는 정렬 판정 재료 */
+export interface ScaleContext {
+  /** 이 자리가 무엇을 자로 쓰는지 — 게이트 임계값이 여기에 따라 달라진다 (SCALE_SPEC) */
+  kind: ScaleFrame['kind'];
+  frame: ScaleFrame | null;
   imageWidth: number;
   imageHeight: number;
   /**
    * 화면에 깔린 지난 사진의 구도 — 이번 촬영이 맞춰야 할 목표.
    * 없으면(첫 촬영) 고정 표준 프레이밍으로 유도한다.
    */
-  framing?: FaceFraming;
-  /** 자세(d/v) 비교 기준 — 첫 촬영이면 없다 (그때는 코 대칭만으로 정면성을 본다) */
+  framing?: ScaleFraming;
+  /** 자세(d/v) 비교 기준 — 첫 촬영이면 없다 (그때는 비대칭만으로 정면성을 본다) */
   reference?: PoseReference;
 }
 
@@ -283,14 +296,14 @@ export interface FaceContext {
  * prevSignature를 주면 직전 프레임과의 상관도로 "정지 여부"까지 초점 게이트에 포함한다.
  * 사용자에게는 둘 다 "잠깐 멈춰주세요"로 귀결되는 같은 문제라 칩을 따로 만들지 않았다.
  *
- * face를 주면(얼굴 자리) 정렬 판정을 함께 낸다. 그 결과는 hard에 들어가지 않는다 —
+ * scale을 주면(넓이를 재는 자리) 정렬 판정을 함께 낸다. 그 결과는 hard에 들어가지 않는다 —
  * 자동 셔터와 면적 측정 자격에만 관여하고, 사진의 신뢰도 점수는 건드리지 않는다.
  */
 export function evaluateFrame(
   metrics: ImageQualityMetrics,
   baseline?: Baseline,
   prevSignature?: Float32Array | null,
-  face?: FaceContext,
+  scale?: ScaleContext,
 ): FrameEvaluation {
   // 피부 게이트 임계값은 추정 출처를 따라간다 — 부정확한 추정기에 높은 임계값을 걸면
   // 멀쩡한 사진을 막게 된다 (skinMask.ts의 SKIN_GATE 주석 참고)
@@ -338,7 +351,7 @@ export function evaluateFrame(
   // (피부)에 무게를 싣고, 후처리가 게인으로 흡수하는 밝기는 최소로 둔다.
   const softScore = soft.sharpness * 0.45 + soft.skin * 0.35 + soft.brightness * 0.2;
 
-  const align = faceAlign(face);
+  const align = scaleAlign(scale);
 
   return {
     metrics,
@@ -349,9 +362,9 @@ export function evaluateFrame(
     soft,
     softScore,
     align,
-    face: face?.frame ?? null,
-    frameSize: { width: face?.imageWidth ?? 0, height: face?.imageHeight ?? 0 },
-    hint: buildHint(hard, soft, metrics, stability, align, face),
+    scale: scale?.frame ?? null,
+    frameSize: { width: scale?.imageWidth ?? 0, height: scale?.imageHeight ?? 0 },
+    hint: buildHint(hard, soft, metrics, stability, align, scale),
   };
 }
 
@@ -359,23 +372,27 @@ export function evaluateFrame(
  * 얼굴을 못 찾았을 때의 정렬 판정 — 실패지만 "무엇이 나쁘다"가 아니라 "아직 못 봤다"이므로
  * 막대는 0으로 두고 안내만 다르게 준다.
  */
-const NO_FACE: AlignEvaluation = {
+/** 자를 아예 못 찾았을 때의 정렬 판정 — 부위마다 문구가 다르다 */
+const notFound = (kind: ScaleFrame['kind']): AlignEvaluation => ({
   ok: false,
   gauge: 0,
   fault: 'scale',
-  hint: '얼굴이 보이지 않아요 — 가이드 안으로 들어와주세요',
+  hint:
+    kind === 'face'
+      ? '얼굴이 보이지 않아요 — 가이드 안으로 들어와주세요'
+      : '몸이 보이지 않아요 — 머리부터 무릎까지 화면에 들어오게 서주세요',
   scaleLn: 0,
   poseOk: false,
   poseRef: null,
-};
+});
 
-function faceAlign(face?: FaceContext): AlignEvaluation | null {
-  if (!face) return null;
-  if (!face.frame) return NO_FACE;
+function scaleAlign(scale?: ScaleContext): AlignEvaluation | null {
+  if (!scale) return null;
+  if (!scale.frame) return notFound(scale.kind);
   return evaluateAlign(
-    face.frame,
-    alignTargetFor(face.imageWidth, face.imageHeight, face.framing),
-    face.reference,
+    scale.frame,
+    alignTargetFor(scale.kind, scale.imageWidth, scale.imageHeight, scale.framing),
+    scale.reference,
   );
 }
 
@@ -402,67 +419,86 @@ function faceAlign(face?: FaceContext): AlignEvaluation | null {
 export function evaluateAreaEligibility(
   evaluation: FrameEvaluation,
   baseline?: Baseline,
-): { ok: boolean; reason?: string } {
+): AreaEligibility {
   const { width, height } = evaluation.frameSize;
-  const face = evaluation.face;
+  const frame = evaluation.scale;
 
   /*
     실패하면 잰 값을 함께 남긴다.
 
     사용자에게 보여주는 문구는 "무엇을 고쳐야 하는지"만 말해야 해서 숫자가 들어갈 자리가 없다.
-    그런데 임계값 넷(자세·해상도·잘림·조명)이 전부 아직 캘리브레이션 전이라, 실기기에서 왜
-    걸렸는지 숫자를 못 보면 고칠 방향을 정할 수 없다. 개발 콘솔에만 남긴다.
+    그런데 임계값들이 전부 아직 캘리브레이션 전이라, 실기기에서 왜 걸렸는지 숫자를 못 보면 고칠
+    방향을 정할 수 없다. 개발 콘솔에만 남긴다.
   */
-  const reject = (reason: string, detail: Record<string, unknown>) => {
+  const reject = (code: AreaRejectCode, reason: string, detail: Record<string, unknown>) => {
     console.warn('[area] 넓이 측정 제외:', reason, {
+      code,
       frame: `${Math.round(width)}×${Math.round(height)}`,
       ...detail,
     });
-    return { ok: false, reason };
+    return { ok: false, reason, code };
   };
 
-  if (!face) {
-    return reject('얼굴을 찾지 못해 넓이를 잴 기준이 없어요', { detected: false });
+  if (!frame) {
+    return reject('noFace', '기준이 되는 자리를 찾지 못해 넓이를 잴 수 없어요', { detected: false });
   }
+
+  const spec = SCALE_SPEC[frame.kind];
+  const noun = spec.noun;
 
   // 잰 값을 한자리에 모아 둔다 — 어느 검사에서 걸리든 같은 숫자를 함께 남기기 위해서다
   const seen = {
-    s: Math.round(face.s),
-    minS: MIN_FACE_SCALE_PX,
-    roiSide: Math.round(3 * face.s),
-    noseAsym: Math.round(face.noseAsym * 1000) / 1000,
+    kind: frame.kind,
+    s: Math.round(frame.s),
+    minS: spec.minScalePx,
+    roiSide: Math.round(spec.roiSide * frame.s),
+    asym: Math.round(frame.asym * 1000) / 1000,
     // 기준이 있으면 '자기 기준과의 차이', 없으면 느슨한 절대 상한을 본다
-    refNoseAsym: evaluation.align?.poseRef ?? null,
-    maxNoseAsym: evaluation.align?.poseRef == null ? ALIGN_GATE.noseAsymAbs : ALIGN_GATE.noseAsymDelta,
-    poseLn: null as number | null,
+    refAsym: evaluation.align?.poseRef ?? null,
+    maxAsym: evaluation.align?.poseRef == null ? spec.gate.asymAbs : spec.gate.asymDelta,
     brightness: Math.round(evaluation.metrics.brightness * 1000) / 1000,
     baseBrightness: baseline ? Math.round(baseline.brightness * 1000) / 1000 : null,
   };
 
-  if (face.s < MIN_FACE_SCALE_PX) {
-    return reject('얼굴이 너무 작게 찍혀서 넓이를 정확히 잴 수 없어요', seen);
+  /*
+    몸통에만 있는 검사다. 어깨나 골반이 화면 밖으로 나가도 랜드마크 모델은 그 자리를 **추정해서**
+    값을 내므로, 좌표만 보면 언제나 자가 있는 것처럼 보인다. 그대로 쓰면 있지도 않은 어깨너비가
+    기록된다.
+  */
+  if (!frame.complete) {
+    return reject('partialBody', '어깨와 골반이 모두 나와야 몸통 크기를 잴 수 있어요', seen);
   }
-  // 얼굴이 화면 밖으로 걸치면 잘려 나간 쪽의 병변이 통째로 빠지는데 분모(d·v)는 그대로다 —
+  if (frame.s < spec.minScalePx) {
+    return reject('resolution', `${noun}이 너무 작게 찍혀서 넓이를 정확히 잴 수 없어요`, seen);
+  }
+  // 화면 밖으로 걸치면 잘려 나간 쪽의 병변이 통째로 빠지는데 분모(d·v)는 그대로다 —
   // 병변이 그대로여도 지수만 내려가고, 그건 호전으로 읽힌다. 잘린 채로 재느니 재지 않는다.
-  if (!faceRoiFits(face, width, height)) {
-    return reject('얼굴이 화면 밖으로 잘려서 넓이를 다 셀 수 없어요', {
+  if (!roiFits(frame, width, height)) {
+    return reject('cropped', `${noun}이 화면 밖으로 잘려서 넓이를 다 셀 수 없어요`, {
       ...seen,
       // ROI가 화면보다 크면 "너무 가까이", 크기는 맞는데 안 들어오면 "치우침"이다
-      cause: 3 * face.s > Math.min(width, height) ? '너무 가까움 (ROI > 화면 짧은 변)' : '얼굴이 가장자리로 치우침',
-      faceCenter: `${Math.round(face.cx)},${Math.round(face.cy)}`,
+      cause:
+        spec.roiSide * frame.s > Math.min(width, height)
+          ? '너무 가까움 (ROI > 화면 짧은 변)'
+          : '가장자리로 치우침',
+      center: `${Math.round(frame.cx)},${Math.round(frame.cy)}`,
     });
   }
   if (evaluation.align && !evaluation.align.poseOk) {
-    return reject('고개가 돌아가거나 숙여진 채로 찍혀서 넓이 비교가 어려워요', {
-      ...seen,
-      maxPoseLn: ALIGN_GATE.poseLn,
-      ratio: Math.round(face.ratio * 1000) / 1000,
-    });
+    return reject(
+      'pose',
+      frame.kind === 'face'
+        ? '고개가 돌아가거나 숙여진 채로 찍혀서 넓이 비교가 어려워요'
+        : '몸이 돌아갔거나 지난번과 다른 거리·위치에서 찍혀 넓이 비교가 어려워요',
+      { ...seen, maxPoseLn: spec.gate.poseLn, ratio: Math.round(frame.ratio * 1000) / 1000 },
+    );
   }
-  if (baseline && Math.abs(evaluation.metrics.brightness - baseline.brightness) > GATE.areaBrightnessDelta) {
-    return reject('조명이 지난번과 많이 달라 넓이 비교가 어려워요', {
+  const maxBrightnessDelta =
+    frame.kind === 'torso' ? GATE.areaBrightnessDeltaTorso : GATE.areaBrightnessDelta;
+  if (baseline && Math.abs(evaluation.metrics.brightness - baseline.brightness) > maxBrightnessDelta) {
+    return reject('lighting', '조명이 지난번과 많이 달라 넓이 비교가 어려워요', {
       ...seen,
-      maxDelta: GATE.areaBrightnessDelta,
+      maxDelta: maxBrightnessDelta,
     });
   }
   return { ok: true };
@@ -478,10 +514,10 @@ function buildHint(
   metrics: ImageQualityMetrics,
   stability: number,
   align: AlignEvaluation | null,
-  face?: FaceContext,
+  scale?: ScaleContext,
 ): string {
   // 얼굴을 아직 못 찾았으면 다른 어떤 안내도 소용이 없다 — 화면에 얼굴부터 들어와야 한다
-  if (face && !face.frame) return NO_FACE.hint;
+  if (scale && !scale.frame) return notFound(scale.kind).hint;
   if (!hard.skin) return '조금 더 가까이 — 화면을 피부로 채워주세요';
   if (!hard.focus) {
     if (stability < GATE.stabilityMin) return '움직이고 있어요 — 잠깐 멈춰주세요';

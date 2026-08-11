@@ -6,6 +6,7 @@ import { AppColors } from '../theme';
 import { analyzeLocal, LocalAnalysisResult } from '../ai/analyzeLocal';
 import { classifyDisease, preloadDiseaseModel } from '../ai/diseaseModel';
 import { preloadModels } from '../ai/tfliteService';
+import { humanError } from '../ai/errorText';
 import { GRADE_NAMES_KO } from '../ai/labels';
 import { DUMP_RESULTS, makeDumpDiseases, makeDumpLocalResult } from '../exam/dumpAnalysis';
 import { useRecords } from '../context/RecordsContext';
@@ -137,11 +138,11 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         // dump 모드에서는 모델을 부르지 않고 지어낸 값으로 결과 화면을 채운다.
         // 세션 id를 씨앗으로 써서 같은 촬영이면 항상 같은 숫자가 나온다.
         //
-        // 촬영 때 찾아 둔 얼굴 기하를 함께 넘긴다 — 있으면 분할이 얼굴 관심영역만 보고,
-        // 병변 넓이를 얼굴 크기로 나눈 지수(회차 간 비교가 되는 유일한 넓이)까지 나온다.
+        // 촬영 때 찾아 둔 자를 함께 넘긴다 — 있으면 분할이 그 관심영역만 보고,
+        // 병변 넓이를 부위 크기로 나눈 지수(회차 간 비교가 되는 유일한 넓이)까지 나온다.
         const local = DUMP_RESULTS
           ? makeDumpLocalResult(cap.session.id)
-          : await analyzeLocal(cap.photoUri, { colorGain, face: cap.session.face });
+          : await analyzeLocal(cap.photoUri, { colorGain, scale: cap.session.scale });
 
         // 진단명을 직접 넣어 둔 자리이거나 이어서 기록이면 질환 분류 모델은 건너뛴다
         const skipDisease = cap.kind === 'followUp' || !!cap.target.diagnosis?.diagnosed;
@@ -171,7 +172,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
           recordExam({
             folderId: cap.folderId,
             // 가이드와 어긋나게 찍혔으면 넓이만 빼고 나머지는 그대로 남긴다
-            ...toFolderMetrics(local, cap.session.areaEligible?.ok ?? true),
+            ...toFolderMetrics(local, cap.session.areaEligible),
             itchVas: cap.itchVas,
             photoUri: cap.photoUri,
           });
@@ -187,7 +188,8 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         setAnalysis({ local, diseases });
         setStage('result');
       } catch (e: any) {
-        setError(e?.message ?? '알 수 없는 오류가 발생했어요');
+        // 네이티브 오류는 message에 자바 스택이 통째로 들어 있다 — 화면에는 한 줄만 (errorText.ts)
+        setError(humanError(e));
         setStage('error');
       }
     },
@@ -208,7 +210,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     });
     recordExam({
       folderId: id,
-      ...toFolderMetrics(analysis.local, capture.session.areaEligible?.ok ?? true),
+      ...toFolderMetrics(analysis.local, capture.session.areaEligible),
       itchVas: capture.itchVas,
       photoUri: capture.photoUri,
     });

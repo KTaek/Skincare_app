@@ -1,5 +1,5 @@
 import { GATE } from './frameQuality';
-import type { FaceFrame } from '../ai/faceFrame';
+import type { ScaleFrame } from '../ai/scaleFrame';
 import {
   Baseline,
   ColorNormalization,
@@ -68,23 +68,23 @@ export function computeColorNormalization(
 /**
  * 이번 촬영을 이 자리의 기준(baseline)으로 삼는다 — 다음 촬영의 조명 보정이 여기서 나온다.
  *
- * 얼굴 자리에서는 얼굴 기하(d/v 비율)와 어느 카메라로 찍었는지도 함께 남긴다. 그 둘이 다음
- * 촬영의 자세 게이트와 카메라 잠금의 기준이 된다 — 사람마다 얼굴 비례가 다르므로 자세는
- * 절대 기준으로 잴 수 없고, 반드시 같은 사람의 첫 사진과 견줘야 한다.
+ * 넓이를 재는 자리에서는 자의 기하(d/v 비율·비대칭)와 어느 카메라로 찍었는지도 함께 남긴다.
+ * 그 둘이 다음 촬영의 자세 게이트와 카메라 잠금의 기준이 된다 — 사람마다 몸 비례가 다르므로
+ * 자세는 절대 기준으로 잴 수 없고, 반드시 같은 사람의 첫 사진과 견줘야 한다.
  */
 export function baselineFromCapture(
   sessionId: string,
   uri: string,
   metrics: ImageQualityMetrics,
-  extra: { face?: FaceFrame | null; facing?: 'front' | 'back' } = {},
+  extra: { scale?: ScaleFrame | null; facing?: 'front' | 'back' } = {},
 ): Baseline {
   return {
     sessionId,
     processedUri: uri,
     skinReference: metrics.skinMedians,
     brightness: metrics.brightness,
-    face: extra.face
-      ? { areaRef: extra.face.areaRef, ratio: extra.face.ratio, noseAsym: extra.face.noseAsym }
+    scale: extra.scale
+      ? { areaRef: extra.scale.areaRef, ratio: extra.scale.ratio, asym: extra.scale.asym }
       : undefined,
     facing: extra.facing,
   };

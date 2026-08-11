@@ -71,8 +71,14 @@ export function unletterbox(box: Letterbox, nx: number, ny: number): { x: number
  * 무엇보다 우리가 재려는 값(안간거리·눈-입 거리의 비율)이 그 찌그러짐만큼 왜곡된다. 그 비율이
  * 곧 자세 게이트의 기준이라, 여기서는 반드시 비율을 지켜야 한다.
  *
- * src를 주면 그 부분만 잘라 넣는다 — 얼굴을 한 번 찾은 뒤 그 자리를 크게 다시 보는 데 쓴다.
- * 남는 여백은 검게 채운다 (BlazeFace가 검은 패딩에 안정적이다).
+ * src를 주면 그 부분만 잘라 넣는다 — 얼굴을 한 번 찾은 뒤 그 자리를 크게 다시 보거나, 몸통
+ * 랜드마크에 넣을 사람 자리를 잘라 낼 때 쓴다. 남는 여백은 검게 채운다 (BlazePose 계열 모델이
+ * 검은 패딩에 안정적이다).
+ *
+ * **src는 사진 밖으로 나가도 된다.** 몸통에서는 그게 정상이다 — 전신을 감싸는 원이 화면보다 클
+ * 때가 많다. 그때 사진 밖 영역은 검게 남고, 사진 안쪽은 **원래 있어야 할 자리에** 그려진다.
+ * 이 자리를 잘못 다루면(잘린 src를 목적지 전체에 늘려 그리면) 좌표가 통째로 어긋나서, 관절
+ * 위치를 되돌릴 때 몇십 픽셀씩 밀린다 — 그건 그대로 자의 오차가 된다.
  */
 export function readLetterboxRGBA(
   image: SkImage,
@@ -96,12 +102,29 @@ export function readLetterboxRGBA(
   try {
     const canvas = surface.getCanvas();
     canvas.clear(Skia.Color('black'));
-    canvas.drawImageRect(
-      image,
-      { x: srcX, y: srcY, width: w, height: h },
-      { x: padX, y: padY, width: dw, height: dh },
-      Skia.Paint(),
-    );
+
+    /*
+      사진 안에 실제로 있는 부분만 그린다. 목적지도 같은 비율로 잘라서, 사진 밖이었던 자리는
+      검은 채로 남는다 — src 전체를 목적지 전체에 대응시키는 관계가 그대로 유지되므로
+      unletterbox가 좌표를 정확히 되돌릴 수 있다.
+    */
+    const vx = Math.max(srcX, 0);
+    const vy = Math.max(srcY, 0);
+    const vw = Math.min(srcX + w, image.width()) - vx;
+    const vh = Math.min(srcY + h, image.height()) - vy;
+    if (vw > 0 && vh > 0) {
+      canvas.drawImageRect(
+        image,
+        { x: vx, y: vy, width: vw, height: vh },
+        {
+          x: padX + (vx - srcX) * scale,
+          y: padY + (vy - srcY) * scale,
+          width: vw * scale,
+          height: vh * scale,
+        },
+        Skia.Paint(),
+      );
+    }
     surface.flush();
 
     snapshot = surface.makeImageSnapshot();

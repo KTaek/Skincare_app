@@ -122,6 +122,11 @@ export default function ExamFlow({
     <MonitorCaptureScreen
       target={current}
       source={source}
+      /*
+        바로 스캔에서는 넓이를 재지 않는다. 기록으로 남지 않는 촬영이라 견줄 회차가 영영 없고,
+        임시 대상의 부위('chest')를 그대로 믿으면 팔을 클로즈업해 찍어도 몸통 자를 찾으려 든다.
+      */
+      measureArea={!isQuick}
       onCancel={() => setStep('source')}
       onComplete={(processedUri, session) =>
         onCaptured({ kind, target: current, session, photoUri: processedUri, itchVas, folderId })

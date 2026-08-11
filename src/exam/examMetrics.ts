@@ -1,6 +1,7 @@
 import { LocalAnalysisResult } from '../ai/analyzeLocal';
 import { labels, SignKey } from '../ai/labels';
 import { DISPLAY_SCALE } from '../folders/theme';
+import type { AreaEligibility } from '../monitoring/types';
 
 /** 모니터링 폴더 기록(0~10 스케일)에서 세부 증상이 쓰는 필드 이름 */
 export type SymptomRecordKey = 'redness' | 'bumps' | 'scratch' | 'thickening';
@@ -56,24 +57,37 @@ export function lesionAreaPct(result: LocalAnalysisResult): number {
 }
 
 /**
- * 배율이 상쇄된 병변 넓이 지수 — 얼굴 자리에서만 나온다.
+ * 배율이 상쇄된 병변 넓이 지수 — 자를 찾은 자리(얼굴·몸통)에서만 나온다.
  *
- * 분모가 얼굴 크기(안간거리 × 눈-입 거리)라 촬영 거리가 달라져도 값이 변하지 않는다.
- * 얼굴을 못 찾았으면 null이고, 그때 폴더 기록에는 넓이 추이가 남지 않는다 —
- * 잴 수 없는 것을 0으로 남기면 그래프가 "병변이 사라졌다"고 말하게 된다.
+ * 분모가 그 자리의 크기(얼굴은 안간거리 × 눈-입 거리, 몸통은 어깨너비 × 척추 길이)라 촬영 거리가
+ * 달라져도 값이 변하지 않는다. 자를 못 찾았으면 null이고, 그때 폴더 기록에는 넓이 추이가 남지
+ * 않는다 — 잴 수 없는 것을 0으로 남기면 그래프가 "병변이 사라졌다"고 말하게 된다.
  */
 export function faceAreaIndex(result: LocalAnalysisResult): number | null {
-  return result.faceArea?.index ?? null;
+  return result.scaleArea?.index ?? null;
+}
+
+/**
+ * 그 지수를 **무엇으로 나눈 값인지** — 기록에 함께 남겨야 하는 이유가 분명하다.
+ *
+ * 지수는 넓이 ÷ (자의 d·v)라서, "부위의 몇 %"로 되돌리려면 그 자의 면적 비례상수가 필요하다
+ * (얼굴 5.5, 몸통 0.85 — folders/areaTrend). 종류를 안 남기면 몸통 지수를 얼굴 상수로 나누게
+ * 되고, 화면에는 6배 틀린 숫자가 "측정값"인 척 뜬다.
+ */
+export function faceAreaKind(result: LocalAnalysisResult): 'face' | 'torso' | null {
+  return result.scaleArea?.kind ?? null;
 }
 
 /**
  * 분석 결과를 모니터링 폴더 기록이 쓰는 스케일(IGA 0~4, 세부 증상 0~10)로 옮긴다.
  * 폴더 화면의 그래프·요약 박스가 이 스케일을 기준으로 그려지므로 여기서 한 번만 환산한다.
  *
- * areaUsable은 촬영 시점에만 알 수 있는 정보(정렬·조명)라 분석 결과에 들어 있지 않고,
- * 부르는 쪽이 세션에서 꺼내 넘긴다.
+ * 넓이 측정 자격(area)은 촬영 시점에만 알 수 있는 정보(정렬·조명·해상도)라 분석 결과에 들어 있지
+ * 않고, 부르는 쪽이 세션에서 꺼내 넘긴다. 판정 자체가 없으면(얼굴 자리가 아니면) 넓이를 뺄 이유도
+ * 없으므로 통과로 본다.
  */
-export function toFolderMetrics(result: LocalAnalysisResult, areaUsable = true) {
+export function toFolderMetrics(result: LocalAnalysisResult, area?: AreaEligibility) {
+  const areaUsable = area ? area.ok : true;
   const symptoms: Record<SymptomRecordKey, number> = { redness: 0, bumps: 0, scratch: 0, thickening: 0 };
   result.signs.forEach((s) => {
     symptoms[SIGN_DISPLAY[s.sign].recordKey] = Math.round(signDisplayValue(s.sign, s.grade)) / 10;
@@ -85,5 +99,14 @@ export function toFolderMetrics(result: LocalAnalysisResult, areaUsable = true) 
     areaPct: lesionAreaPct(result),
     // 어긋나게 찍힌 회차는 값을 남기지 않는다 — 추세선에서 빼는 가장 단순하고 확실한 방법이다
     faceAreaIndex: areaUsable ? faceIndex : null,
+    faceAreaKind: areaUsable ? faceAreaKind(result) : null,
+    /*
+      사용자가 해상도 게이트를 직접 열고 잰 값인지.
+
+      이 표시를 기록까지 끌고 가는 이유: 흔들릴 수 있는 값이라는 사실은 **그 값을 읽는 자리**에서
+      알아야 쓸모가 있다. 촬영 화면에서 한 번 말하고 마는 것으로는, 두 달 뒤 그래프에서 튀는 점을
+      보는 사람에게 아무것도 남지 않는다.
+    */
+    faceAreaLowRes: areaUsable && !!area?.override,
   };
 }
