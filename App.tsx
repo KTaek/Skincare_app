@@ -1,5 +1,5 @@
-import React from 'react';
-import { Platform, StyleSheet, View, useWindowDimensions } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Image, ImageStyle, Platform, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
@@ -40,30 +40,75 @@ function PhoneFrame({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** 스플래시가 화면에 머무는 시간 — 너무 짧으면 깜빡이듯 지나가고, 너무 길면 로딩이 느려 보인다 */
+const SPLASH_HOLD_MS = 5000;
+const SPLASH_FADE_MS = 300;
+
+/**
+ * 앱 시작 화면 — assets/splash.png(오프라인 빌드 스플래시와 같은 이미지)를 그대로 띄운다.
+ *
+ * 네이티브 빌드는 app.json의 splash 설정이 JS가 뜨기도 전에 이 이미지를 먼저 보여주지만, 이 컴포넌트가
+ * 뜨는 시점엔 이미 JS가 실행 중이라 그 자리를 이어받는 것뿐이다 — 그래서 정적 스플래시가 없는
+ * 웹 미리보기에서도 앱을 열면 항상 같은 화면이 먼저 보인다. 실제 앱 트리는 이 뒤에서 같이
+ * 마운트돼 있고(providers가 데이터를 준비할 시간을 벌어준다), 붙잡아 둔 시간이 끝나면 살짝
+ * 페이드아웃하고 사라진다.
+ */
+function SplashOverlay({ onDone }: { onDone: () => void }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      Animated.timing(opacity, { toValue: 0, duration: SPLASH_FADE_MS, useNativeDriver: true }).start(onDone);
+    }, SPLASH_HOLD_MS);
+    return () => clearTimeout(timer);
+  }, [opacity, onDone]);
+
+  return (
+    <Animated.View style={[StyleSheet.absoluteFill, styles.splashRoot, { opacity }]} pointerEvents="none">
+      <Image source={require('./assets/splash.png')} style={splashImageStyle} resizeMode="contain" />
+    </Animated.View>
+  );
+}
+
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
+
   return (
     <PhoneFrame>
-      <SafeAreaProvider>
-        <ProfileProvider>
-          <RoutineProvider>
-            <RecordsProvider>
-              <MonitoringProvider>
-                <LeaveGuardProvider>
-                  <NavigationContainer>
-                    <StatusBar style="dark" />
-                    <RootNavigator />
-                  </NavigationContainer>
-                </LeaveGuardProvider>
-              </MonitoringProvider>
-            </RecordsProvider>
-          </RoutineProvider>
-        </ProfileProvider>
-      </SafeAreaProvider>
+      <View style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <ProfileProvider>
+            <RoutineProvider>
+              <RecordsProvider>
+                <MonitoringProvider>
+                  <LeaveGuardProvider>
+                    <NavigationContainer>
+                      <StatusBar style="dark" />
+                      <RootNavigator />
+                    </NavigationContainer>
+                  </LeaveGuardProvider>
+                </MonitoringProvider>
+              </RecordsProvider>
+            </RoutineProvider>
+          </ProfileProvider>
+        </SafeAreaProvider>
+        {showSplash && <SplashOverlay onDone={() => setShowSplash(false)} />}
+      </View>
     </PhoneFrame>
   );
 }
 
+// width+aspectRatio(1)만 쓰면 실제 휴대폰처럼 세로로 훨씬 긴 화면에서 그 비율 그대로 정사각형
+// 박스를 만드는데, 그 박스가 화면 비율과 안 맞아 보였다 — width·height를 둘 다 넉넉한 테두리
+// 상자로 주고 resizeMode="contain"이 그 상자 안에서 원본(정사각형) 비율 그대로 맞추게 한다.
+const splashImageStyle: ImageStyle = { width: '88%', height: '70%' };
+
 const styles = StyleSheet.create({
+  splashRoot: {
+    backgroundColor: '#EDF0F4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   backdrop: {
     flex: 1,
     // @ts-expect-error 웹 전용 단위(vh) — RN의 DimensionValue 타입엔 없지만 react-native-web에선 그대로 CSS로 전달된다

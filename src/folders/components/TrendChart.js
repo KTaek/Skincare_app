@@ -65,8 +65,11 @@ function toPointsAttr(pts) {
  * 스크롤 밖 고정 자리에 그린다. selectedId와 같은 기록의 폭 전체를 옅은 회색 띠로 칠해 어떤
  * 날짜가 선택되어 있는지 보여주고, 포인트를 탭하면 onSelect(record)로 선택을 바꾼다. 상세 결과는
  * 이 그래프에서 바로 넘어가지 않는다 — 아래 "피부 상태 상세 결과" 영역에서 그대로 펼쳐 본다.
+ *
+ * series로 그릴 지표를 줄일 수 있다 — 아토피가 아닌 폴더는 "피부 종합 상태"(IGA) 자체가 근거
+ * 없는 값이라 상위(MonitoringFolderScreen)가 ['itch', 'sleep']만 넘겨 그 선을 아예 뺀다.
  */
-export default function TrendChart({ records, chartHeight = MIN_CHART_H, selectedId, onSelect }) {
+export default function TrendChart({ records, chartHeight = MIN_CHART_H, selectedId, onSelect, series = SERIES_ORDER }) {
   const n = records.length;
   const width = chartContentWidth(n);
   const h = chartHeight;
@@ -78,7 +81,7 @@ export default function TrendChart({ records, chartHeight = MIN_CHART_H, selecte
 
   // 지표별 (x, y) 점 목록을 미리 계산해 둔다 — 꺾은선과 점 둘 다 이 좌표를 그대로 쓴다.
   const seriesPts = {};
-  SERIES_ORDER.forEach((key) => {
+  series.forEach((key) => {
     seriesPts[key] = records.map((r, i) => [xAt(i), yAt(normalize[key](r), h)]);
   });
 
@@ -102,8 +105,8 @@ export default function TrendChart({ records, chartHeight = MIN_CHART_H, selecte
           return <Line key={`grid-${v}`} x1={0} y1={y} x2={width} y2={y} stroke={mc.line} strokeWidth={1} />;
         })}
 
-        {/* 세 지표 모두 같은 방식(꺾은선 + 점)으로 그린다 — 뒤에 그릴수록 위에 겹쳐 보인다 */}
-        {SERIES_ORDER.map((key) => {
+        {/* 지표들을 같은 방식(꺾은선 + 점)으로 그린다 — 뒤에 그릴수록 위에 겹쳐 보인다 */}
+        {series.map((key) => {
           const pts = seriesPts[key];
           const color = CHART_SERIES[key].color;
           return (
@@ -150,10 +153,10 @@ export function TrendChartYAxis({ chartHeight = MIN_CHART_H }) {
  * 위에 겹쳐서 100 가로줄과 부딪히지 않도록, 그래프보다 먼저 일반 문서 흐름으로 그 위에 놓고
  * 쓴다(더 이상 absolute 겹침이 아니라 그래프를 아래로 밀어내는 자기 자리를 가진 한 줄이다).
  */
-export function TrendChartLegend() {
+export function TrendChartLegend({ series = SERIES_ORDER }) {
   return (
     <View style={styles.legendRow}>
-      {['skin', 'itch', 'sleep'].map((key) => {
+      {series.map((key) => {
         const s = CHART_SERIES[key];
         return (
           <View key={key} style={styles.legendItem}>

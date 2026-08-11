@@ -118,6 +118,41 @@ export async function normalSkinResult(uri: string): Promise<LocalAnalysisResult
 }
 
 /**
+ * 질환 분류 1순위가 "정상"도 "아토피피부염"도 아닐 때 쓰는 결과.
+ *
+ * 증상 4가지·IGA를 매기는 Stage2 모델은 아토피피부염의 중증도 채점 기준(홍반·구진·긁은
+ * 상처·태선화)으로 학습돼 있어서, 건선·여드름·주사·지루피부염 같은 다른 질환 사진에 그대로
+ * 돌리면 근거 없는 등급이 나온다. 그래서 이 경로에서는 Stage2를 아예 부르지 않는다. 사진 위
+ * 병변 위치 표시에만 쓰는 Stage1(분할)은 가볍게 그대로 돌려서 bbox는 채운다.
+ */
+export async function unsupportedDiseaseResult(
+  uri: string,
+  colorGain?: readonly number[],
+): Promise<LocalAnalysisResult> {
+  const { origW, origH, bbox: rawBbox, found } = await withSkImage(uri, (image) => runStage1(image, colorGain));
+  const bbox: LesionBox = found
+    ? { x: rawBbox.x1, y: rawBbox.y1, width: rawBbox.x2 - rawBbox.x1, height: rawBbox.y2 - rawBbox.y1, imageWidth: origW, imageHeight: origH }
+    : { x: 0, y: 0, width: origW, height: origH, imageWidth: origW, imageHeight: origH };
+  const signs: SignResult[] = SIGN_KEYS.map((sign) => ({
+    sign,
+    grade: 0,
+    gradeName: labels.grade_names_by_sign[sign][0],
+  }));
+  const igaGradeName = labels.grade_names_by_sign.iga[0];
+
+  return {
+    signs,
+    igaGrade: 0,
+    igaGradeName,
+    severity: IGA_GRADE_TO_SEVERITY[0] ?? 1,
+    bbox,
+    maskAreaPct: 0,
+    regions: [{ bbox, signs, igaGrade: 0, igaGradeName, share: 1 }],
+    inferenceTimeMs: 0,
+  };
+}
+
+/**
  * 촬영된 사진 전체 분석: Stage1(분할) → 덩어리별 crop → Stage2(분류) → DEX 등급 산출.
  *
  * 증상이 여러 곳에 떨어져 있으면 덩어리마다 따로 잘라 등급을 매기고, 그중 가장 나쁜 것을

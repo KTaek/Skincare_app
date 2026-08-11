@@ -2,24 +2,28 @@ import React, { useMemo, useRef, useState } from 'react';
 import { PanResponder, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
-import Body3DView from '../components/Body3DView';
-import { BodyPartId, COARSE_OF_PART, partsOfSpotId } from '../monitoring/bodyParts';
-import { BodyModelId } from '../three/humanModel';
-import { useFolders, addDaysKey, daysBetween, todayKey } from '../folders/store';
-import { DISPLAY_SCALE, skinConditionInfo } from '../folders/theme';
+import Body2DView from '../components/Body2DView';
+import { BodyPartId, COARSE_OF_PART, CoarseGroupId, COARSE_GROUPS, partsOfSpotId } from '../monitoring/bodyParts';
+import { useFolders, addDaysKey, daysBetween, todayKey, folderHasSeverity } from '../folders/store';
+import { DISPLAY_SCALE, skinConditionInfo, SKIN_SEGMENTS } from '../folders/theme';
 import { useMonitoring } from '../context/MonitoringContext';
 import { plainSiteLabel } from '../models';
 
 /**
- * 전신 결과 — 지켜보는 자리들의 호전/악화를 3D 인체 위에 색으로 얹어 한 눈에 본다.
+ * 전신 결과 — 지켜보는 자리들의 "지금 상태"를 인체 그림 위에 동그라미로 얹어 한 눈에 본다.
  *
- * 부위마다 다른 호전/악화 색을 동시에 보여줘야 해서(정상/경증/중등증/중증이 자리마다 다르다),
- * 부위 선택과 달리 여기는 여전히 3D 메시(Body3DView)를 쓴다 — partColors로 부위별 색을 넘긴다.
- * 지금 색을 칠하는 단위가 머리·몸통·팔·다리 네 덩어리라 앞모습 한 벌이면 모든 자리가 다
- * 드러나서, 정면만 크게 보여준다.
+ * 그림은 부위 선택 화면(PartSelectScreen)과 같은 2D 몸 그림(Body2DView)을 그대로 쓴다 — 등록 흐름과
+ * 결과 화면이 다른 그림을 쓰면 "그때 고른 그 팔"이라는 감각이 끊긴다. 다만 부위 선택은 고른 덩어리
+ * 전체를 색으로 칠하지만, 여기서는 덩어리 전체가 아니라 그 덩어리 안 정해진 자리에 작은 동그라미만
+ * 찍는다(partMarkers) — 팔 전체가 병변인 게 아니라 "팔 어딘가에 병변이 있다"는 뜻이라서다.
  *
- * 아래 슬라이더를 끌면 그 날짜 시점의 색으로 바뀐다 — "그때 이 부위가 좋아지는 중이었나"를
- * 되짚어 보는 타임라인이다.
+ * 동그라미 색은 그 시점 "피부 종합 상태" 값 그대로다 — 다른 화면(피부 종합 상태 카드·그래프)과
+ * 같은 4단계(좋음·주의·나쁨·매우 나쁨, SKIN_SEGMENTS)를 써서, 여기서만 다른 색 체계(호전/유지/
+ * 악화)를 따로 배우지 않아도 된다. 그 시점 대비 좋아지고 있었는지/나빠지고 있었는지는 색이 아니라
+ * 아래 "부위별 변화" 목록의 화살표·태그로 따로 보여준다.
+ *
+ * 아래 슬라이더를 끌면 그 날짜 시점의 색으로 바뀐다 — "그때 이 부위가 어떤 상태였나"를 되짚어
+ * 보는 타임라인이다.
  */
 
 /** 추세를 재는 창 — 그 시점에서 이만큼 이전의 기록과 견준다 */
@@ -31,8 +35,10 @@ const TREND_COLORS = {
   better: '#4FB86A',
   same: '#EFD152',
   worse: '#E2584B',
-  none: '#DCE1E8',
 } as const;
+
+/** 지켜보지 않는 부위(동그라미)·아직 기록이 없는 구간의 회색 — 지도 범례·동그라미 둘 다 이 색을 쓴다 */
+const NO_RECORD_COLOR = '#DCE1E8';
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
@@ -53,10 +59,16 @@ function trendColor(score: number): string {
   return `#${from.map((c, i) => toHex(c + (to[i] - c) * localT)).join('')}`;
 }
 
-/** 색만으로는 미묘한 차이가 읽히지 않아서 글자로도 같이 알려 준다 */
+/**
+ * 색만으로는 미묘한 차이가 읽히지 않아서 글자로도 같이 알려 준다.
+ *
+ * delta는 IGA 원래 척도(낮을수록 좋음)라 "개선"이 실제로는 숫자가 줄어드는 쪽이지만, 아이콘은
+ * 주가 그래프처럼 "위로 오르면 좋다"는 직관을 따른다 — 개선=trending-up, 악화=trending-down으로
+ * 일부러 뒤집어 둔다. 경과 관찰 카드(TrendMini)의 "개선/악화" 용어와도 맞춘다.
+ */
 function trendLabel(delta: number): { text: string; color: string; icon: 'trending-down' | 'trending-flat' | 'trending-up' } {
-  if (delta <= -0.3) return { text: '호전', color: TREND_COLORS.better, icon: 'trending-down' };
-  if (delta >= 0.3) return { text: '악화', color: TREND_COLORS.worse, icon: 'trending-up' };
+  if (delta <= -0.3) return { text: '개선', color: TREND_COLORS.better, icon: 'trending-up' };
+  if (delta >= 0.3) return { text: '악화', color: TREND_COLORS.worse, icon: 'trending-down' };
   return { text: '유지', color: '#B99A18', icon: 'trending-flat' };
 }
 
@@ -81,13 +93,16 @@ interface SiteTrend {
 
 export default function WholeBodyResultScreen() {
   const folders = useFolders();
-  const { findTarget, targets } = useMonitoring();
+  const { findTarget } = useMonitoring();
 
-  // 폴더 → 3D 부위. 대상(MonitorTarget)이 없는 폴더는 몸의 어디인지 알 수 없어 지도에 올리지 못한다.
+  // 폴더 → 몸 그림의 덩어리. 대상(MonitorTarget)이 없는 폴더는 몸의 어디인지 알 수 없어 지도에 올리지 못한다.
   const sites = useMemo<TrackedSite[]>(() => {
     const out: TrackedSite[] = [];
     for (const folder of folders) {
       if (!folder.records.length) continue;
+      // 이 지도는 IGA(피부 종합 상태) 변화를 비교하는 화면이라, 아토피피부염이 아닌 폴더는 그
+      // 값 자체가 없어(플레이스홀더 0) 끼워 넣으면 늘 "완전 정상"으로 잘못 보인다.
+      if (!folderHasSeverity(folder)) continue;
       const target = folder.targetId ? findTarget(folder.targetId) : undefined;
       if (!target) continue;
       const parts = partsOfSpotId(target.spotId) ?? [target.part];
@@ -135,30 +150,33 @@ export default function WholeBodyResultScreen() {
     return out;
   }, [sites, selectedKey]);
 
-  // 한 부위에 여러 자리가 겹치면(예: 팔 두 곳) 평균을 낸다
-  const partColors = useMemo<Partial<Record<BodyPartId, string>>>(() => {
-    const acc = new Map<BodyPartId, { sum: number; n: number }>();
+  // 한 덩어리(머리·몸통·팔·다리)에 여러 자리가 겹치면(예: 팔 두 곳) 평균을 낸다. site.parts는
+  // 세부 부위(BodyPartId)라 COARSE_OF_PART로 네 덩어리 중 하나로 먼저 묶는다 — 등록 흐름이 항상
+  // 이 네 덩어리 단위로만 자리를 만들어서(PartSelectScreen), 실제로는 site.parts가 전부 같은
+  // 덩어리에 속한다. 색은 그 시점 "피부 종합 상태"(0~100 표시값) 평균을 SKIN_SEGMENTS 4단계로
+  // 매긴다 — 다른 화면의 피부 종합 상태 카드·그래프와 같은 기준이다.
+  const groupColors = useMemo<Partial<Record<CoarseGroupId, string>>>(() => {
+    const acc = new Map<CoarseGroupId, { sum: number; n: number }>();
     trends.forEach((t) => {
-      const score = Math.min(1, Math.max(-1, t.delta / FULL_SWING));
-      t.site.parts.forEach((p) => {
-        const cur = acc.get(p);
+      const value = DISPLAY_SCALE.iga(t.current.iga);
+      const groups = new Set(t.site.parts.map((p) => COARSE_OF_PART[p]));
+      groups.forEach((g) => {
+        const cur = acc.get(g);
         if (cur) {
-          cur.sum += score;
+          cur.sum += value;
           cur.n += 1;
-        } else acc.set(p, { sum: score, n: 1 });
+        } else acc.set(g, { sum: value, n: 1 });
       });
     });
-    // 지켜보지 않는 부위도 "기록 없음" 색으로 명시해 둔다 — 기본 살색으로 남겨 두면 범례와
-    // 어긋나서 "회색인데 왜 기록이 없다는 거지"가 된다
-    const out: Partial<Record<BodyPartId, string>> = {};
-    (Object.keys(COARSE_OF_PART) as BodyPartId[]).forEach((part) => {
-      const v = acc.get(part);
-      out[part] = v ? trendColor(v.sum / v.n) : TREND_COLORS.none;
+    // 지켜보지 않는 덩어리도 "기록 없음" 색으로 명시해 둔다 — 동그라미를 아예 안 찍으면 범례와
+    // 어긋나서 "왜 이 부위엔 동그라미가 없지"가 된다
+    const out: Partial<Record<CoarseGroupId, string>> = {};
+    COARSE_GROUPS.forEach((group) => {
+      const v = acc.get(group);
+      out[group] = v ? skinConditionInfo(v.sum / v.n).color : NO_RECORD_COLOR;
     });
     return out;
   }, [trends]);
-
-  const modelId: BodyModelId = targets[0]?.modelId ?? 'adultMale';
 
   if (!sites.length) {
     return (
@@ -183,14 +201,9 @@ export default function WholeBodyResultScreen() {
       style={{ flex: 1 }}
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 32 }}
     >
-      <Text style={styles.subtitle}>
-        슬라이더를 끌면 그 시점에 부위별로 좋아지고 있었는지 색으로 보여줘요
-      </Text>
-      <View style={{ height: 14 }} />
-
       <View style={[cardDecoration(), styles.mapCard]}>
         <View style={styles.bodyCanvas}>
-          <Body3DView modelId={modelId} partColors={partColors} view={{ yaw: 0, pitch: 0 }} rotatable={false} />
+          <Body2DView partMarkers={groupColors} />
         </View>
 
         <View style={{ height: 6 }} />
@@ -212,9 +225,6 @@ export default function WholeBodyResultScreen() {
 
       <View style={{ height: 18 }} />
       <Text style={styles.sectionTitle}>부위별 변화</Text>
-      <Text style={styles.sectionCaption}>
-        최근 {TREND_WINDOW_DAYS}일 사이의 피부 종합 상태 변화 기준
-      </Text>
       <View style={{ height: 10 }} />
 
       {trends.length === 0 ? (
@@ -275,12 +285,11 @@ function DaySlider({ max, value, onChange }: { max: number; value: number; onCha
   );
 }
 
+/** 지도 동그라미와 같은 기준(SKIN_SEGMENTS) — 안 좋은 쪽부터 정의돼 있어서 좋은 쪽부터 보이게 뒤집는다 */
 function Legend() {
   const items: { color: string; text: string }[] = [
-    { color: TREND_COLORS.better, text: '호전' },
-    { color: TREND_COLORS.same, text: '유지' },
-    { color: TREND_COLORS.worse, text: '악화' },
-    { color: TREND_COLORS.none, text: '기록 없음' },
+    ...[...SKIN_SEGMENTS].reverse().map((s) => ({ color: s.color, text: s.ko })),
+    { color: NO_RECORD_COLOR, text: '기록 없음' },
   ];
   return (
     <View style={styles.legendRow}>
@@ -334,7 +343,6 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
 const styles = StyleSheet.create({
   subtitle: { fontSize: 13.5, color: AppColors.sub },
   sectionTitle: { fontSize: 16, fontWeight: '800', color: AppColors.ink },
-  sectionCaption: { fontSize: 12, color: AppColors.sub, marginTop: 3 },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 80 },
   emptyText: { fontSize: 14, color: AppColors.sub },
 

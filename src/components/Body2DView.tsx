@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, View } from 'react-native';
-import Svg, { Path } from 'react-native-svg';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { AppColors } from '../theme';
 import { CoarseGroupId } from '../monitoring/bodyParts';
 
@@ -40,6 +40,18 @@ const REGION_PATHS: Record<CoarseGroupId, string> = {
   torso: TORSO_PATH,
   arm: ARM_PATH,
   leg: LEG_PATH,
+};
+
+/**
+ * 덩어리마다 동그라미 표시(partMarkers)를 찍을 자리 — 그 덩어리 도형 안쪽에 확실히 들어가도록
+ * 손으로 눈대중한 좌표다. 팔·다리는 좌우 두 곳(REGION_PATHS의 두 subpath 각각) 한가운데씩 찍어서,
+ * "이 덩어리 전체"가 아니라 "여기쯤"이라는 느낌을 준다 — 좌우를 구분하는 자리는 아니다.
+ */
+const GROUP_MARKERS: Record<CoarseGroupId, BodyPoint2D[]> = {
+  head: [{ x: 163, y: 90 }],
+  torso: [{ x: 163, y: 340 }],
+  arm: [{ x: 50, y: 230 }, { x: 277, y: 230 }],
+  leg: [{ x: 110, y: 650 }, { x: 217, y: 650 }],
 };
 
 /**
@@ -141,17 +153,24 @@ export interface BodyPoint2D {
  * 부위 선택용 2D 몸 그림 — 네 덩어리를 각자의 도형으로 그리고, 지금 고른 덩어리만 채움색을
  * 초록으로 바꾼다(나머지는 옅은 회색). 그림과 탭 판정이 같은 좌표계·같은 경계를 그대로 공유해서
  * 그림 위 어디를 눌러도 눈에 보이는 그 부위가 정확히 골라진다.
+ *
+ * partMarkers를 넘기면(전신 결과 화면이 쓴다) 덩어리 전체를 칠하는 대신, GROUP_MARKERS에 미리
+ * 정해 둔 자리에 그 색으로 작은 동그라미만 찍는다 — "이 부위 전체"가 아니라 "이 부위에 병변이
+ * 있다"는 표시라서다. highlightGroup·partMarkers는 같이 써도 되지만 실제로는 화면마다 하나만 쓴다.
  */
 export default function Body2DView({
   highlightGroup,
   marker,
+  partMarkers,
   onPick,
 }: {
   /** 지금 선택된 덩어리 — 좌우를 나누지 않으므로 팔/다리는 양쪽 다 이 색으로 칠한다 */
   highlightGroup?: CoarseGroupId | null;
   /** 마지막으로 탭한 위치(뷰 좌표) — 칩으로 골랐을 때는 부모가 null로 지운다 */
   marker?: BodyPoint2D | null;
-  onPick: (group: CoarseGroupId, point: BodyPoint2D) => void;
+  /** 덩어리별 동그라미 색 — 전신 결과 화면의 부위별 호전/악화 표시용 (읽기 전용 화면에서 쓴다) */
+  partMarkers?: Partial<Record<CoarseGroupId, string>>;
+  onPick?: (group: CoarseGroupId, point: BodyPoint2D) => void;
 }) {
   const pulse = useRef(new Animated.Value(1)).current;
   const wrapRef = useRef<View>(null);
@@ -187,7 +206,7 @@ export default function Body2DView({
     const vx = (localX / width) * VIEWBOX_W;
     const vy = (localY / height) * VIEWBOX_H;
     const group = classifyGroup(vx, vy);
-    if (!group) return;
+    if (!group || !onPick) return;
     onPick(group, { x: localX, y: localY });
   };
 
@@ -204,6 +223,21 @@ export default function Body2DView({
             {highlightGroup && <Path d={REGION_PATHS[highlightGroup]} fill={HIGHLIGHT_COLOR} />}
             {/* 3) 바깥 테두리선은 맨 위에 한 번만 — 안쪽 경계(겨드랑이·가랑이 등)에는 선을 긋지 않는다 */}
             <Path d={OUTLINE_PATH} fill="none" stroke={OUTLINE_COLOR} strokeWidth={2.5} strokeLinejoin="round" />
+            {/* 4) 부위별 동그라미 — 테두리 위에 그려서 항상 또렷하게 보인다 */}
+            {partMarkers &&
+              (Object.keys(partMarkers) as CoarseGroupId[]).flatMap((group) =>
+                GROUP_MARKERS[group].map((pt, i) => (
+                  <Circle
+                    key={`${group}-${i}`}
+                    cx={pt.x}
+                    cy={pt.y}
+                    r={16}
+                    fill={partMarkers[group]}
+                    stroke="#FFFFFF"
+                    strokeWidth={3}
+                  />
+                )),
+              )}
           </Svg>
         </Pressable>
 

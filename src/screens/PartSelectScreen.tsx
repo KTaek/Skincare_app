@@ -46,25 +46,31 @@ export default function PartSelectScreen({
         />
       </View>
 
-      {/* 정면 그림만으로는 짚기 어려운 부위(등·엉덩이 등)를 위해 같은 선택지를 칩으로도 둔다 */}
-      <View style={styles.chipRow}>
-        {COARSE_GROUPS.map((g) => {
-          const selected = group === g;
-          return (
-            <Pressable
-              key={g}
-              style={[styles.chip, selected && styles.chipSelected]}
-              onPress={() => {
-                setGroup(g);
-                setMarker(null);
-              }}
-            >
-              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-                {coarseDisplayName(g)}
-              </Text>
-            </Pressable>
-          );
-        })}
+      {/* 정면 그림만으로는 짚기 어려운 부위(등·엉덩이 등)를 위해 같은 선택지를 칩으로도 둔다.
+          "머리 몸통 / 팔 다리" 2줄로 고정되도록 두 줄로 나눠 배치한다 — flexWrap에 맡기면
+          화면 너비에 따라 3+1로 잘려서 넷째 칩이 혼자 남는다. */}
+      <View style={styles.chipGrid}>
+        {[COARSE_GROUPS.slice(0, 2), COARSE_GROUPS.slice(2)].map((row, i) => (
+          <View key={i} style={styles.chipRow}>
+            {row.map((g) => {
+              const selected = group === g;
+              return (
+                <Pressable
+                  key={g}
+                  style={[styles.chip, selected && styles.chipSelected]}
+                  onPress={() => {
+                    setGroup(g);
+                    setMarker(null);
+                  }}
+                >
+                  <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                    {coarseDisplayName(g)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
       </View>
 
       <View style={styles.footer}>
@@ -91,13 +97,15 @@ const styles = StyleSheet.create({
   headerTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '700', color: AppColors.ink, marginRight: 38 },
   viewer: { flex: 1, minHeight: 280 },
 
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
+  chipGrid: {
     gap: 8,
     paddingHorizontal: 20,
     paddingTop: 8,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
   },
   chip: {
     borderRadius: 999,

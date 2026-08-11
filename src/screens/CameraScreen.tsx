@@ -3,10 +3,10 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { AppColors } from '../theme';
-import { analyzeLocal, normalSkinResult, LocalAnalysisResult } from '../ai/analyzeLocal';
+import { analyzeLocal, normalSkinResult, unsupportedDiseaseResult, LocalAnalysisResult } from '../ai/analyzeLocal';
 import { classifyDisease, preloadDiseaseModel } from '../ai/diseaseModel';
 import { preloadModels } from '../ai/tfliteService';
-import { GRADE_NAMES_KO } from '../ai/labels';
+import { GRADE_NAMES_KO, SEVERITY_SUPPORTED_DISEASE } from '../ai/labels';
 import { DUMP_RESULTS, makeDumpDiseases, makeDumpLocalResult } from '../exam/dumpAnalysis';
 import { useRecords } from '../context/RecordsContext';
 import { useLeaveGuard } from '../context/LeaveGuardContext';
@@ -142,6 +142,8 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         const skipDisease = cap.kind === 'followUp' || !!cap.target.diagnosis?.diagnosed;
         let diseases: ExamAnalysis['diseases'] = null;
         let predictedDisease: string | undefined;
+        // 이 촬영에서 최종적으로 쓰는 진단명 — 새로 분류했으면 그 이름, 건너뛰었으면 이미 알던 이름
+        let diseaseName: string | undefined = cap.target.diagnosis?.disease;
         // 질환 분류 1순위가 "정상"이면 세그멘테이션·중증도 모델(analyzeLocal)은 돌리지 않고
         // 바로 "이상 없음"으로 확정한다 — 그래서 질환 분류를 먼저 끝내 둔다.
         let isNormalSkin = false;
@@ -154,6 +156,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
           const top = predictions[0];
           if (top) {
             predictedDisease = top.label;
+            diseaseName = top.label;
             isNormalSkin = top.key === '정상';
             setDiagnosis(cap.target.id, {
               diagnosed: false,
@@ -165,13 +168,20 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
           }
         }
 
+        // 4가지 증상·IGA 모델(Stage2)은 아토피피부염 채점 기준으로 학습돼 있어서, 다른 질환에는
+        // 근거가 없다 — "정상"은 예외로, 병변이 없다는 뜻이라 어떤 질환이든 항상 유효하다.
+        const isAtopic = diseaseName === SEVERITY_SUPPORTED_DISEASE;
+        const severitySupported = isNormalSkin || isAtopic;
+
         // dump 모드에서는 모델을 부르지 않고 지어낸 값으로 결과 화면을 채운다.
         // 세션 id를 씨앗으로 써서 같은 촬영이면 항상 같은 숫자가 나온다.
         const local = DUMP_RESULTS
           ? makeDumpLocalResult(cap.session.id)
           : isNormalSkin
             ? await normalSkinResult(cap.photoUri)
-            : await analyzeLocal(cap.photoUri, { colorGain });
+            : isAtopic
+              ? await analyzeLocal(cap.photoUri, { colorGain })
+              : await unsupportedDiseaseResult(cap.photoUri, colorGain);
 
         // 경과 이어서 기록은 이미 이어붙일 폴더가 정해져 있으므로 바로 오늘 기록으로 남긴다
         if (cap.kind === 'followUp' && cap.folderId) {
@@ -190,7 +200,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         // 저장은 앱이 알아서 하고, 버튼은 어디로 갈지만 고르게 한다.
         if (cap.kind !== 'quick') saveExamRecord(cap, local, predictedDisease);
 
-        setAnalysis({ local, diseases });
+        setAnalysis({ local, diseases, severitySupported });
         setStage('result');
       } catch (e: any) {
         setError(e?.message ?? '알 수 없는 오류가 발생했어요');
@@ -214,6 +224,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     const id = ensureFolder({
       targetId: target.id,
       name: folderNameOf(target.label, target.diagnosis?.disease),
+      disease: target.diagnosis?.disease,
     });
     recordExam({
       folderId: id,

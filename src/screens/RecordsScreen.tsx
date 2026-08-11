@@ -4,7 +4,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { AppColors, cardDecoration } from '../theme';
 import { plainSiteLabel } from '../models';
-import { useFolders } from '../folders/store';
+import { useFolders, folderHasSeverity } from '../folders/store';
 import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
 import LesionThumb from '../folders/components/LesionThumb';
 import { useMonitoring } from '../context/MonitoringContext';
@@ -206,15 +206,14 @@ function CalendarCard({
           </Text>
           {entries && entries.length > 0 && (
             <View style={styles.dotsRow}>
-              {entries.slice(0, 3).map((e, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.dot,
-                    { backgroundColor: skinConditionInfo(DISPLAY_SCALE.iga(e.record.iga)).color },
-                  ]}
-                />
-              ))}
+              {entries.slice(0, 3).map((e, i) => {
+                // 아토피가 아닌 폴더는 피부 종합 상태(IGA) 자체가 없는 값이라, 그 색 대신
+                // 항상 유효한 가려움 안정도로 점을 칠한다.
+                const color = folderHasSeverity(e.folder)
+                  ? skinConditionInfo(DISPLAY_SCALE.iga(e.record.iga)).color
+                  : itchBand(DISPLAY_SCALE.itch(e.record.itchVas)).color;
+                return <View key={i} style={[styles.dot, { backgroundColor: color }]} />;
+              })}
             </View>
           )}
           {/* 메모가 있는 날 — 아래 촬영 점과 헷갈리지 않도록 칸 오른쪽 위에 따로 표시한다 */}
@@ -333,8 +332,9 @@ function DetailSection({
 }
 
 /**
- * 홈의 "최근 피부 상태" 카드와 같은 3개 지표(피부 종합 상태 · 가려움 · 수면 점수)를 보여준다 —
+ * 홈의 "최근 피부 상태" 카드와 같은 지표(피부 종합 상태 · 가려움 · 수면 점수)를 보여준다 —
  * 사진/부위/병명만 이 폴더가 참조하는 모니터링 대상(MonitorTarget)에서 그대로 가져온다.
+ * 피부 종합 상태는 이 폴더의 진단명이 아토피피부염일 때만 보여준다(hasSeverity 참고).
  */
 function DetailCard({
   entry,
@@ -352,6 +352,8 @@ function DetailCard({
   const target = folder.targetId ? findTarget(folder.targetId) : undefined;
   const siteLabel: string | undefined = target ? plainSiteLabel(target.label) : undefined;
   const diseaseName: string = target?.diagnosis?.disease ?? plainSiteLabel(folder.name);
+  // 4가지 증상·IGA 모델은 아토피피부염 채점 기준이라, 이 폴더의 진단명이 그게 아니면 값 자체가 없다
+  const hasSeverity = folderHasSeverity(folder);
 
   const skinValue = DISPLAY_SCALE.iga(record.iga);
   const itchValue = DISPLAY_SCALE.itch(record.itchVas);
@@ -424,8 +426,12 @@ function DetailCard({
               </View>
               <View style={{ height: 8 }} />
               <View style={styles.statCols}>
-                <StatCol label="피부 종합 상태" value={Math.round(skinValue)} band={skin} />
-                <View style={styles.statColDivider} />
+                {hasSeverity && (
+                  <>
+                    <StatCol label="피부 종합 상태" value={Math.round(skinValue)} band={skin} />
+                    <View style={styles.statColDivider} />
+                  </>
+                )}
                 <StatCol label="가려움 안정도" value={itchValue} band={itch} />
                 <View style={styles.statColDivider} />
                 <StatCol label="수면 점수" value={sleep ? record.sleepScore : '-'} band={sleep} />

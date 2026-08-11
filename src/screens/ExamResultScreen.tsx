@@ -9,18 +9,19 @@ import {
   monitoringCard,
   ITCH_SEGMENTS,
   SKIN_SEGMENTS,
+  SLEEP_SEGMENTS,
   SYMPTOM_SEGMENTS_BASE,
 } from '../folders/theme';
 import { folderNameOf } from '../folders/targets';
+import { useLatestMonitoringRecord } from '../folders/store';
 import { plainSiteLabel } from '../models';
 import { LesionBox } from '../ai/analyzeLocal';
-import { GRADE_NAMES_KO } from '../ai/labels';
 import { ExamAnalysis, ExamCapture } from '../exam/examTypes';
 import { DUMP_RESULTS } from '../exam/dumpAnalysis';
 import { igaDisplayValue, itchDisplayValue, SIGN_DISPLAY, SIGN_ORDER, signDisplayValue } from '../exam/examMetrics';
 import { useMonitoring } from '../context/MonitoringContext';
-import { MetricCard, MetricRow } from '../components/MetricCard';
-import UsedProductsCard from '../components/UsedProductsCard';
+import { useProfile } from '../context/ProfileContext';
+import { MetricCard, MetricRow, EmptyMetricCard } from '../components/MetricCard';
 
 /** 사용자가 직접 고를 수 있는 진단명 — 분류 모델의 클래스와 같은 집합에 "직접 입력"을 더한 것 */
 const DIAGNOSES = ['아토피피부염', '건선', '여드름', '주사', '지루', '직접 입력'];
@@ -35,8 +36,9 @@ const DIAGNOSES = ['아토피피부염', '건선', '여드름', '주사', '지�
  * 다시 물을 것이 아니기 때문이다 — 진단명은 상단 제목에 이미 붙어 있고, 바꿀 일이 생기면 그
  * 폴더에서 고치는 게 맞다.
  *
- * 수면 점수는 여기에 없다. 이 단계에서 측정하는 값이 아니라 스마트워치에서 넘어오는 값이라,
- * 촬영 결과에 끼워 넣으면 이번 촬영으로 잰 값처럼 읽힌다.
+ * 수면 점수는 이 촬영이 재는 값이 아니라 스마트워치(삼성헬스) 연동으로 들어오는 값이라, 폴더별
+ * 기록이 아니라 기기 전체에서 가장 최근에 들어온 값을 그대로 보여준다 — 상세 결과 화면들과 같은
+ * 값이다. 연동을 꺼 두었거나 아직 들어온 값이 없으면 "미기재"로 남는다.
  *
  * 결과는 이 화면이 뜨기 전에 이미 저장돼 있다(CameraScreen.saveExamRecord) — 버튼은 저장이
  * 아니라 "어디로 갈지"만 고른다.
@@ -62,6 +64,8 @@ export default function ExamResultScreen({
 }) {
   const insets = useSafeAreaInsets();
   const { findTarget, setDiagnosis } = useMonitoring();
+  const { healthConnected } = useProfile();
+  const latestSleep = useLatestMonitoringRecord();
   const isQuick = capture.kind === 'quick';
   const isNew = capture.kind === 'new';
   const isFollowUp = capture.kind === 'followUp';
@@ -120,21 +124,31 @@ export default function ExamResultScreen({
           />
         )}
 
-        <MetricCard
-          label="피부 종합 상태"
-          value={skinValue}
-          unit="/100"
-          segments={SKIN_SEGMENTS}
-          foot={`IGA ${GRADE_NAMES_KO[analysis.local.igaGradeName] ?? analysis.local.igaGradeName}`}
-        />
+        {/* 4가지 증상·IGA 모델은 아토피피부염 채점 기준이라, 이 진단명이 그게 아니면(정상은 예외)
+            근거 없는 값이라 두 카드 다 보여주지 않는다 */}
+        {analysis.severitySupported && (
+          <>
+            <MetricCard
+              label="피부 종합 상태"
+              value={skinValue}
+              unit="/100"
+              segments={SKIN_SEGMENTS}
+            />
 
-        <SymptomCard analysis={analysis} />
+            <SymptomCard analysis={analysis} />
+          </>
+        )}
 
         {capture.itchVas != null && (
           <MetricCard label="가려움 안정도" value={itchDisplayValue(capture.itchVas)} unit="/100" segments={ITCH_SEGMENTS} />
         )}
 
-        {isNew && <UsedProductsCard date={new Date()} />}
+        {/* 스마트워치 연동 값 — 이 촬영이 재는 값이 아니라 기기 전체에서 가장 최근 값을 그대로 보여준다 */}
+        {healthConnected && latestSleep ? (
+          <MetricCard label="수면 점수" value={latestSleep.record.sleepScore} unit="/100" segments={SLEEP_SEGMENTS} />
+        ) : (
+          <EmptyMetricCard label="수면 점수" text="미기재" />
+        )}
 
         {session.confidence.warnings.length > 0 && (
           <View style={[monitoringCard(), styles.card]}>

@@ -39,3 +39,9 @@ export const GRADE_NAMES_KO: Record<string, string> = {
 
 /** IGA 5단계를 앱 전역에서 쓰는 3단계 중증도(1=경증, 2=중등증, 3=중증)로 축약 — 서버 severity_model과 동일 매핑 */
 export const IGA_GRADE_TO_SEVERITY: Record<number, number> = { 0: 1, 1: 1, 2: 2, 3: 2, 4: 3 };
+
+/**
+ * 4가지 증상·IGA 중증도 모델(Stage2)이 실제로 커버하는 질환 — 아토피피부염 하나뿐이다.
+ * 결과 화면·모니터링 탭에서 "피부 종합 상태"·"4가지 증상" 카드를 보여줄지 이 값과 비교해 정한다.
+ */
+export const SEVERITY_SUPPORTED_DISEASE = '아토피피부염';

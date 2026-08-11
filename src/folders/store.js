@@ -7,13 +7,20 @@
  * 폴더는 사용자가 직접 만들지 않는다 — 카메라 탭의 "신규 검사"(부위 선택 → 질환 등록 →
  * 가려움 문진 → 촬영 → 결과)를 끝낸 뒤 결과 화면에서 "경과 기록에 연동"을 누르면
  * ensureFolder가 "{부위} {질환}" 이름으로 만들고 recordExam이 그 검사의 실측값을 첫 기록으로
- * 넣는다. 프리셋 폴더 2개는 UI 흐름 시연용 dump 시계열이다.
+ * 넣는다. 프리셋 폴더 3개는 UI 흐름 시연용 dump 시계열이다.
  *
  * ⚠️ 세션 메모리에만 유지된다(앱 재시작 시 초기화).
  */
 import { useSyncExternalStore } from 'react';
+import { SEVERITY_SUPPORTED_DISEASE } from '../ai/labels';
 import { ATOPIC_PHOTOS, CHEEK_PHOTOS } from './dumpPhotos';
 import { DEMO_TARGETS, folderNameOf } from './targets';
+
+/** 이 폴더의 진단명이 4가지 증상·IGA 모델이 커버하는 질환(아토피피부염)인지 — "피부 종합 상태"·
+ *  "4가지 증상" 카드를 보여줄지 모니터링 화면들이 이 값으로 정한다. */
+export function folderHasSeverity(folder) {
+  return folder?.disease === SEVERITY_SUPPORTED_DISEASE;
+}
 
 const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -129,13 +136,14 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
   });
 }
 
-function makeFolder({ id, targetId, name, spanDaysAgoStart, spanDays, captureCount, from, to, photos }) {
+function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, captureCount, from, to, photos }) {
   const startDate = addDaysKey(todayKey(), -spanDaysAgoStart);
   const seedBase = hashStr(id + name);
   return {
     id,
     targetId,
     name,
+    disease,
     startDate,
     createdTs: Date.now(),
     records: generateRecords(startDate, seedBase, { spanDays, captureCount, from, to, photos }),
@@ -145,12 +153,29 @@ function makeFolder({ id, targetId, name, spanDaysAgoStart, spanDays, captureCou
 /** 데모 폴더도 실제 등록으로 만들어진 폴더와 똑같이 "{부위} {질환}" 이름을 쓴다 */
 const demoName = (t) => folderNameOf(t.label, t.diagnosis?.disease);
 
-// ── 프리셋 폴더 2개 (dump) ───────────────────────────────────────────────
+// ── 프리셋 폴더 4개 (dump) ───────────────────────────────────────────────
+// 네 폴더 모두 마지막 기록이 "오늘"이라(spanDaysAgoStart === spanDays로 맞춰 둠) 마지막 기록
+// 시각이 완전히 같다 — latestRecordAcrossFolders()는 동률이면 배열에서 먼저 나온 쪽을 최신으로
+// 본다. 홈 화면의 "최근 피부 상태"가 피부 종합 상태까지 온전히 보여주는 아토피 폴더를 기본으로
+// 보여주도록, 아토피 폴더(다리)를 맨 앞에 둔다.
 let folders = [
+  makeFolder({
+    id: 'f3',
+    targetId: DEMO_TARGETS[2].id, // 다리 아토피피부염
+    name: demoName(DEMO_TARGETS[2]),
+    disease: DEMO_TARGETS[2].diagnosis?.disease,
+    spanDaysAgoStart: 30,
+    spanDays: 30,
+    captureCount: 10,
+    from: { sleep: 64, itch: 6, iga: 3.2 },
+    to: { sleep: 79, itch: 2, iga: 0.6 },
+    photos: ATOPIC_PHOTOS,
+  }),
   makeFolder({
     id: 'f1',
     targetId: DEMO_TARGETS[0].id, // 팔 건선
     name: demoName(DEMO_TARGETS[0]),
+    disease: DEMO_TARGETS[0].diagnosis?.disease,
     spanDaysAgoStart: 53,
     spanDays: 53,
     captureCount: 14,
@@ -162,11 +187,24 @@ let folders = [
     id: 'f2',
     targetId: DEMO_TARGETS[1].id, // 머리 주사
     name: demoName(DEMO_TARGETS[1]),
+    disease: DEMO_TARGETS[1].diagnosis?.disease,
     spanDaysAgoStart: 21,
     spanDays: 21,
     captureCount: 7,
     from: { sleep: 82, itch: 2, iga: 0.8 },
     to: { sleep: 68, itch: 5, iga: 3.6 },
+    photos: CHEEK_PHOTOS,
+  }),
+  makeFolder({
+    id: 'f4',
+    targetId: DEMO_TARGETS[3].id, // 얼굴 아토피피부염
+    name: demoName(DEMO_TARGETS[3]),
+    disease: DEMO_TARGETS[3].diagnosis?.disease,
+    spanDaysAgoStart: 18,
+    spanDays: 18,
+    captureCount: 6,
+    from: { sleep: 60, itch: 6, iga: 3.0 },
+    to: { sleep: 75, itch: 2, iga: 0.8 },
     photos: CHEEK_PHOTOS,
   }),
 ];
@@ -218,18 +256,20 @@ export function deleteFolder(id) {
  * 실측값을 오늘 기록으로 넣는다. 여기서 일부러 emit하지 않는데, 기록이 0개인 순간이 구독자에게
  * 보이면 폴더 화면이 빈 배열을 그리게 되기 때문이다 — 기록까지 채운 recordExam이 한 번만 알린다.
  *
- * @param {{ targetId: string, name: string }} args
+ * @param {{ targetId: string, name: string, disease?: string }} args
  * @returns {string} 폴더 id
  */
-export function ensureFolder({ targetId, name }) {
+export function ensureFolder({ targetId, name, disease }) {
   const existing = getFolderByTarget(targetId);
   if (existing) {
     // 질환명이 바뀌었으면(모델이 추정한 이름이 새로 붙는 경우 등) 폴더 이름도 따라간다
-    if (existing.name !== name) folders = folders.map((f) => (f.id === existing.id ? { ...f, name } : f));
+    if (existing.name !== name || existing.disease !== disease) {
+      folders = folders.map((f) => (f.id === existing.id ? { ...f, name, disease } : f));
+    }
     return existing.id;
   }
   const id = `f_${targetId}`;
-  folders = [{ id, targetId, name, startDate: todayKey(), createdTs: Date.now(), records: [] }, ...folders];
+  folders = [{ id, targetId, name, disease, startDate: todayKey(), createdTs: Date.now(), records: [] }, ...folders];
   return id;
 }
 

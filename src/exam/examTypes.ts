@@ -32,4 +32,11 @@ export interface ExamAnalysis {
    * (슬라이드 지시 1: "의사 진단 있을 경우, 이어서 기록하는 경우 질환분류 모델 X").
    */
   diseases: DiseasePrediction[] | null;
+  /**
+   * local(피부 종합 상태·4가지 증상)이 믿을 수 있는 값인지 — 이 촬영의 진단명이 "아토피피부염"
+   * (또는 "정상")일 때만 true다. Stage2 모델이 아토피 채점 기준으로 학습돼 있어서, 다른 질환에는
+   * 적용할 근거가 없다. false면 local은 자리만 채운 값이니 결과·모니터링 화면 모두 그 두 카드를
+   * 숨기고 가려움·수면 점수만 보여줘야 한다.
+   */
+  severitySupported: boolean;
 }

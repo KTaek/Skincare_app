@@ -173,7 +173,7 @@ const styles = StyleSheet.create({
     flex: 1, alignItems: 'center', backgroundColor: '#F6F8FA', borderRadius: 14,
     paddingVertical: 12, paddingHorizontal: 4,
   },
-  statLabel: { fontSize: 11, fontWeight: '600', color: AppColors.sub },
+  statLabel: { fontSize: 13.5, fontWeight: '700', color: AppColors.sub },
   statValue: { fontSize: 21, fontWeight: '800', color: AppColors.ink },
   statNone: { fontSize: 11.5, fontWeight: '800', color: AppColors.sub, paddingVertical: 4 },
 });

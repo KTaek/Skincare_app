@@ -6,7 +6,7 @@ import { CareItem } from '../models';
 import { SectionHeader, RoutineRowContent } from '../components/widgets';
 import { useRoutines } from '../context/RoutineContext';
 import { useProfile } from '../context/ProfileContext';
-import { useLatestMonitoringRecord } from '../folders/store';
+import { useLatestMonitoringRecord, folderHasSeverity } from '../folders/store';
 import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
 import { StatBox } from '../components/MetricCard';
 
@@ -33,6 +33,7 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
 
       <RecentStatusCard
         record={latest?.record}
+        hasSeverity={latest ? folderHasSeverity(latest.folder) : false}
         healthConnected={healthConnected}
         onPress={goLatestDetail}
       />
@@ -70,10 +71,13 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
  */
 function RecentStatusCard({
   record,
+  hasSeverity,
   healthConnected,
   onPress,
 }: {
   record?: { iga: number; itchVas: number; sleepScore: number };
+  /** 가장 최근 기록이 속한 폴더의 진단명이 아토피피부염인지 — 아니면 "피부 종합 상태" 칸을 뺀다 */
+  hasSeverity: boolean;
   healthConnected: boolean;
   onPress: () => void;
 }) {
@@ -101,7 +105,9 @@ function RecentStatusCard({
         <MaterialIcons name="chevron-right" size={20} color={AppColors.sub} />
       </View>
       <View style={styles.statusRow}>
-        <StatBox label="피부 종합 상태" value={`${Math.round(skinValue)}`} band={skinConditionInfo(skinValue)} />
+        {hasSeverity && (
+          <StatBox label="피부 종합 상태" value={`${Math.round(skinValue)}`} band={skinConditionInfo(skinValue)} />
+        )}
         <StatBox label="가려움 안정도" value={`${itchValue}`} band={itchBand(itchValue)} />
         <StatBox
           label="수면 점수"

@@ -5,11 +5,10 @@ import {
   monitoringColors as mc, monitoringCard, DISPLAY_SCALE,
   SKIN_SEGMENTS, ITCH_SEGMENTS, SLEEP_SEGMENTS, SYMPTOM_SEGMENTS_BASE, SYMPTOMS,
 } from '../theme';
-import { useFolder } from '../store';
+import { useFolder, folderHasSeverity } from '../store';
 import LesionThumb from '../components/LesionThumb';
 import PhotoZoomModal from '../components/PhotoZoomModal';
 import { MetricCard, MetricRow, EmptyMetricCard } from '../../components/MetricCard';
-import UsedProductsCard from '../../components/UsedProductsCard';
 import { useProfile } from '../../context/ProfileContext';
 import { plainSiteLabel } from '../../models';
 
@@ -22,12 +21,6 @@ const SYMPTOM_ORDER = ['redness', 'bumps', 'scratch', 'thickening'];
 function shortDate(dateKey) {
   const [y, m, d] = dateKey.split('-');
   return `${y}.${parseInt(m)}.${parseInt(d)}`;
-}
-
-/** 기록의 날짜 키("2026-08-05")를 Date로 — "사용한 제품"이 그날의 제품 목록을 찾는 데 쓴다 */
-function toDate(dateKey) {
-  const [y, m, d] = dateKey.split('-').map(Number);
-  return new Date(y, m - 1, d);
 }
 
 /**
@@ -51,6 +44,8 @@ export default function MonitoringDetailScreen({ navigation, route }) {
 
   const record = folder.records.find((r) => r.id === recordId) || folder.records[folder.records.length - 1];
 
+  // 4가지 증상·IGA 모델은 아토피피부염 채점 기준이라, 이 폴더의 진단명이 그게 아니면 두 카드 다 숨긴다
+  const hasSeverity = folderHasSeverity(folder);
   const skinValue = DISPLAY_SCALE.iga(record.iga); // 그래프·요약 박스와 같은 0~100 표시값
   const itchValue = DISPLAY_SCALE.itch(record.itchVas);
 
@@ -85,23 +80,27 @@ export default function MonitoringDetailScreen({ navigation, route }) {
           </View>
         </View>
 
-        {/* 1) 피부 종합 상태 — 이 상세 결과 페이지에서만 몇 점 만점인지("/100")를 값 옆에 적는다 */}
-        <MetricCard label="피부 종합 상태" value={skinValue} unit="/100" segments={SKIN_SEGMENTS} />
+        {hasSeverity && (
+          <>
+            {/* 1) 피부 종합 상태 — 이 상세 결과 페이지에서만 몇 점 만점인지("/100")를 값 옆에 적는다 */}
+            <MetricCard label="피부 종합 상태" value={skinValue} unit="/100" segments={SKIN_SEGMENTS} />
 
-        {/* 2) 4가지 증상 */}
-        <View style={[monitoringCard(), styles.card]}>
-          <Text style={styles.cardLabel}>4가지 증상</Text>
-          {SYMPTOM_ORDER.map((key, i) => (
-            <MetricRow
-              key={key}
-              label={SYMPTOMS[key].label}
-              value={DISPLAY_SCALE.symptom(record[key])}
-              segments={SYMPTOM_SEGMENTS_BASE}
-              first={i === 0}
-              hideValue
-            />
-          ))}
-        </View>
+            {/* 2) 4가지 증상 */}
+            <View style={[monitoringCard(), styles.card]}>
+              <Text style={styles.cardLabel}>4가지 증상</Text>
+              {SYMPTOM_ORDER.map((key, i) => (
+                <MetricRow
+                  key={key}
+                  label={SYMPTOMS[key].label}
+                  value={DISPLAY_SCALE.symptom(record[key])}
+                  segments={SYMPTOM_SEGMENTS_BASE}
+                  first={i === 0}
+                  hideValue
+                />
+              ))}
+            </View>
+          </>
+        )}
 
         {/* 3) 가려움 문진 (VAS 0~10 × 10 = 0~100 표시값) */}
         <MetricCard label="가려움 안정도" value={itchValue} unit="/100" segments={ITCH_SEGMENTS} />
@@ -113,8 +112,6 @@ export default function MonitoringDetailScreen({ navigation, route }) {
           <EmptyMetricCard label="수면 점수" text="미기재" />
         )}
 
-        {/* 5) 사용한 제품 — 루틴 탭의 <사용 제품>과 연동 */}
-        <UsedProductsCard date={toDate(record.date)} />
       </ScrollView>
 
       <PhotoZoomModal visible={!!zoomRecord} record={zoomRecord} initialPage={zoomPage} onClose={() => setZoomRecord(null)} />
