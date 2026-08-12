@@ -1,11 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { AppColors, cardDecoration } from '../theme';
 import { plainSiteLabel } from '../models';
 import { useFolders, folderHasSeverity } from '../folders/store';
-import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
+import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand, NO_GRADE_COLOR } from '../folders/theme';
 import LesionThumb from '../folders/components/LesionThumb';
 import { useMonitoring } from '../context/MonitoringContext';
 import { useProfile } from '../context/ProfileContext';
@@ -30,12 +30,46 @@ function todayCellKey(): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-export default function RecordsScreen() {
+export default function RecordsScreen({ route }: { route?: any }) {
   const folders = useFolders();
   const navigation = useNavigation<any>();
+  /*
+    루틴에서 "가려움증 문진하기"로 넘어오면 오늘의 가려움 칸을 펼치고 거기까지 스크롤한다 —
+    기록 탭 첫 화면에 내려놓기만 하면 여전히 사용자가 카드를 찾아 눌러야 한다.
+
+    파라미터는 **읽자마자 지운다.** 안 지우면 이 탭으로 돌아올 때마다 카드가 다시 열려서,
+    사용자가 접어 둔 것을 앱이 계속 되돌린다.
+  */
+  const focusItch = route?.params?.focus === 'itch';
   const [view, setView] = useState(() => new Date());
   // 캘린더를 누르기 전에도 오늘 기록이 바로 보이도록, 기본 선택 날짜를 오늘로 둔다.
   const [selectedKey, setSelectedKey] = useState<string | null>(() => todayCellKey());
+  const scrollRef = useRef<ScrollView>(null);
+  /** 가려움 카드가 화면 어디쯤에 있는지 — 넘어왔을 때 거기까지 데려다주려고 재 둔다 */
+  const itchCardY = useRef(0);
+  const [itchOpenToken, setItchOpenToken] = useState(0);
+
+  useEffect(() => {
+    if (!focusItch) return;
+    navigation.setParams({ focus: undefined });
+    /*
+      루틴에서 눌러 온 줄은 **오늘 줄**이다. 지난 주를 들춰보다 넘어왔더라도 그날 칸을 열어 주면
+      엉뚱한 날짜에 오늘의 가려움을 적게 되므로, 달력을 오늘로 되돌리고 나서 카드를 펼친다.
+    */
+    setView(new Date());
+    setSelectedKey(todayCellKey());
+    setItchOpenToken((n) => n + 1);
+  }, [focusItch, navigation]);
+
+  // 펼치기만 하면 화면 밖에 있을 수 있다 — 달력 아래라 첫 화면에서 잘리는 위치다
+  useEffect(() => {
+    if (itchOpenToken === 0) return;
+    const timer = setTimeout(
+      () => scrollRef.current?.scrollTo({ y: Math.max(0, itchCardY.current - 12), animated: true }),
+      60, // 카드가 펼쳐져 자리를 잡은 뒤에 옮긴다
+    );
+    return () => clearTimeout(timer);
+  }, [itchOpenToken]);
 
   // 모든 모니터링 폴더의 기록을 날짜(달력 셀 키) 기준으로 묶어 둔다 — 같은 날 여러 부위를
   // 찍었으면 그 날짜 칸에 여러 건이 쌓인다.
@@ -62,6 +96,7 @@ export default function RecordsScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1 }}
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24 }}
       // 메모를 쓰는 중에도 접기 버튼·다른 날짜가 한 번에 눌리도록
@@ -85,7 +120,13 @@ export default function RecordsScreen() {
           전부 적용된다(records/itchStore). 달력 바로 밑이 자리인 이유는 "그날 무엇을 남겼나"를
           보는 흐름의 첫 칸이 이 값이기 때문이다. 날짜를 아직 고르지 않았으면 오늘을 받는다. */}
       {/* 날짜가 바뀌면 편집 중이던 값이 남지 않도록 카드를 새로 세운다 */}
-      <DayItchCard key={selectedKey ?? 'today'} dateKey={selectedKey ?? todayCellKey()} />
+      <View onLayout={(e) => (itchCardY.current = e.nativeEvent.layout.y)}>
+        <DayItchCard
+          key={selectedKey ?? 'today'}
+          dateKey={selectedKey ?? todayCellKey()}
+          openToken={itchOpenToken}
+        />
+      </View>
 
       <View style={{ height: 16 }} />
       {/* 이 탭에서 가장 자주 쓰는 길 — 지켜보는 자리별 추이를 보러 간다. 날짜를 골라야만 나오는
@@ -158,6 +199,42 @@ function startOfWeek(date: Date): Date {
 const fmtDot = (d: Date) => `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
 
 /**
+ * 그 날짜 칸에 찍는 점 **세 개** — 피부 종합 상태 · 가려움 안정도 · 수면 점수 (항상 이 순서).
+ *
+ * 예전에는 점 하나가 촬영 기록 하나였고(최대 3개) 색은 그 기록의 피부 종합 상태였다. 두 가지가
+ * 어긋나 있었다: 점 개수가 "그날 몇 건 찍었나"라는, 달력에서 알 필요가 거의 없는 것을 말하고
+ * 있었고 — 정작 그 아래 상세 카드가 건수를 다시 적는다 — 세 지표 중 하나만 보여주면서도 어느
+ * 것인지 화면 어디에도 없었다. 이제 개수는 고정이고 자리가 곧 지표다.
+ *
+ * 세 지표가 같은 4단계 색을 공유하므로(folders/theme의 LEVEL_COLORS) 색만으로는 어느 점이
+ * 무엇인지 알 수 없다 — 순서를 달력 아래 한 줄로 적어 준다.
+ *
+ * 잴 수 없는 값은 회색이다:
+ *   · 피부 — 그날 기록이 전부 아토피가 아닌 폴더면 등급의 근거가 없다(자리 채우기 0을 색으로
+ *     옮기면 "완전 정상"이 된다).
+ *   · 수면 — 삼성헬스를 연동하지 않았으면 기록의 값은 이어받은 자리 채우기다.
+ * 가려움은 회색이 없다 — 그날 적지 않았어도 직전 값을 물려받은 유효한 값이 항상 들어 있다.
+ */
+function dayDotColors(entries: FolderEntry[], healthConnected: boolean): string[] {
+  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+  // 같은 날 여러 곳을 찍었으면 평균이다 — 칸 하나가 하루 전체를 말하는 자리라 대표값이 필요하다
+  const gradable = entries.filter((e) => folderHasSeverity(e.folder));
+  const skin = gradable.length
+    ? skinConditionInfo(avg(gradable.map((e) => DISPLAY_SCALE.iga(e.record.iga)))).color
+    : NO_GRADE_COLOR;
+
+  // 가려움은 하루에 하나뿐인 값이라(records/itchStore) 그날 기록들이 이미 같은 값을 들고 있다
+  const itch = itchBand(avg(entries.map((e) => DISPLAY_SCALE.itch(e.record.itchVas)))).color;
+
+  const sleep = healthConnected
+    ? sleepBand(avg(entries.map((e) => e.record.sleepScore))).color
+    : NO_GRADE_COLOR;
+
+  return [skin, itch, sleep];
+}
+
+/**
  * 달력 카드 — 한 주(일~토) 7칸만 보여주고, 화살표로 이전/다음 주로 옮긴다.
  * 예전엔 한 달 전체(최대 6주)를 그려서 기록이 없는 달에도 카드가 크게 자리를 차지했는데,
  * 지금은 늘 7칸 한 줄이라 카드 높이가 고정되고 필요한 주만 오간다.
@@ -178,6 +255,8 @@ function CalendarCard({
 }) {
   const today = new Date();
   const memoDates = useDatesWithMemos();
+  // 수면 점수는 삼성헬스 연동 값이라, 연동 전에는 점을 색으로 칠할 근거가 없다
+  const { healthConnected } = useProfile();
   const start = startOfWeek(view);
   const weekDays = Array.from({ length: 7 }, (_, i) => {
     const day = new Date(start);
@@ -214,14 +293,9 @@ function CalendarCard({
           </Text>
           {entries && entries.length > 0 && (
             <View style={styles.dotsRow}>
-              {entries.slice(0, 3).map((e, i) => {
-                // 아토피가 아닌 폴더는 피부 종합 상태(IGA) 자체가 없는 값이라, 그 색 대신
-                // 항상 유효한 가려움 안정도로 점을 칠한다.
-                const color = folderHasSeverity(e.folder)
-                  ? skinConditionInfo(DISPLAY_SCALE.iga(e.record.iga)).color
-                  : itchBand(DISPLAY_SCALE.itch(e.record.itchVas)).color;
-                return <View key={i} style={[styles.dot, { backgroundColor: color }]} />;
-              })}
+              {dayDotColors(entries, healthConnected).map((color, i) => (
+                <View key={i} style={[styles.dot, { backgroundColor: color }]} />
+              ))}
             </View>
           )}
           {/* 메모가 있는 날 — 아래 촬영 점과 헷갈리지 않도록 칸 오른쪽 위에 따로 표시한다 */}
@@ -268,6 +342,21 @@ function CalendarCard({
       </View>
       <View style={{ height: 8 }} />
       <View style={styles.grid}>{cells}</View>
+
+      {/*
+        점 세 개가 무엇인지 — 셋이 같은 4단계 색을 쓰므로 순서를 말해 주지 않으면 색만 보고는
+        어느 점이 무엇인지 알 수 없다. 회색은 잴 근거가 없다는 뜻이라 함께 적어 둔다.
+      */}
+      <View style={styles.dotLegend}>
+        {['피부 종합 상태', '가려움', '수면'].map((label, i) => (
+          <View key={label} style={styles.dotLegendItem}>
+            <View style={[styles.dotLegendDot, { backgroundColor: AppColors.navInactive }]} />
+            <Text style={styles.dotLegendText}>
+              {i + 1}. {label}
+            </Text>
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
@@ -342,7 +431,7 @@ function DetailSection({
 /**
  * 홈의 "최근 피부 상태" 카드와 같은 지표(피부 종합 상태 · 가려움 · 수면 점수)를 보여준다 —
  * 사진/부위/병명만 이 폴더가 참조하는 모니터링 대상(MonitorTarget)에서 그대로 가져온다.
- * 피부 종합 상태는 이 폴더의 진단명이 아토피피부염일 때만 보여준다(hasSeverity 참고).
+ * 피부 종합 상태 칸은 질환에 관계없이 늘 있고, 등급(IGA)은 아토피일 때만 배지로 붙는다.
  */
 function DetailCard({
   entry,
@@ -427,15 +516,15 @@ function DetailCard({
               </View>
               <View style={{ height: 8 }} />
               {/*
-                첫 칸은 **질환에 관계없이 질환명 하나**만 적는다.
+                첫 칸은 어느 질환이든 **질환명**을 적고, 등급은 매길 수 있을 때만 배지로 덧붙인다.
 
-                등급을 매길 수 없는 질환에 "등급 없음" 배지를 달아 봤지만, 세 칸 중 한 칸만
-                다른 말을 하니 오히려 눈이 그리로 끌렸다 — 없는 것을 굳이 가리키는 셈이었다.
-                아토피에도 같은 규칙을 적용해 세 칸의 생김새를 맞춘다(band를 넘기지 않으면
-                배지 줄 자체가 빠진다).
+                아토피는 IGA 4단계가 있으니 "아토피피부염 + 그 단계"까지 보여주고, 등급 자체가
+                없는 질환은 이름만 남긴다 — "등급 없음"이라 적어 봤더니 세 칸 중 한 칸만 다른
+                말을 해서 오히려 눈이 그리로 끌렸다. 없는 것을 굳이 가리키는 셈이었다.
+                (band를 넘기지 않으면 배지 줄 자체가 빠진다.)
               */}
               <View style={styles.statCols}>
-                <StatCol label="피부 종합 상태" value={diseaseName} />
+                <StatCol label="피부 종합 상태" value={diseaseName} band={hasSeverity ? skin : undefined} />
                 <View style={styles.statColDivider} />
                 <StatCol label="가려움 안정도" value={itchValue} band={itch} />
                 <View style={styles.statColDivider} />
@@ -474,15 +563,18 @@ function StatCol({
       <Text style={styles.statColLabel} numberOfLines={1}>
         {label}
       </Text>
-      {/* 값 자리에 점수 대신 질환명이 올 수 있다 — 숫자용 크기 그대로면 칸을 넘긴다 */}
-      <Text
-        style={[styles.statColValue, isText && styles.statColValueText]}
-        numberOfLines={1}
-        adjustsFontSizeToFit={isText}
-        minimumFontScale={0.7}
-      >
-        {value}
-      </Text>
+      {/* 값 자리에 점수 대신 질환명이 올 수 있다 — 숫자용 크기 그대로면 칸을 넘긴다.
+          줄 높이는 고정한다: 글씨가 작아진 칸만 낮아지면 그 아래 배지가 옆 칸보다 위로 붙는다 */}
+      <View style={styles.statColValueSlot}>
+        <Text
+          style={[styles.statColValue, isText && styles.statColValueText]}
+          numberOfLines={1}
+          adjustsFontSizeToFit={isText}
+          minimumFontScale={0.6}
+        >
+          {value}
+        </Text>
+      </View>
       {band !== undefined && (
         <View style={[styles.statColBadge, { backgroundColor: band?.color ?? AppColors.sub }]}>
           <Text style={styles.statColBandText} numberOfLines={1}>
@@ -525,6 +617,10 @@ const styles = StyleSheet.create({
   cellInner: { flex: 1, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
   dotsRow: { position: 'absolute', bottom: 6, flexDirection: 'row' },
   dot: { width: 5, height: 5, borderRadius: 2.5, marginHorizontal: 1 },
+  dotLegend: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', marginTop: 10 },
+  dotLegendItem: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 5 },
+  dotLegendDot: { width: 5, height: 5, borderRadius: 2.5, marginRight: 3 },
+  dotLegendText: { fontSize: 10.5, color: AppColors.sub },
   memoMark: { position: 'absolute', top: 3, right: 4 },
   noRecord: { fontSize: 14, color: AppColors.sub },
 
@@ -546,9 +642,11 @@ const styles = StyleSheet.create({
   statCol: { flex: 1, alignItems: 'center' },
   statColDivider: { width: 1, backgroundColor: AppColors.line, marginHorizontal: 6 },
   statColLabel: { fontSize: 9.5, fontWeight: '600', color: AppColors.sub },
-  statColValue: { fontSize: 15, fontWeight: '800', color: AppColors.ink, marginTop: 2 },
-  /** 값 자리에 질환명이 올 때 — 세 칸으로 나눈 좁은 폭이라 숫자보다 더 줄여야 한다 */
-  statColValueText: { fontSize: 11 },
+  /** 15pt 글씨 한 줄 높이 — 값이 숫자든 질환명이든 이 높이로 고정한다 (배지 줄 맞춤) */
+  statColValueSlot: { height: 19, width: '100%', justifyContent: 'center', marginTop: 2 },
+  statColValue: { fontSize: 15, fontWeight: '800', color: AppColors.ink, textAlign: 'center' },
+  /** 값 자리에 질환명이 올 때 — 세 칸으로 나눈 좁은 폭이라 숫자보다는 줄인다 */
+  statColValueText: { fontSize: 13 },
   statColBadge: { borderRadius: 7, paddingHorizontal: 6, paddingVertical: 2, marginTop: 3, maxWidth: '100%' },
   statColBandText: { fontSize: 9.5, fontWeight: '800', color: '#FFFFFF' },
 });

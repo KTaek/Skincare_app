@@ -91,6 +91,24 @@ const DEMO_REGIONS = [
   { bbox: { x: 26, y: 66, width: 20, height: 18, imageWidth: 100, imageHeight: 100 }, symptoms: { redness: false, bumps: true, scratch: false, thickening: true } },
 ];
 
+/**
+ * dump 넓이 지수를 병변 몇 개로 쪼갠다 — 전신 지도의 원 개수·크기가 여기서 나온다.
+ *
+ * 개수는 IGA를 따라간다(심한 회차일수록 여러 곳에 번져 있는 것이 자연스럽다). 크기는 일부러
+ * 고르지 않게 나눈다 — 똑같이 나누면 원들이 포개진 것처럼 보여서, 개별 넓이를 재고 있다는
+ * 사실 자체가 화면에서 안 읽힌다. 등급은 첫 조각이 가장 나쁘고 뒤로 갈수록 낮다: 기록의
+ * iga는 실제 분석에서도 **가장 나쁜 단위**의 등급이라(analyzeLocal의 worstIndex) 그 규칙을 맞춘다.
+ */
+function splitAreaIntoRegions(areaIndex, iga, jitter) {
+  const count = clamp(1 + Math.round(iga / 2 + jitter), 1, 3);
+  const weights = Array.from({ length: count }, (_, k) => 1 / (k + 1.6));
+  const total = weights.reduce((a, b) => a + b, 0);
+  return weights.map((w, k) => ({
+    index: round1((areaIndex * w) / total),
+    iga: Math.max(0, iga - k),
+  }));
+}
+
 function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to, photos, overlays, photoStart = 0, demoMultiRegionOnLast, areaKind }) {
   const rng = makeRng(seedBase);
 
@@ -155,6 +173,23 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
     const thickening = gradeToDisplay10(symptomGrade(7.0));
 
     const date = addDaysKey(startKey, offset);
+    /*
+      배율이 상쇄된 넓이 지수 — 전신 지도의 점선 원이 이 값으로 커졌다 작아진다.
+
+      **왜 dump에도 넣는가.** 이 값은 실제 촬영이 자(얼굴·몸통)를 찾았을 때만 생기는데, 데모
+      폴더의 시계열은 촬영 없이 만들어진다. 그래서 넣지 않으면 전신 지도에 점선 원이 하나도
+      안 떠서, 기능이 있는지 없는지조차 확인할 수 없다.
+
+      IGA를 따라가게 만든다 — 병변이 심한 회차에 넓기도 한 것이 실제 추이의 모습이고, 그래야
+      슬라이더를 끌 때 색과 크기가 함께 움직이는 것이 자연스럽게 보인다. 값은 "부위의 몇 %"
+      (coveragePct) 기준으로 먼저 잡고(iga 0 → 2%, iga 4 → 20%) 지수로 되돌린다 — 화면이
+      쓰는 환산(areaTrend의 coveragePctOf)의 역방향이라 그 화면에서 의도한 %가 그대로 나온다.
+
+      ⚠️ 지어낸 값이다. 실기기 임계값을 잡을 때 이 숫자를 근거로 쓰면 안 된다.
+    */
+    const areaIndex = round1(
+      clamp(2 + iga * 4.5 + noise() * 1.5, 0.5, 25) * AREA_OVER_AREA_REF[areaKind],
+    );
     return {
       id: `${startKey}-${offset}`,
       seed: hashStr(`${startKey}-${offset}-${seedBase}`),
@@ -171,24 +206,18 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
       // LesionThumb의 사진 오버레이 윤곽선 크기에만 쓰는 dump 값 — IGA 단계가 높을수록 넓게 잡는다.
       // UI 지표/그래프에는 더 이상 "병변 면적"으로 노출하지 않는다.
       lesionAreaPct: clamp(round1(3 + iga * 6 + noise() * 3), 0.5, 45),
-      /*
-        배율이 상쇄된 넓이 지수 — 전신 지도의 점선 원이 이 값으로 커졌다 작아진다.
-
-        **왜 dump에도 넣는가.** 이 값은 실제 촬영이 자(얼굴·몸통)를 찾았을 때만 생기는데, 데모
-        폴더의 시계열은 촬영 없이 만들어진다. 그래서 넣지 않으면 전신 지도에 점선 원이 하나도
-        안 떠서, 기능이 있는지 없는지조차 확인할 수 없다.
-
-        IGA를 따라가게 만든다 — 병변이 심한 회차에 넓기도 한 것이 실제 추이의 모습이고, 그래야
-        슬라이더를 끌 때 색과 크기가 함께 움직이는 것이 자연스럽게 보인다. 값은 "부위의 몇 %"
-        (coveragePct) 기준으로 먼저 잡고(iga 0 → 2%, iga 4 → 20%) 지수로 되돌린다 — 화면이
-        쓰는 환산(areaTrend의 coveragePctOf)의 역방향이라 그 화면에서 의도한 %가 그대로 나온다.
-
-        ⚠️ 지어낸 값이다. 실기기 임계값을 잡을 때 이 숫자를 근거로 쓰면 안 된다.
-      */
-      lesionAreaFaceIndex: round1(
-        clamp(2 + iga * 4.5 + noise() * 1.5, 0.5, 25) * AREA_OVER_AREA_REF[areaKind],
-      ),
+      lesionAreaFaceIndex: areaIndex,
       lesionAreaScaleKind: areaKind,
+      /*
+        그 넓이를 병변 하나하나로 쪼갠 것 — 전신 지도가 이 개수만큼 원을 그린다.
+
+        dump에도 넣는 이유는 위 전체 지수와 같다: 실제 촬영 없이는 원이 하나뿐이라 "여러 개"가
+        되는지 확인할 방법이 없다. 조각의 합은 전체와 같게 맞춘다 — 화면이 두 값을 함께
+        읽지는 않지만, 어긋난 dump는 나중에 실제 값을 의심하게 만든다.
+
+        ⚠️ 개수도 크기도 지어낸 값이다.
+      */
+      lesionAreaRegions: splitAreaIntoRegions(areaIndex, iga, noise()),
       // 촬영 순서(i, 시간순 정렬됨)에 맞춰 실제 사진을 1:1로 매칭 — 그려낸 이미지가 아니라 실제 dump 이미지
       photo: photos[photoAt(i)],
       /*
@@ -440,12 +469,13 @@ function uniqueFolderName(name) {
  * @param {{ folderId: string, iga: number, redness: number, bumps: number, scratch: number,
  *           thickening: number, itchVas: number|null, areaPct: number,
  *           faceAreaIndex?: number|null, faceAreaKind?: 'face'|'torso'|null, lowRes?: boolean,
+ *           areaRegions?: {index: number, iga: number}[]|null,
  *           photoUri?: string, maskUri?: string }} args
  * @returns {{ record: any, hasSleepSource: boolean }|null}
  */
 export function recordExam({
   folderId, iga, redness, bumps, scratch, thickening, itchVas, areaPct,
-  faceAreaIndex = null, faceAreaKind = null, lowRes = false, photoUri, maskUri,
+  faceAreaIndex = null, faceAreaKind = null, lowRes = false, areaRegions = null, photoUri, maskUri,
 }) {
   const folder = folders.find((f) => f.id === folderId);
   if (!folder) return null;
@@ -480,6 +510,14 @@ export function recordExam({
     lesionAreaFaceIndex: faceAreaIndex == null ? null : Math.max(0, round1(faceAreaIndex)),
     /** 그 지수를 무엇으로 나눴는지. 없으면 얼굴 — 이 필드가 생기기 전 기록은 전부 얼굴이었다 */
     lesionAreaScaleKind: faceAreaIndex == null ? null : faceAreaKind ?? 'face',
+    /*
+      **병변 하나하나의** 넓이 지수와 등급 — 위 전체 지수를 조각으로 나눠 놓은 것이다.
+      전신 지도가 이 배열을 받아 병변 개수만큼 원을 그리고, 원마다 자기 넓이로 크기를 정한다.
+
+      전체 지수와 같은 자로 잰 값이라 단위가 같다(둘 다 100 × 넓이 ÷ d·v). 옛 기록에는 이 필드가
+      없으므로 화면은 없을 때 원 하나로 되돌아갈 수 있어야 한다 — 없는 것과 "병변이 0개"는 다르다.
+    */
+    lesionAreaRegions: faceAreaIndex == null ? null : areaRegions ?? null,
     /*
       원본 해상도가 낮아 값이 흔들릴 수 있는 회차. 값을 빼지는 않는다 — 해상도는 넓이를
       틀리게 만들지 않고 흔들리게만 하기 때문이다. 추세가 이 점에서 튀었을 때 이유를 댈 수

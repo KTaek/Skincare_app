@@ -19,11 +19,18 @@ import { plainSiteLabel } from '../models';
  * 전체를 색으로 칠하지만, 여기서는 덩어리 전체가 아니라 그 덩어리 안 정해진 자리에 작은 동그라미만
  * 찍는다(partMarkers) — 팔 전체가 병변인 게 아니라 "팔 어딘가에 병변이 있다"는 뜻이라서다.
  *
- * 자리마다 **도형이 둘**이고 서로 다른 것을 말한다:
+ * **동그라미 하나가 병변 하나다.** 한 사진에서 분할이 병변을 셋으로 나눴으면 그 자리에 원이
+ * 셋 뜨고, 각자 자기 넓이로 크기가 정해진다(기록의 lesionAreaRegions). 예전에는 자리마다 원이
+ * 하나였고 크기가 그 사진 전체의 병변 넓이였는데, 그러면 "작은 병변 셋"과 "큰 병변 하나"가
+ * 화면에서 완전히 같은 그림이 된다 — 지도가 답해야 할 질문("어디가 얼마나 번져 있나")에
+ * 정작 답을 못 하고 있었다. 넓이를 조각으로 나눠 재는 곳은 분석 쪽이다(analyzeLocal의
+ * softCellsByRegion) — 여기서 비율로 쪼개면 그건 잰 값이 아니라 지어낸 값이다.
  *
- *   불투명 원 — 얼마나 나쁜가. 그 시점 "피부 종합 상태" 4단계 색 그대로(SKIN_SEGMENTS)라
+ * 병변마다 **도형이 둘**이고 서로 다른 것을 말한다:
+ *
+ *   불투명 원 — 얼마나 나쁜가. 그 병변의 "피부 종합 상태" 4단계 색 그대로(SKIN_SEGMENTS)라
  *     다른 화면(카드·그래프)과 같은 체계를 쓴다. 크기는 고정이다.
- *   점선 원   — 얼마나 넓은가. 부위 대비 병변 넓이에 비례한다. **넓이를 잰 회차에만** 그린다.
+ *   점선 원   — 얼마나 넓은가. 부위 대비 그 병변의 넓이에 비례한다. **넓이를 잰 회차에만** 그린다.
  *
  * 하나의 원이 색과 크기로 둘을 함께 말하던 때가 있었는데, 그러면 "색이 진해졌는데 작아졌다"처럼
  * 서로 다른 축의 변화가 한 도형에서 섞여 어느 쪽이 나빠진 것인지 읽을 수 없었다.
@@ -91,6 +98,10 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
  *    부위 대비 %로 바뀌었으므로 **실제 기록이 쌓이면 다시 잡아야 한다** — 상한은 반드시 실제로
  *    관찰되는 범위를 덮어야 그 안에서 변화가 보인다(한 번 8%로 낮췄다가 회차 대부분이 saturate
  *    구간에 몰려 동그라미가 안 움직이는 것처럼 보여 되돌린 적이 있다).
+ *
+ * ⚠️ 입력이 한 번 "병변 하나의 넓이"(원 하나 = 병변 하나)였다가, 덩어리마다 원을 하나로 합치면서
+ *    **그 덩어리 병변 넓이의 합**으로 돌아왔다. 병변이 여럿인 자리는 조각으로 나뉘던 시절보다
+ *    값이 다시 커지므로, 상한(25%)에 붙는 회차가 늘어나지 않는지 실제 기록으로 볼 것.
  *
  * 예시(넓이% → 반지름 px):  0.5%→24   3%→54   5%→64   7%→72   10%→82   15%→96   25%↑→118
  */
@@ -213,65 +224,99 @@ export default function WholeBodyResultScreen() {
     return out;
   }, [sites, selectedKey]);
 
-  // 한 덩어리(머리·몸통·팔·다리)에 여러 자리가 겹치면(예: 팔 두 곳) 평균을 낸다. site.parts는
-  // 세부 부위(BodyPartId)라 COARSE_OF_PART로 네 덩어리 중 하나로 먼저 묶는다 — 등록 흐름이 항상
-  // 이 네 덩어리 단위로만 자리를 만들어서(PartSelectScreen), 실제로는 site.parts가 전부 같은
-  // 덩어리에 속한다. 색은 그 시점 "피부 종합 상태"(0~100 표시값) 평균을 SKIN_SEGMENTS 4단계로
-  // 매긴다 — 다른 화면의 피부 종합 상태 카드·그래프와 같은 기준이다. 크기는 같은 평균 방식으로
-  // 낸 "병변 넓이(%)" 평균을 areaToRadius로 반지름으로 바꾼 값이다 — 색과 크기가 서로 다른 값
-  // (상태 vs 넓이)에서 나오므로 둘은 독립적으로 움직인다. 가운데 숫자(존재하는 세부 증상 개수)도
-  // 같은 방식으로 평균 내어 반올림한다 — 슬라이더로 회차를 넘겨 호전되면 이 숫자가 줄어든다.
-  const groupMarkers = useMemo<Partial<Record<CoarseGroupId, PartMarkerStyle>>>(() => {
-    const acc = new Map<
-      CoarseGroupId,
-      { skinSum: number; skinN: number; areaSum: number; areaN: number }
-    >();
-    trends.forEach((t) => {
-      // 등급을 매길 수 없는 자리의 iga는 자리 채우기 0이라, 평균에 넣으면 "완전 정상"으로 끌어올린다
-      const skinValue = t.site.gradable ? DISPLAY_SCALE.iga(t.current.iga) : 0;
-      /*
-        넓이는 **잰 회차에만** 있다. lesionAreaFaceIndex가 null이면 그날은 자격이 안 돼서 빠진
-        것이므로, 0으로 채워 평균에 넣으면 안 된다 — 안 잰 것이 "넓이 0"으로 섞여 들어가 점선
-        원이 실제보다 작게 그려진다. 그래서 넓이는 분모(areaN)를 따로 센다.
+  /*
+    덩어리(머리·몸통·팔·다리)마다 동그라미를 **하나씩만** 그린다.
 
-        값은 areaTrend와 같은 환산을 쓴다 — "부위의 몇 %"(coveragePct). 폴더 카드가 "얼굴의 12%"로
+    한동안 병변 하나에 원 하나씩 그렸다. 심한 병변 하나와 옅은 병변 하나를 평균 내면 "중간짜리
+    하나"가 되어 둘 다 없는 것처럼 보인다는 이유였는데, 실제로 쓰다 보니 같은 자리에 원 서넛이
+    겹쳐 앉아 어느 것이 무엇인지 읽을 수가 없었다. 전신 지도가 답해야 할 질문은 "어디가 얼마나
+    나쁜가"이지 "그 안에 병변이 몇 개인가"가 아니다 — 병변 하나하나는 아래 "부위별 변화"와
+    폴더 화면에서 본다.
+
+    합칠 때 평균은 여전히 쓰지 않는다. 두 축을 각각 **의미가 남는 방식**으로 합친다:
+
+      색   = 그 덩어리에서 **가장 나쁜** 단계. 평균이면 심한 병변이 옅은 것에 희석돼 사라진다.
+      크기 = 그 덩어리 병변 넓이의 **합**. 넓이는 원래 더할 수 있는 값이고, "팔 전체가 얼마나
+             덮였나"가 이 지도에서 알고 싶은 것이다.
+
+    색은 그 병변의 "피부 종합 상태"(0~100 표시값)를 SKIN_SEGMENTS 4단계로 매긴 것이고 — 다른
+    화면의 카드·그래프와 같은 기준이다 — 크기는 "부위 대비 넓이(%)"를 areaToRadius로 바꾼 값이다.
+    둘이 서로 다른 값에서 나오므로 독립적으로 움직인다.
+
+    site.parts는 세부 부위(BodyPartId)라 COARSE_OF_PART로 네 덩어리 중 하나로 먼저 묶는다 —
+    등록 흐름이 항상 이 네 덩어리 단위로만 자리를 만들어서(PartSelectScreen), 실제로는 site.parts가
+    전부 같은 덩어리에 속한다. 한 덩어리에 폴더가 여럿이면 그 폴더들까지 함께 합쳐진다.
+  */
+  const groupMarkers = useMemo<Partial<Record<CoarseGroupId, PartMarkerStyle[]>>>(() => {
+    interface Sum {
+      /** 이 덩어리에서 가장 나쁜 IGA — 등급을 매길 수 있는 자리가 하나도 없으면 null */
+      worstIga: number | null;
+      /** 넓이(부위 대비 %)의 합 */
+      areaPct: number;
+      /** 넓이를 실제로 잰 회차가 하나라도 있었는지 — 0%와 "못 쟀다"는 다르다 */
+      measured: boolean;
+    }
+    const acc = new Map<CoarseGroupId, Sum>();
+
+    trends.forEach((t) => {
+      /*
+        넓이는 areaTrend와 같은 환산을 쓴다 — "부위의 몇 %"(coveragePct). 폴더 카드가 "얼굴의 12%"로
         보여주는 그 숫자와 같아야, 두 화면이 같은 것을 다르게 말하지 않는다.
       */
-      const idx = t.current.lesionAreaFaceIndex;
-      const hasArea = typeof idx === 'number' && idx > 0;
-      const areaValue = hasArea ? coveragePctOf(idx, scaleKindOfRecord(t.current)) : 0;
-      const groups = new Set(t.site.parts.map((p) => COARSE_OF_PART[p]));
-      groups.forEach((g) => {
-        const cur = acc.get(g) ?? { skinSum: 0, skinN: 0, areaSum: 0, areaN: 0 };
-        if (t.site.gradable) {
-          cur.skinSum += skinValue;
-          cur.skinN += 1;
-        }
-        if (hasArea) {
-          cur.areaSum += areaValue;
-          cur.areaN += 1;
-        }
-        acc.set(g, cur);
+      const kind = scaleKindOfRecord(t.current);
+      const pctOf = (index: unknown) =>
+        typeof index === 'number' && index > 0 ? coveragePctOf(index, kind) : null;
+
+      /*
+        병변별 넓이는 이 기능이 생긴 뒤의 기록에만 있다. 없으면(옛 기록·넓이를 못 잰 회차)
+        그 회차 전체를 병변 하나로 친다 — 없는 것과 "병변이 0개"는 다르므로, 자리 자체가
+        지도에서 사라지면 안 된다.
+      */
+      const regions: { index: number; iga: number }[] | null = t.current.lesionAreaRegions ?? null;
+      const lesions = regions?.length
+        ? regions.map((r) => ({ iga: r.iga, pct: pctOf(r.index) }))
+        : [{ iga: t.current.iga, pct: pctOf(t.current.lesionAreaFaceIndex) }];
+
+      new Set(t.site.parts.map((p) => COARSE_OF_PART[p])).forEach((g) => {
+        const sum = acc.get(g) ?? { worstIga: null, areaPct: 0, measured: false };
+        lesions.forEach((lesion) => {
+          /*
+            등급을 매길 수 없는 자리(아토피가 아닌 질환)의 iga는 자리 채우기 0이라, 최댓값 계산에
+            끼우면 "가장 좋은 상태"로 들어가 다른 병변을 밀어내지도 못하면서 회색 판정만 흐린다.
+            아예 세지 않는다 — 그런 자리만 있는 덩어리는 worstIga가 null로 남아 회색이 된다.
+          */
+          if (t.site.gradable && (sum.worstIga == null || lesion.iga > sum.worstIga)) {
+            sum.worstIga = lesion.iga;
+          }
+          if (lesion.pct != null) {
+            sum.areaPct += lesion.pct;
+            sum.measured = true;
+          }
+        });
+        acc.set(g, sum);
       });
     });
+
     /*
       기록이 있는 덩어리만 그린다. 예전에는 지켜보지 않는 덩어리에도 "기록 없음" 색의 최소 크기
       동그라미를 찍었는데, 넷 중 셋이 회색 점인 지도는 **읽을 것이 없는 표시로 그림을 채우는**
       셈이었다. 아무것도 없는 자리는 비워 두는 편이 "여기엔 기록이 없다"를 더 분명히 말한다.
     */
-    const out: Partial<Record<CoarseGroupId, PartMarkerStyle>> = {};
+    const out: Partial<Record<CoarseGroupId, PartMarkerStyle[]>> = {};
     COARSE_GROUPS.forEach((group) => {
-      const v = acc.get(group);
-      if (!v) return;
-      out[group] = {
-        /*
-          한 덩어리에 등급 있는 자리와 없는 자리가 섞이면 **등급 있는 쪽을 따른다** — 회색은
-          "잴 수 있는 것이 하나도 없다"는 뜻이라야 의미가 있다.
-        */
-        color: v.skinN > 0 ? skinConditionInfo(v.skinSum / v.skinN).color : NO_GRADE_COLOR,
-        radius: IGA_MARKER_R,
-        areaRadius: v.areaN > 0 ? areaToRadius(v.areaSum / v.areaN) : undefined,
-      };
+      const sum = acc.get(group);
+      if (!sum) return;
+      out[group] = [
+        {
+          color:
+            sum.worstIga != null
+              ? skinConditionInfo(DISPLAY_SCALE.iga(sum.worstIga)).color
+              : NO_GRADE_COLOR,
+          radius: IGA_MARKER_R,
+          // 넓이를 못 잰 회차뿐이면 점선 원을 아예 안 그린다 — 0으로 두면 "병변이 사라졌다"가 된다
+          areaRadius: sum.measured ? areaToRadius(sum.areaPct) : undefined,
+        },
+      ];
     });
     return out;
   }, [trends]);
@@ -383,32 +428,54 @@ function DaySlider({ max, value, onChange }: { max: number; value: number; onCha
   );
 }
 
-/** 지도 동그라미와 같은 기준(SKIN_SEGMENTS) — 안 좋은 쪽부터 정의돼 있어서 좋은 쪽부터 보이게 뒤집는다 */
 /**
- * 두 도형이 서로 다른 것을 말하므로 범례도 두 줄이다 — 색은 상태, 점선은 넓이.
- * "기록 없음" 항목은 뺐다: 이제 기록이 없는 부위에는 아무것도 그리지 않으므로 가리킬 도형이 없다.
+ * 색 범례는 **질환별로 나눠 적는다.**
+ *
+ * 네 단계(좋음~매우 나쁨)와 "등급 없음"을 한 줄에 늘어놓으면 다섯 단계짜리 한 척도로 읽힌다 —
+ * 회색이 빨강보다 더 나쁜 단계처럼 보이는 것이다. 사실은 **서로 다른 두 축**이다: 네 단계는
+ * 아토피피부염 채점 기준(4가지 증상·IGA 모델)으로 매긴 등급이고, 회색은 그 기준을 적용할 근거가
+ * 없는 질환이라 등급 자체가 없다는 표시다. 질환 이름을 각 묶음 위에 얹으면 그 구분이 눈에 보인다.
+ *
+ * 점선 줄은 그대로 아래에 둔다 — 색(상태)과 점선(넓이)은 원래 다른 것을 말하는 두 축이라
+ * 질환 구분과는 층이 다르다.
  */
 function Legend() {
   return (
     <>
-      <View style={styles.legendRow}>
-        {[...SKIN_SEGMENTS].reverse().map((seg) => (
-          <View key={seg.ko} style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
-            <Text style={styles.legendText}>{seg.ko}</Text>
+      <View style={styles.legendGroups}>
+        <View style={styles.legendGroup}>
+          <Text style={styles.legendGroupTitle}>아토피피부염</Text>
+          <View style={styles.legendRow}>
+            {/* SKIN_SEGMENTS는 안 좋은 쪽부터 정의돼 있어서 좋은 쪽부터 보이게 뒤집는다 */}
+            {[...SKIN_SEGMENTS].reverse().map((seg) => (
+              <View key={seg.ko} style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
+                <Text style={styles.legendText}>{seg.ko}</Text>
+              </View>
+            ))}
           </View>
-        ))}
-        {/* 아토피가 아닌 질환 — 등급 모델의 근거가 없어 어느 단계도 아니다 */}
-        <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: NO_GRADE_COLOR }]} />
-          <Text style={styles.legendText}>등급 없음</Text>
+        </View>
+
+        <View style={styles.legendGroupDivider} />
+
+        <View style={styles.legendGroup}>
+          <Text style={styles.legendGroupTitle}>기타 질환</Text>
+          <View style={styles.legendRow}>
+            {/* 아토피 채점 기준으로 학습된 모델이라 다른 질환에는 등급의 근거가 없다 */}
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: NO_GRADE_COLOR }]} />
+              <Text style={styles.legendText}>등급 없음</Text>
+            </View>
+          </View>
         </View>
       </View>
-      <View style={{ height: 6 }} />
+
+      <View style={{ height: 8 }} />
       <View style={styles.legendRow}>
         <View style={styles.legendItem}>
           <View style={styles.legendAreaDot} />
-          <Text style={styles.legendText}>점선 = 병변 넓이 (잰 회차에만)</Text>
+          {/* 색과 크기가 서로 다른 값이라는 걸 말해 준다 — 안 그러면 큰 원을 "더 심한 곳"으로 읽는다 */}
+          <Text style={styles.legendText}>동그라미 하나 = 부위 하나 · 점선 = 그 부위 병변 넓이의 합</Text>
         </View>
       </View>
     </>
@@ -421,6 +488,11 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
   const skin = skinConditionInfo(skinValue);
   // 등급이 없는 자리에는 변화도 없다 — 0에서 0으로 간 것을 "유지"라고 말하면 안 된다
   const tag = site.gradable && previous ? trendLabel(delta) : null;
+  /*
+    지도에 이 자리의 원이 몇 개 떴는지를 글자로도 적어 준다 — 원이 셋인데 목록이 아무 말도 없으면
+    사용자는 그것이 병변 개수인지 다른 무엇인지 알 방법이 없다. 하나뿐이면 굳이 세지 않는다.
+  */
+  const lesionCount: number = current.lesionAreaRegions?.length ?? 1;
 
   return (
     <View style={[cardDecoration(16), styles.trendRow]}>
@@ -435,6 +507,7 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
         */}
         <Text style={styles.trendMeta}>
           {current.date.replace(/-/g, '.')} 기준 ·{' '}
+          {lesionCount > 1 ? `병변 ${lesionCount}곳 · ` : ''}
           {site.gradable ? (
             <>
               피부 종합 상태 {Math.round(skinValue)}
@@ -487,19 +560,34 @@ const styles = StyleSheet.create({
   sliderEnds: { flexDirection: 'row', justifyContent: 'space-between' },
   endText: { fontSize: 11, color: AppColors.sub },
 
+  /**
+   * 질환별 묶음 둘을 나란히. 좁은 화면에서는 줄바꿈해 위아래로 쌓인다 — 네 단계를 한 줄에
+   * 붙들어 두려고 글자를 줄이는 것보다, 두 줄이 되는 편이 낫다.
+   */
+  legendGroups: { flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', flexWrap: 'wrap' },
+  legendGroup: { alignItems: 'center', paddingHorizontal: 2 },
+  legendGroupTitle: { fontSize: 10.5, fontWeight: '800', color: AppColors.ink, marginBottom: 5 },
+  /** 두 묶음이 서로 다른 척도임을 세로선 하나로 갈라 준다 */
+  legendGroupDivider: { width: 1, alignSelf: 'stretch', marginHorizontal: 10, marginTop: 16, backgroundColor: AppColors.line },
   legendRow: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap' },
-  legendItem: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 8 },
+  /*
+    항목 간격이 좁다. 질환 이름 두 개와 세로선이 새로 들어오면서 한 줄에 담을 것이 늘었는데,
+    가장 좁은 기기(폭 360dp → 카드 안쪽 288dp)에서 줄바꿈되면 세로선이 줄 끝에 홀로 남아
+    무엇을 가르는 선인지 알 수 없게 된다. 재어 보니 이 크기에서 277dp라 여유가 남는다.
+  */
+  legendItem: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 4 },
   /** 점선 원 범례 — 지도의 도형과 같은 모양이라야 무엇을 가리키는지 바로 읽힌다 */
   legendAreaDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
     borderWidth: 1.5,
     borderStyle: 'dashed',
     borderColor: AppColors.sub,
+    marginRight: 4,
   },
-  legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 5 },
-  legendText: { fontSize: 11.5, color: AppColors.sub },
+  legendDot: { width: 9, height: 9, borderRadius: 4.5, marginRight: 4 },
+  legendText: { fontSize: 11, color: AppColors.sub },
 
   noneCard: { padding: 18, alignItems: 'center' },
   trendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 14 },

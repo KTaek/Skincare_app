@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
@@ -22,13 +22,34 @@ import { setDayItch, useDayItch } from './itchStore';
  * 지난 날짜를 골랐으면 그날 값을 고칠 수 있다 — 어제 얼마나 가려웠는지 오늘 적는 일은 흔하다.
  * 아직 오지 않은 날은 적을 것이 없으므로 카드 자체를 그리지 않는다.
  */
-export default function DayItchCard({ dateKey }: { dateKey: string }) {
+export default function DayItchCard({
+  dateKey,
+  openToken = 0,
+}: {
+  dateKey: string;
+  /**
+   * 루틴에서 "가려움증 문진하기"를 눌러 넘어왔다는 신호 — 값이 **바뀔 때마다** 카드를 펼친다.
+   *
+   * 불리언 하나로는 안 된다. 탭 화면은 한 번 뜬 뒤 계속 살아 있어서, 이미 떠 있는 기록 탭으로
+   * 넘어오면 이 카드는 다시 만들어지지 않는다 — 초기 상태로만 열면 첫 한 번 말고는 아무 일도
+   * 일어나지 않는다. 그래서 누를 때마다 올라가는 수를 받아 그 변화에 반응한다.
+   */
+  openToken?: number;
+}) {
   const date = normalizeDateKey(dateKey);
   const saved = useDayItch(date);
   const folders = useFolders();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(openToken > 0);
   // 카드를 열 때의 값에서 시작한다 — 처음 적는 날은 0(가렵지 않음)
   const [draft, setDraft] = useState(saved ?? 0);
+
+  useEffect(() => {
+    if (openToken <= 0) return;
+    setDraft(saved ?? 0);
+    setOpen(true);
+    // saved는 일부러 뺀다 — 값이 저장되는 순간(적고 나서)에 카드가 다시 열리면 안 된다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openToken]);
 
   const [y, m, d] = date.split('-').map(Number);
   const today = new Date();

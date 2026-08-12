@@ -3,7 +3,7 @@ import { Image, ScrollView, StyleSheet, Text, TextInput, View, Pressable } from 
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
 import { RoutineRow } from '../components/widgets';
-import { CareItem, CareKind, cycleLabel } from '../models';
+import { CareItem, CareKind, cycleLabel, ITCH_SURVEY_ROUTINE } from '../models';
 import { useRoutines } from '../context/RoutineContext';
 
 /** 접었을 때 보여주는 줄 수 — 나머지는 "더보기"로 펼친다 */
@@ -54,6 +54,7 @@ export default function RoutineScreen({ navigation }: { navigation: any }) {
           expanded={expanded.routine}
           onToggleExpanded={() => toggleExpanded('routine')}
           onToggle={(key) => toggleForOffset(0, key)}
+          onOpenItch={() => navigation.navigate('Records', { focus: 'itch' })}
           onDelete={(id) => remove('routine', id)}
         />
 
@@ -65,6 +66,7 @@ export default function RoutineScreen({ navigation }: { navigation: any }) {
           expanded={expanded.product}
           onToggleExpanded={() => toggleExpanded('product')}
           onToggle={(key) => toggleForOffset(0, key)}
+          onOpenItch={() => navigation.navigate('Records', { focus: 'itch' })}
           onDelete={(id) => remove('product', id)}
         />
 
@@ -110,6 +112,7 @@ function CareSection({
   expanded,
   onToggleExpanded,
   onToggle,
+  onOpenItch,
   onDelete,
 }: {
   title: string;
@@ -118,6 +121,7 @@ function CareSection({
   expanded: boolean;
   onToggleExpanded: () => void;
   onToggle: (key: string) => void;
+  onOpenItch: () => void;
   onDelete: (id: number) => void;
 }) {
   const visible = expanded ? items : items.slice(0, COLLAPSED_COUNT);
@@ -136,8 +140,20 @@ function CareSection({
               key={item.key}
               item={item}
               last={i === visible.length - 1}
-              // 오늘 주기가 아닌 제품은 체크할 수 없다 — 대신 흐리게 표시된다
-              onToggle={item.due ? () => onToggle(item.key) : undefined}
+              /*
+                "가려움증 문진하기"는 체크 자체를 받지 않는다 — 완료 여부를 기록 탭에 적은 값에서
+                읽어오므로(RoutineContext) 손으로 켠 체크는 그 자리에서 되돌아간다. 눌러도 아무
+                일이 없는 네모를 두느니, 체크박스도 이름과 같이 문진으로 보낸다.
+                그 밖의 줄은 그대로 — 오늘 주기가 아닌 제품만 체크할 수 없고 흐리게 표시된다.
+              */
+              onToggle={
+                item.name === ITCH_SURVEY_ROUTINE
+                  ? onOpenItch
+                  : item.due
+                    ? () => onToggle(item.key)
+                    : undefined
+              }
+              onOpen={item.name === ITCH_SURVEY_ROUTINE ? onOpenItch : undefined}
               onDelete={() => onDelete(item.id)}
             />
           ))

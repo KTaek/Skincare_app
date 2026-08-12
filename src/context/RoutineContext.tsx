@@ -10,8 +10,11 @@ import {
   initialRoutines,
   isCycleDay,
   recordKey,
+  ITCH_SURVEY_ROUTINE,
 } from '../models';
 import { makeRng } from '../folders/store';
+import { useDayItchMap } from '../records/itchStore';
+import { normalizeDateKey } from '../records/memoStore';
 
 /**
  * 데모용 과거 이행 기록 — 경과 관찰의 이행률 스케일바가 처음부터 그럴듯한 값을 보여주도록,
@@ -142,9 +145,28 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
   // 날짜 키("2026-8-6") -> 그날 완료 처리된 항목 key 집합. 과거분은 데모용 dump로 미리 채운다.
   const [completions, setCompletions] = useState<Record<string, Set<string>>>(seedDemoCompletions);
 
+  /*
+    "가려움증 문진하기"의 완료 여부는 여기서 세지 않고 **기록 탭에 적힌 값에서 읽는다.**
+
+    이 줄이 뜻하는 일(그날 가려움을 적는 것)은 앱 안에 결과가 남으므로, 체크를 따로 받으면 값은
+    적었는데 체크는 비어 있거나 그 반대인 상태가 생긴다. 둘 중 하나가 거짓말을 하느니 아예 하나로
+    묶는다 — 적으면 체크되고, 지난 날짜도 그날 적어 뒀으면 체크된 채로 보인다.
+
+    그래서 이 줄만은 손으로 체크를 껐다 켤 수 없다(화면 쪽에서 체크박스를 문진으로 보낸다).
+    이름으로 찾는 이유는 models.ts의 ITCH_SURVEY_ROUTINE 주석에 적어 뒀다 — 이름을 바꾸면
+    연결이 조용히 풀리고 평범한 체크 항목으로 돌아간다.
+  */
+  const itchByDate = useDayItchMap();
+
   const routinesForDate = useCallback(
-    (date: Date): CareItem[] => expandForDate(routines, 'routine', date, completions, () => true),
-    [routines, completions],
+    (date: Date): CareItem[] => {
+      const rows = expandForDate(routines, 'routine', date, completions, () => true);
+      const itchRecorded = itchByDate[normalizeDateKey(recordKey(date))] != null;
+      return rows.map((row) =>
+        row.name === ITCH_SURVEY_ROUTINE ? { ...row, done: itchRecorded } : row,
+      );
+    },
+    [routines, completions, itchByDate],
   );
 
   /** 등록된 제품 전부를 그날 기준(due 판정 포함)으로 펼친다 */

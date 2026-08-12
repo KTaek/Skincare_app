@@ -188,6 +188,26 @@ export interface PartMarkerStyle {
 /** partMarkers에 radius를 안 넘겼을 때(예전 호출부와의 호환)의 고정 크기 */
 const DEFAULT_MARKER_R = 42;
 
+/** 병변이 여럿일 때 불투명 원들이 서로 닿지 않도록 두는 여유 (1이면 딱 붙는다) */
+const MARKER_GAP = 1.15;
+
+/**
+ * 한 자리에 병변이 여럿이면 그 자리 둘레에 고르게 흩는다.
+ *
+ * 반지름 r인 원 n개를 고리 위에 겹치지 않게 놓으려면 고리 반지름이 최소 r/sin(π/n)이라,
+ * 개수가 늘수록 고리가 저절로 커진다 — 개수마다 자리를 손으로 정해 두지 않아도 된다.
+ * 첫 병변(가장 넓은 것)을 12시에 두고 시계 방향으로 나머지를 붙인다.
+ *
+ * 점선 원(넓이)까지 고리에 맞추지는 않는다. 넓이는 원래 몸 윤곽을 넘어도 되는 값이라(위 주석)
+ * 겹침을 피하려 들면 오히려 크기가 왜곡된다 — 겹치더라도 크기가 정확한 편이 낫다.
+ */
+function markerSpot(anchor: BodyPoint2D, i: number, n: number, r: number): BodyPoint2D {
+  if (n <= 1) return anchor;
+  const ring = (r * MARKER_GAP) / Math.sin(Math.PI / n);
+  const angle = -Math.PI / 2 + (2 * Math.PI * i) / n;
+  return { x: anchor.x + ring * Math.cos(angle), y: anchor.y + ring * Math.sin(angle) };
+}
+
 /**
  * 부위 선택용 2D 몸 그림 — 네 덩어리를 각자의 도형으로 그리고, 지금 고른 덩어리만 채움색을
  * 초록으로 바꾼다(나머지는 옅은 회색). 그림과 탭 판정이 같은 좌표계·같은 경계를 그대로 공유해서
@@ -195,7 +215,8 @@ const DEFAULT_MARKER_R = 42;
  *
  * partMarkers를 넘기면(전신 결과 화면이 쓴다) 덩어리 전체를 칠하는 대신, GROUP_MARKERS에 미리
  * 정해 둔 자리에 도형을 찍는다 — "이 부위 전체"가 아니라 "이 부위가 지금 어떤 상태인가"의 표시다.
- * 도형은 둘이고 서로 다른 것을 말한다: **불투명 원은 얼마나 나쁜가(색), 점선 원은 얼마나
+ * **동그라미 하나가 병변 하나**라, 한 자리에서 병변이 여럿 잡혔으면 그 개수만큼 둘레에 흩어 그린다.
+ * 병변마다 도형은 둘이고 서로 다른 것을 말한다: **불투명 원은 얼마나 나쁜가(색), 점선 원은 얼마나
  * 넓은가(크기).** 넓이를 잰 회차가 아니면 점선 원은 아예 그리지 않는다.
  * highlightGroup·partMarkers는 같이 써도 되지만 실제로는 화면마다 하나만 쓴다.
  */
@@ -209,8 +230,11 @@ export default function Body2DView({
   highlightGroup?: CoarseGroupId | null;
   /** 마지막으로 탭한 위치(뷰 좌표) — 칩으로 골랐을 때는 부모가 null로 지운다 */
   marker?: BodyPoint2D | null;
-  /** 덩어리별 동그라미 색·크기 — 전신 결과 화면의 부위별 상태 표시용 (읽기 전용 화면에서 쓴다) */
-  partMarkers?: Partial<Record<CoarseGroupId, PartMarkerStyle>>;
+  /**
+   * 덩어리별 동그라미 목록 — **병변 하나에 하나씩** (전신 결과 화면이 쓴다).
+   * 목록이 둘 이상이면 그 덩어리 자리 둘레에 고르게 흩어 그린다(markerSpot).
+   */
+  partMarkers?: Partial<Record<CoarseGroupId, PartMarkerStyle[]>>;
   onPick?: (group: CoarseGroupId, point: BodyPoint2D) => void;
 }) {
   const pulse = useRef(new Animated.Value(1)).current;
@@ -273,37 +297,43 @@ export default function Body2DView({
                 동그라미가 작아지는 것과 숫자가 줄어드는 것을 같이 볼 수 있게 한다. */}
             {partMarkers &&
               (Object.keys(partMarkers) as CoarseGroupId[]).flatMap((group) => {
-                const style = partMarkers[group]!;
-                const r = style.radius ?? DEFAULT_MARKER_R;
-                return GROUP_MARKERS[group].map((pt, i) => (
-                  <React.Fragment key={`${group}-${i}`}>
-                    <Circle
-                      cx={pt.x}
-                      cy={pt.y}
-                      r={r}
-                      fill={style.color}
-                      stroke="#FFFFFF"
-                      strokeWidth={3}
-                    />
-                    {/*
-                      넓이 원은 **불투명 원 위에** 옅게 얹는다. 아래에 깔면 넓이가 작은 회차에서
-                      불투명 원에 완전히 가려져 "넓이를 못 쟀다"와 구분되지 않는다 —
-                      위에 얹으면 작든 크든 점선 테두리가 항상 보인다.
-                    */}
-                    {style.areaRadius != null && (
-                      <Circle
-                        cx={pt.x}
-                        cy={pt.y}
-                        r={style.areaRadius}
-                        fill={style.color}
-                        fillOpacity={0.22}
-                        stroke={style.color}
-                        strokeWidth={3}
-                        strokeDasharray="8,7"
-                      />
-                    )}
-                  </React.Fragment>
-                ));
+                const list = partMarkers[group]!;
+                return GROUP_MARKERS[group].flatMap((anchor, ai) =>
+                  list.map((style, i) => {
+                    const r = style.radius ?? DEFAULT_MARKER_R;
+                    // 병변이 여럿이면 그 자리 둘레로 흩어 놓는다 (하나면 자리 그대로)
+                    const pt = markerSpot(anchor, i, list.length, r);
+                    return (
+                      <React.Fragment key={`${group}-${ai}-${i}`}>
+                        <Circle
+                          cx={pt.x}
+                          cy={pt.y}
+                          r={r}
+                          fill={style.color}
+                          stroke="#FFFFFF"
+                          strokeWidth={3}
+                        />
+                        {/*
+                          넓이 원은 **불투명 원 위에** 옅게 얹는다. 아래에 깔면 넓이가 작은 회차에서
+                          불투명 원에 완전히 가려져 "넓이를 못 쟀다"와 구분되지 않는다 —
+                          위에 얹으면 작든 크든 점선 테두리가 항상 보인다.
+                        */}
+                        {style.areaRadius != null && (
+                          <Circle
+                            cx={pt.x}
+                            cy={pt.y}
+                            r={style.areaRadius}
+                            fill={style.color}
+                            fillOpacity={0.22}
+                            stroke={style.color}
+                            strokeWidth={3}
+                            strokeDasharray="8,7"
+                          />
+                        )}
+                      </React.Fragment>
+                    );
+                  }),
+                );
               })}
           </Svg>
         </Pressable>

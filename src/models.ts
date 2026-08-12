@@ -129,10 +129,20 @@ export const sevOf = (s: number): Severity => kSeverity[s] ?? kSeverity[1];
 export const kUserName = '임경택';
 
 /** 일상 루틴 시드 — 사용자가 직접 추가/삭제할 수 있다 */
+/**
+ * 가려움 문진으로 이어지는 루틴의 이름.
+ *
+ * 이름으로 알아보는 것이 허술해 보이지만 의도한 선택이다 — 루틴은 사용자가 자유롭게 이름을
+ * 바꾸고 지울 수 있는 목록이라, 특정 줄에 기능을 박아 두면 이름을 바꾸는 순간 앱이 고장 난
+ * 것처럼 보인다. 이름이 달라지면 **링크만 조용히 사라지고 평범한 체크 항목으로 남는다** —
+ * 그게 "지워지지 않는 특별한 줄"보다 낫다.
+ */
+export const ITCH_SURVEY_ROUTINE = '가려움증 문진하기';
+
 export const initialRoutines = (): Routine[] => [
   { id: 4, name: '피부 상태 사진찍기', times: ['09:00'], done: false },
   // 가려움은 밤에 심해지므로 하루를 마치며 남기게 둔다 (가려움 문진 화면과 짝이 되는 줄이다)
-  { id: 5, name: '가려움증 문진하기', times: ['21:00'], done: false },
+  { id: 5, name: ITCH_SURVEY_ROUTINE, times: ['21:00'], done: false },
 ];
 
 /** 사용 제품 시드 — 상세 결과의 "사용한 제품"도 이 목록에서 나온다 */

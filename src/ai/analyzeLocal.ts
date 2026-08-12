@@ -39,6 +39,16 @@ export interface LesionRegionResult {
    */
   areaPct?: number;
   /**
+   * **이 단위만의** 배율 상쇄 넓이 지수 — 전체 지수(ScaleAreaResult.index)와 같은 자로 잰 값이라
+   * 서로 더하고 견줄 수 있다. 자를 못 찾은 촬영에서는 null이다.
+   *
+   * share로 전체 지수를 쪼개지 않고 **마스크를 단위별로 다시 센다**. share는 임계값을 넘긴
+   * 픽셀 수의 비율이라 경계가 흐린 병변에서 실제 넓이 비율과 어긋나는데, 지수 쪽은 임계값
+   * 근처를 부분 가중으로 세기 때문이다(AREA_SOFT_HALF). 같은 방식으로 세야 "이 원이 저 원의
+   * 두 배"가 실제 두 배가 된다.
+   */
+  areaIndex?: number | null;
+  /**
    * 이 단위로 묶인 연결 덩어리 수. 1보다 크면 경계 사이가 가까워 한 병변으로 본 것이다
    * (lesionRegions.ts의 병합 규칙).
    */
@@ -213,6 +223,28 @@ function localRectToImage(src: Region, r: { x1: number; y1: number; x2: number; 
  */
 const AREA_SOFT_HALF = 0.15;
 
+/**
+ * 판정 단위마다 마스크 칸 수를 따로 센다 — 전체 합산(runStage1)과 **같은 부분 가중**을 쓴다.
+ *
+ * regionOf는 임계값을 넘긴 픽셀에만 단위 번호가 붙어 있어서(나머지는 -1), 임계값 바로 아래의
+ * 경계 픽셀은 어느 단위에도 들어가지 않는다. 그래서 단위 합의 총합은 전체보다 조금 작다 —
+ * 원끼리의 크기 비(比)에는 영향이 없으므로 그대로 둔다. 그 픽셀을 억지로 가까운 단위에
+ * 나눠 주면 어느 단위 것인지 모르는 값을 아는 척하는 셈이 된다.
+ */
+function softCellsByRegion(mask: Float32Array, regionOf: Int32Array, count: number): number[] {
+  const cells = new Array<number>(count).fill(0);
+  if (count === 0) return cells;
+  const lo = labels.mask_threshold - AREA_SOFT_HALF;
+  const width = AREA_SOFT_HALF * 2;
+  for (let i = 0; i < mask.length; i++) {
+    const region = regionOf[i];
+    if (region < 0 || region >= count) continue;
+    const w = (mask[i] - lo) / width;
+    if (w > 0) cells[region] += w > 1 ? 1 : w;
+  }
+  return cells;
+}
+
 async function runStage1(image: SkImage, colorGain?: readonly number[], region?: Region) {
   const origW = image.width();
   const origH = image.height();
@@ -355,19 +387,22 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
     원본 픽셀 넓이가 되고, 자의 d·v로 나누면 배율이 사라진다 — 같은 병변을 두 배 가까이서
     찍으면 넓이도 d·v도 똑같이 네 배가 되므로 몫은 그대로다.
   */
-  const scaleArea: ScaleAreaResult | null =
+  /** 마스크 칸 수(부분 가중 합) → 배율 상쇄 지수. 전체도 단위 하나도 이 한 식만 쓴다 */
+  const indexOfCells =
     scale && roi
-      ? (() => {
-          const perCell = (roi.width * roi.height) / (size * size);
-          const lesionPixels = maskSoft * perCell;
-          return {
-            kind: scale.kind,
-            index: Math.round((lesionPixels / scale.areaRef) * 1000) / 10,
-            lesionPixels,
-            areaRef: scale.areaRef,
-            roi,
-          };
-        })()
+      ? (cells: number) =>
+          Math.round(((cells * ((roi.width * roi.height) / (size * size))) / scale.areaRef) * 1000) / 10
+      : null;
+
+  const scaleArea: ScaleAreaResult | null =
+    scale && roi && indexOfCells
+      ? {
+          kind: scale.kind,
+          index: indexOfCells(maskSoft),
+          lesionPixels: maskSoft * ((roi.width * roi.height) / (size * size)),
+          areaRef: scale.areaRef,
+          roi,
+        }
       : null;
 
   // 판정 단위를 정한다 — 연결 덩어리로 쪼갠 뒤, 경계 사이가 가까운 것끼리 묶는다.
@@ -397,18 +432,46 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
     });
   }
 
+  /*
+    단위마다 넓이를 따로 잰다 — 전신 지도가 병변 하나에 원 하나를 그리고 그 크기를 각자의
+    넓이로 정하기 때문이다(WholeBodyResultScreen).
+
+    전체 지수를 share로 쪼개는 방법도 있었지만 쓰지 않는다: share는 임계값을 넘긴 픽셀 수의
+    비율인데 지수는 임계값 근처를 부분 가중으로 세므로(AREA_SOFT_HALF), 경계가 흐린 병변에서
+    두 값이 어긋난다. 512² 한 번 더 훑는 값으로 "이 원이 저 원의 두 배"를 실제와 맞춘다.
+
+    합이 전체와 정확히 같지는 않다 — 임계값을 넘지 못해 어느 단위에도 속하지 않은 경계 픽셀
+    (regionOf === -1)이 전체 합에는 들어 있기 때문이다. 그 차이는 원 크기를 서로 견주는 데
+    영향을 주지 않으므로 메우지 않는다.
+  */
+  const regionCells = span('후처리 단위별 면적 합산(512²)', () =>
+    regionOf ? softCellsByRegion(mask, regionOf, maskRegions.length) : null,
+  );
+
   const rects = maskRegions.length
-    ? maskRegions.map((r) => ({
+    ? maskRegions.map((r, i) => ({
         ...maskRectToImage(r.crop, size, src),
         share: maskOn > 0 ? r.pixels / maskOn : 1,
         areaPct: Math.round((r.pixels / (size * size)) * 1000) / 10,
+        areaIndex: indexOfCells && regionCells ? indexOfCells(regionCells[i]) : null,
         mergedBlobs: r.mergedBlobs,
         foreignPct: r.foreignPct,
       }))
-    : [{ crop: bboxCrop, box: bbox, share: 1, areaPct: maskAreaPct, mergedBlobs: 0, foreignPct: 0 }];
+    : [
+        {
+          crop: bboxCrop,
+          box: bbox,
+          share: 1,
+          areaPct: maskAreaPct,
+          // 단위를 나누지 못한 촬영에서는 병변이 하나뿐인 셈이라 전체 지수가 곧 그 하나의 넓이다
+          areaIndex: scaleArea?.index ?? null,
+          mergedBlobs: 0,
+          foreignPct: 0,
+        },
+      ];
 
   const regions: LesionRegionResult[] = [];
-  for (const { crop: cropRect, box, share, areaPct, mergedBlobs, foreignPct } of rects) {
+  for (const { crop: cropRect, box, share, areaPct, areaIndex, mergedBlobs, foreignPct } of rects) {
     /*
       등급을 매기지 않는 촬영(아토피가 아닌 질환)에서는 Stage2를 **아예 돌리지 않는다.**
       돌려서 버리는 것과 다르다 — 판정 단위마다 384px 추론이 한 번씩 붙으므로 그냥 비용이다.
@@ -455,6 +518,7 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
       igaGradeName: iga.gradeName,
       share,
       areaPct,
+      areaIndex,
       mergedBlobs,
       foreignPct,
     });

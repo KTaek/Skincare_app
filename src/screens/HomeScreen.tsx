@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Animated, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
-import { CareItem } from '../models';
+import { CareItem, ITCH_SURVEY_ROUTINE, plainSiteLabel } from '../models';
 import { SectionHeader, RoutineRowContent } from '../components/widgets';
 import { useRoutines } from '../context/RoutineContext';
 import { useProfile } from '../context/ProfileContext';
@@ -33,6 +33,8 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
 
       <RecentStatusCard
         record={latest?.record}
+        /* 질환명은 폴더가 들고 있다 — 진단을 아직 안 붙인 폴더는 이름에서 부위만 떼어 쓴다 */
+        diseaseName={latest ? latest.folder.disease ?? plainSiteLabel(latest.folder.name) : ''}
         hasSeverity={latest ? folderHasSeverity(latest.folder) : false}
         healthConnected={healthConnected}
         onPress={goLatestDetail}
@@ -59,6 +61,8 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
       <SectionHeader title="오늘의 피부 케어" onMore={() => navigation.navigate('Routine')} />
       <TodayCareCard
         items={careItemsForOffset(0)}
+        /* "가려움증 문진하기" 줄은 체크만 하는 게 아니라 실제로 적으러 갈 수 있어야 한다 */
+        onOpenItch={() => navigation.navigate('Records', { focus: 'itch' })}
         onToggle={(key) => toggleForOffset(0, key)}
       />
     </ScrollView>
@@ -71,12 +75,19 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
  */
 function RecentStatusCard({
   record,
+  diseaseName,
   hasSeverity,
   healthConnected,
   onPress,
 }: {
   record?: { iga: number; itchVas: number; sleepScore: number };
-  /** 가장 최근 기록이 속한 폴더의 진단명이 아토피피부염인지 — 아니면 "피부 종합 상태" 칸을 뺀다 */
+  /** 피부 종합 상태 칸에 적을 진단명 */
+  diseaseName: string;
+  /**
+   * 가장 최근 기록이 속한 폴더의 진단명이 아토피피부염인지 — 등급(IGA) 배지를 붙일지 정한다.
+   * 예전엔 아토피가 아니면 칸 자체를 뺐는데, 그러면 홈에서만 지표가 두 칸으로 줄어 기록 탭과
+   * 생김새가 달라졌다. 칸은 늘 두고 **점수 대신 질환명**을 적는다.
+   */
   hasSeverity: boolean;
   healthConnected: boolean;
   onPress: () => void;
@@ -105,9 +116,13 @@ function RecentStatusCard({
         <MaterialIcons name="chevron-right" size={20} color={AppColors.sub} />
       </View>
       <View style={styles.statusRow}>
-        {hasSeverity && (
-          <StatBox label="피부 종합 상태" value={`${Math.round(skinValue)}`} band={skinConditionInfo(skinValue)} />
-        )}
+        {/* 숫자만 있으면 무엇에 대한 점수인지 여기서는 알 수 없다 — 질환명을 값으로 두고,
+            등급을 매길 수 있는 아토피만 그 단계를 배지로 덧붙인다 */}
+        <StatBox
+          label="피부 종합 상태"
+          value={diseaseName}
+          band={hasSeverity ? skinConditionInfo(skinValue) : undefined}
+        />
         <StatBox label="가려움 안정도" value={`${itchValue}`} band={itchBand(itchValue)} />
         <StatBox
           label="수면 점수"
@@ -126,7 +141,15 @@ function RecentStatusCard({
  * 지난 날짜를 넘겨보는 기능은 두지 않는다 — 홈에서는 "오늘 무엇이 남았는지"만 보면 되고,
  * 지난 기록은 기록 탭에서 본다.
  */
-function TodayCareCard({ items, onToggle }: { items: CareItem[]; onToggle: (key: string) => void }) {
+function TodayCareCard({
+  items,
+  onToggle,
+  onOpenItch,
+}: {
+  items: CareItem[];
+  onToggle: (key: string) => void;
+  onOpenItch: () => void;
+}) {
   if (items.length === 0) {
     return (
       <View style={[cardDecoration(), styles.careEmpty]}>
@@ -144,7 +167,12 @@ function TodayCareCard({ items, onToggle }: { items: CareItem[]; onToggle: (key:
             i !== items.length - 1 && { borderBottomWidth: 1, borderBottomColor: AppColors.line },
           ]}
         >
-          <FadingCareRow item={item} onToggle={() => onToggle(item.key)} />
+          <FadingCareRow
+            item={item}
+            /* 문진 줄은 체크박스도 문진으로 보낸다 — 이유는 RoutineScreen 같은 자리에 적어 뒀다 */
+            onToggle={item.name === ITCH_SURVEY_ROUTINE ? onOpenItch : () => onToggle(item.key)}
+            onOpen={item.name === ITCH_SURVEY_ROUTINE ? onOpenItch : undefined}
+          />
         </View>
       ))}
     </View>
@@ -152,7 +180,15 @@ function TodayCareCard({ items, onToggle }: { items: CareItem[]; onToggle: (key:
 }
 
 /** 체크 시 목록에서 사라지지 않고, 줄긋기와 함께 서서히 흐려지는 홈 케어 행 */
-function FadingCareRow({ item, onToggle }: { item: CareItem; onToggle?: () => void }) {
+function FadingCareRow({
+  item,
+  onToggle,
+  onOpen,
+}: {
+  item: CareItem;
+  onToggle?: () => void;
+  onOpen?: () => void;
+}) {
   const opacity = useRef(new Animated.Value(item.done ? 0.45 : 1)).current;
   useEffect(() => {
     Animated.timing(opacity, {
@@ -163,7 +199,7 @@ function FadingCareRow({ item, onToggle }: { item: CareItem; onToggle?: () => vo
   }, [item.done, opacity]);
   return (
     <Animated.View style={{ opacity }}>
-      <RoutineRowContent item={item} onToggle={onToggle} />
+      <RoutineRowContent item={item} onToggle={onToggle} onOpen={onOpen} />
     </Animated.View>
   );
 }

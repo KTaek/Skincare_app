@@ -117,17 +117,39 @@ export function StatBox({
 }: {
   label: string;
   value: string;
-  band: { ko: string; color: string } | null;
+  /**
+   * 단계 배지. 세 가지가 다 다르다:
+   *   {...}     — 그 단계로 칠한 배지
+   *   null      — 잴 수 있는데 값이 없다 → "미기재" (수면 미연동 등)
+   *   넘기지 않음 — 애초에 등급이 없는 칸 → 배지 줄 자체를 그리지 않는다
+   *                 (아토피가 아닌 질환의 피부 종합 상태. "등급 없음"이라 적으면 없는 것을
+   *                  굳이 가리키는 셈이라 세 칸 중 그 칸으로만 눈이 끌린다)
+   */
+  band?: { ko: string; color: string } | null;
 }) {
+  // 값 자리에 점수 대신 질환명이 올 수 있다 — 숫자용 크기 그대로면 칸을 넘긴다
+  const isText = Number.isNaN(Number(value));
   return (
     <View style={styles.statBox}>
       <Text style={styles.statLabel} numberOfLines={1}>
         {label}
       </Text>
       <View style={{ height: 7 }} />
-      <Text style={styles.statValue}>{value}</Text>
+      {/* 값 줄의 높이를 글씨 크기와 무관하게 고정한다 — 안 그러면 질환명이 들어간 칸만
+          줄 높이가 낮아져서, 그 아래 배지가 옆 칸들보다 위로 올라붙는다 */}
+      <View style={styles.statValueSlot}>
+        <Text
+          style={[styles.statValue, isText && styles.statValueText]}
+          numberOfLines={1}
+          adjustsFontSizeToFit={isText}
+          minimumFontScale={0.6}
+        >
+          {value}
+        </Text>
+      </View>
       <View style={{ height: 7 }} />
-      {band ? <Badge text={band.ko} color={band.color} small /> : <Text style={styles.statNone}>미기재</Text>}
+      {band !== undefined &&
+        (band ? <Badge text={band.ko} color={band.color} small /> : <Text style={styles.statNone}>미기재</Text>)}
     </View>
   );
 }
@@ -174,6 +196,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12, paddingHorizontal: 4,
   },
   statLabel: { fontSize: 13.5, fontWeight: '700', color: AppColors.sub },
-  statValue: { fontSize: 21, fontWeight: '800', color: AppColors.ink },
+  /** 21pt 글씨 한 줄이 차지하는 높이 — 값이 숫자든 질환명이든 이 높이로 고정한다 */
+  statValueSlot: { height: 26, width: '100%', justifyContent: 'center' },
+  statValue: { fontSize: 21, fontWeight: '800', color: AppColors.ink, textAlign: 'center' },
+  /** 값 자리에 질환명이 올 때 — 숫자만큼 키우면 칸을 넘치지만, 읽히지 않을 만큼 줄이지도 않는다 */
+  statValueText: { fontSize: 17 },
   statNone: { fontSize: 11.5, fontWeight: '800', color: AppColors.sub, paddingVertical: 4 },
 });

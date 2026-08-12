@@ -26,10 +26,19 @@ export function SectionHeader({ title, onMore }: { title: string; onMore?: () =>
 export function RoutineRowContent({
   item,
   onToggle,
+  onOpen,
   onDelete,
 }: {
   item: CareItem;
   onToggle?: () => void;
+  /**
+   * 이름을 누르면 갈 곳 — 지금은 가려움 문진 줄에만 붙는다.
+   *
+   * **체크박스와 갈라 둔다.** 체크는 "했다"는 표시고 이건 "하러 간다"라서, 한 곳에 묶으면
+   * 문진을 열려고 눌렀는데 완료로 체크되거나 그 반대가 된다. 체크박스는 왼쪽 네모, 열기는
+   * 이름 영역으로 자리도 나눠 둔다.
+   */
+  onOpen?: () => void;
   onDelete?: () => void;
 }) {
   // 알림 아이콘은 앱 전체 설정을 따른다 (아래 주석 참고)
@@ -54,6 +63,11 @@ export function RoutineRowContent({
       {isProduct && (
         <MaterialIcons name="medication" size={16} color={AppColors.greenMuted} style={{ marginRight: 5 }} />
       )}
+      <Pressable
+        onPress={onOpen}
+        disabled={!onOpen}
+        style={{ flexShrink: 1, flexDirection: 'row', alignItems: 'center' }}
+      >
       <Text
         style={[
           styles.routineName,
@@ -66,6 +80,11 @@ export function RoutineRowContent({
       >
         {item.name}
       </Text>
+      {/* 눌러서 갈 수 있는 줄이라는 것을 화살표로 알린다 — 없으면 눌러 볼 생각을 하지 않는다 */}
+      {onOpen && (
+        <MaterialIcons name="chevron-right" size={16} color={AppColors.sub} style={{ marginLeft: 2 }} />
+      )}
+      </Pressable>
       {showCycle && (
         <View style={styles.cyclePill}>
           <Text style={styles.cyclePillText}>{cycleLabel(item.cycleDays ?? 1)}</Text>
@@ -100,11 +119,13 @@ export function RoutineRowContent({
 export function RoutineRow({
   item,
   onToggle,
+  onOpen,
   onDelete,
   last = false,
 }: {
   item: CareItem;
   onToggle?: () => void;
+  onOpen?: () => void;
   onDelete?: () => void;
   last?: boolean;
 }) {
@@ -117,7 +138,7 @@ export function RoutineRow({
         !item.due && { opacity: 0.45 },
       ]}
     >
-      <RoutineRowContent item={item} onToggle={onToggle} onDelete={onDelete} />
+      <RoutineRowContent item={item} onToggle={onToggle} onOpen={onOpen} onDelete={onDelete} />
     </View>
   );
 }

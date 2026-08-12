@@ -79,6 +79,24 @@ export function faceAreaKind(result: LocalAnalysisResult): 'face' | 'torso' | nu
 }
 
 /**
+ * 병변 하나하나의 넓이 지수와 등급 — 전신 지도가 병변 개수만큼 원을 그리는 재료다.
+ *
+ * 전체 지수(faceAreaIndex) 하나만으로는 "한 사진에 병변이 셋인데 그중 하나만 커졌다"를 표현할
+ * 수 없다. 단위마다 자기 넓이를 들고 있어야 원 크기가 서로 달라진다.
+ *
+ * 넓이를 못 잰 촬영에서는 null이다 — 등급만 남기고 넓이를 0으로 채우면 지도가 "병변이 사라졌다"고
+ * 말하게 되는데, 그건 전체 지수를 다루는 규칙과 같다.
+ */
+export function lesionAreaRegions(
+  result: LocalAnalysisResult,
+): { index: number; iga: number }[] | null {
+  const out = result.regions
+    .filter((r) => typeof r.areaIndex === 'number' && r.areaIndex > 0)
+    .map((r) => ({ index: r.areaIndex as number, iga: r.igaGrade }));
+  return out.length ? out : null;
+}
+
+/**
  * 분석 결과를 모니터링 폴더 기록이 쓰는 스케일로 옮긴다.
  *
  * 넓이 측정 자격(area)은 촬영 시점에만 알 수 있는 정보(정렬·조명·해상도)라 분석 결과에 들어 있지
@@ -98,6 +116,8 @@ export function toFolderMetrics(result: LocalAnalysisResult, area?: AreaEligibil
     // 어긋나게 찍힌 회차는 값을 남기지 않는다 — 추세선에서 빼는 가장 단순하고 확실한 방법이다
     faceAreaIndex: areaUsable ? faceAreaIndex(result) : null,
     faceAreaKind: areaUsable ? faceAreaKind(result) : null,
+    // 병변마다의 넓이도 같은 자격을 따른다 — 전체를 못 믿을 사진이면 그 조각들도 못 믿는다
+    areaRegions: areaUsable ? lesionAreaRegions(result) : null,
     /*
       해상도가 낮아 값이 흔들릴 수 있는 회차라는 표시. **값은 그대로 남긴다** —
       해상도는 넓이를 틀리게 만들지 않고 흔들리게만 하므로(monitoring/types의 lowRes 주석),
