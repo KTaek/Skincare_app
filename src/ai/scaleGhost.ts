@@ -1,6 +1,9 @@
 import { withSkImage } from './skiaPixels';
 import { detectScaleFrame } from './scaleDetect';
-import { roiFits, framingOf, type ScaleFraming, type ScaleKind } from './scaleFrame';
+import { coverageOf, roiOf, framingOf, type ScaleFraming, type ScaleKind } from './scaleFrame';
+// 넓이 자격과 **같은 기준**으로 판단해야 한다 — 고스트로 쓸 수 있는 사진과 넓이를 잴 수 있는
+// 사진이 다르면, 눈으로 맞춘 구도가 정작 측정에서는 탈락한다
+import { GATE } from '../monitoring/frameQuality';
 
 /**
  * 프리뷰에 겹칠 지난 사진 한 장을 읽어, 그 사진이 겨냥한 구도를 알아낸다.
@@ -33,17 +36,26 @@ export async function buildScaleGhost(uri: string, kind: ScaleKind): Promise<Sca
       const frame = await detectScaleFrame(image, kind);
       if (!frame) return null;
 
-      // 잘려 있는 사진은 목표로 삼지 않는다. 그걸 목표로 두면 이후 모든 촬영이 같은 자리를
-      // 겨냥하게 되고, 그 자리에서는 관심영역이 매번 잘려 넓이를 영영 못 재게 된다.
-      // 여기서 null을 내면 표준 프레이밍으로 돌아가고, 그 구도는 잘리지 않도록 잡혀 있다.
-      if (!roiFits(frame, image.width(), image.height())) {
-        console.warn('[scale] 지난 사진이 잘려 있어 구도 기준으로 쓰지 않아요');
+      /*
+        부위가 너무 적게 담긴 사진은 목표로 삼지 않는다. 그걸 목표로 두면 이후 모든 촬영이 같은
+        자리를 겨냥하게 되고, 그 자리에서는 넓이를 영영 못 재게 된다. null을 내면 표준 프레이밍으로
+        돌아가고, 그 구도는 잘리지 않도록 잡혀 있다.
+
+        **판단 기준은 넓이 자격과 같은 covered다.** 예전에는 roiFits(여백까지 포함한 사각형이
+        통째로 들어왔는가)를 썼는데, 그 기준에서는 얼굴을 가득 채워 찍은 사진이 거의 전부
+        탈락한다 — 정작 가장 흔한 기준 사진이 고스트가 될 수 없었다.
+      */
+      const covered = coverageOf(frame, roiOf(frame, image.width(), image.height()));
+      if (covered < GATE.areaCoveredMin) {
+        console.warn('[scale] 지난 사진에 부위가 적게 담겨 구도 기준으로 쓰지 않아요', {
+          covered: Math.round(covered * 1000) / 10,
+        });
         return null;
       }
-      // 몸통은 전신이 보이는 사진만 목표가 될 수 있다 — 잘린 몸에서 잰 자는 프레이밍에 따라
-      // 15~35% 흔들려서, 그 구도로 수렴시키면 이후 회차가 전부 그 잡음 위에 쌓인다.
+      // 몸통은 양 어깨가 보이는 사진만 목표가 될 수 있다 — 어깨가 추정값인 사진에서 잰 자는
+      // 프레이밍에 따라 크게 흔들려서, 그 구도로 수렴시키면 이후 회차가 전부 그 잡음 위에 쌓인다.
       if (!frame.complete) {
-        console.warn('[scale] 지난 사진에 전신이 다 담기지 않아 구도 기준으로 쓰지 않아요');
+        console.warn('[scale] 지난 사진의 자를 믿을 수 없어 구도 기준으로 쓰지 않아요');
         return null;
       }
 

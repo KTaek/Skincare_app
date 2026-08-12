@@ -4,9 +4,9 @@ import { MonitorSession, MonitorTarget } from '../monitoring/types';
 
 /**
  * 피부 촬영 탭에서 시작할 수 있는 세 가지 흐름.
- *   new      — 신규 증상 기록하기: 부위 선택 → 가려움 문진 → 촬영 → 결과
- *   followUp — 이어서 기록하기: 가려움 문진 → 촬영 → 결과 (이미 등록된 자리를 다시 찍는다)
- *   quick    — 피부 바로 스캔: 촬영 → 결과 (문진도 등록도 없고, 기록으로 남기지 않는다)
+ *   new      — 신규 증상 기록하기: 부위 선택 → 촬영 → 결과
+ *   followUp — 이어서 기록하기: 촬영 → 결과 (이미 등록된 자리를 다시 찍는다)
+ *   quick    — 피부 바로 스캔: 촬영 → 결과 (등록도 없고, 기록으로 남기지 않는다)
  */
 export type ExamKind = 'new' | 'followUp' | 'quick';
 
@@ -17,7 +17,13 @@ export interface ExamCapture {
   session: MonitorSession;
   /** 후처리까지 끝난 사진 */
   photoUri: string;
-  /** 가려움 문진 결과(0~10). 문진을 거치지 않는 바로 스캔에서만 null이다 */
+  /**
+   * 그날 기록해 둔 가려움(VAS 0~10). 촬영이 재는 값이 아니라 기록 탭에서 하루에 한 번 받는
+   * 값을 찍는 순간 읽어 온 것이라(records/itchStore), 아직 적지 않은 날에는 null이다.
+   *
+   * null이어도 잃는 것은 없다 — 나중에 적으면 그날 기록 전체에 소급 적용된다(applyDayItch).
+   * 여기 담긴 값은 "이 촬영을 기록으로 만들 때 함께 넣을 값"일 뿐이다.
+   */
   itchVas: number | null;
   /** 이어서 기록하기일 때, 이어붙일 경과 관찰 폴더 */
   folderId?: string;

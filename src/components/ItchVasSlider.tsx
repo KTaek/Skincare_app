@@ -1,75 +1,16 @@
-import React, { useRef, useState } from 'react';
-import { PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MaterialIcons } from '@expo/vector-icons';
+import React, { useRef } from 'react';
+import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AppColors } from '../theme';
-import { ITCH_SEGMENTS, segmentFor, DISPLAY_SCALE } from '../folders/theme';
+import { MAX_VAS } from '../records/itchStore';
 
-const MAX_VAS = 10;
 const TICKS = Array.from({ length: MAX_VAS + 1 }, (_, i) => i);
-
-/**
- * 가려움 문진 — 촬영 직전 단계.
- *
- * 건너뛰기를 없앴다. 예전에는 "넘어가기 / 등록하기"를 먼저 고르게 했는데, 매번 촬영할 때마다
- * 거치는 단계에 선택지를 하나 더 얹으면 대부분 그냥 넘어가 버려서 추이가 비어 버린다. 지금은
- * 바를 움직이거나 숫자를 탭하기만 하면 되고, 손대지 않으면 기본값(0 = 가렵지 않음) 그대로
- * 다음으로 넘어간다.
- */
-export default function ItchSurveyScreen({
-  stepLabel,
-  onBack,
-  onDone,
-}: {
-  stepLabel: string;
-  onBack: () => void;
-  onDone: (vas: number) => void;
-}) {
-  const insets = useSafeAreaInsets();
-  const [vas, setVas] = useState(0);
-
-  const band = segmentFor(DISPLAY_SCALE.itch(vas), ITCH_SEGMENTS);
-
-  return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable style={styles.backBtn} onPress={onBack}>
-          <MaterialIcons name="chevron-left" size={24} color={AppColors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>가려움 문진</Text>
-      </View>
-      <Text style={styles.step}>{stepLabel}</Text>
-
-      <ScrollView contentContainerStyle={styles.body}>
-        <Text style={styles.question}>오늘 가려움은{'\n'}어느 정도인가요?</Text>
-        <View style={{ height: 6 }} />
-        <Text style={styles.caption}>바를 움직이거나 숫자를 눌러주세요.</Text>
-
-        <View style={{ height: 34 }} />
-        <VasSlider value={vas} onChange={setVas} color={band.color} />
-
-        <View style={{ height: 26 }} />
-        <View style={[styles.bandBox, { borderColor: band.color }]}>
-          <Text style={[styles.bandText, { color: band.color }]}>{band.ko}</Text>
-          <Text style={styles.bandHint}>{itchHintFor(vas)}</Text>
-        </View>
-      </ScrollView>
-
-      <View style={styles.footer}>
-        <Pressable style={styles.nextBtn} onPress={() => onDone(vas)}>
-          <Text style={styles.nextBtnText}>다음</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
 
 /**
  * 숫자(VAS 0~10)마다 "이 정도면 어떤 느낌인지"를 한 줄로 — 숫자만 보고 고르기 어려워서 붙였다.
  * 4단계 배지(band)와는 다른 경계선을 쓴다 — 이 문구는 실제 문진 기준(생활·수면 방해 정도)을
  * 그대로 옮긴 것이라, ITCH_SEGMENTS(화면 표시용 4단계)와 굳이 같은 경계일 필요가 없다.
  */
-function itchHintFor(vas: number): string {
+export function itchHintFor(vas: number): string {
   if (vas <= 0) return '가려움 없음';
   if (vas <= 3) return '무의식 중에 긁음 (생활이나 수면방해는 없음)';
   if (vas <= 6) return '생활, 수면 방해 정도의 가려움 (온종일은 아님)';
@@ -83,14 +24,18 @@ function itchHintFor(vas: number): string {
  * 드래그로 값을 바꾼다. 손가락 x좌표는 화면 절대좌표(pageX)로만 안정적으로 얻을 수 있어서,
  * 트랙이 화면의 어디에 놓였는지(pageX)를 onLayout 때 재 두고 그 차이로 위치를 계산한다.
  * 지금 값은 손잡이 위에 말풍선으로 띄워 손가락에 가려도 읽히게 한다.
+ *
+ * 촬영 앞 문진 화면에 있던 것을 그대로 꺼내 왔다 — 문진이 기록 탭의 "오늘의 가려움"으로
+ * 옮겨 가면서(records/itchStore) 그 화면 자체는 사라졌지만, 값을 고르는 방법은 그대로 둔다.
  */
-function VasSlider({
+export default function ItchVasSlider({
   value,
   onChange,
   color,
 }: {
   value: number;
   onChange: (v: number) => void;
+  /** 지금 단계(band)의 색 — 채움·손잡이·말풍선이 함께 이 색을 쓴다 */
   color: string;
 }) {
   const trackRef = useRef<View>(null);
@@ -146,16 +91,6 @@ function VasSlider({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#FFFFFF' },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8 },
-  backBtn: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '700', color: AppColors.ink, marginRight: 38 },
-  step: { textAlign: 'center', fontSize: 12, fontWeight: '600', color: AppColors.sub },
-  body: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 12 },
-
-  question: { fontSize: 20, fontWeight: '800', color: AppColors.ink, lineHeight: 29 },
-  caption: { fontSize: 12.5, color: AppColors.sub, lineHeight: 18 },
-
   bubbleStrip: { height: 34, position: 'relative' },
   bubble: {
     position: 'absolute',
@@ -185,18 +120,4 @@ const styles = StyleSheet.create({
   numberRow: { flexDirection: 'row', marginTop: 2 },
   numberBtn: { flex: 1, alignItems: 'center', paddingVertical: 4 },
   number: { fontSize: 12, color: AppColors.sub },
-
-  bandBox: {
-    borderRadius: 14,
-    borderWidth: 1.5,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
-    alignItems: 'center',
-  },
-  bandText: { fontSize: 18, fontWeight: '800' },
-  bandHint: { fontSize: 12.5, color: AppColors.sub, marginTop: 4 },
-
-  footer: { paddingHorizontal: 24, paddingBottom: 24, paddingTop: 8 },
-  nextBtn: { backgroundColor: AppColors.greenTop, borderRadius: 16, paddingVertical: 15, alignItems: 'center' },
-  nextBtnText: { fontSize: 16, fontWeight: '800', color: '#16320A' },
 });

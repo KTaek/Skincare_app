@@ -18,7 +18,7 @@ type Sheet = 'name' | 'body' | null;
  * "미기재"로 바뀐다.
  */
 export default function ProfileScreen({ navigation }: { navigation: any }) {
-  const { name, body, healthConnected, setHealthConnected } = useProfile();
+  const { name, body, healthConnected, setHealthConnected, pushEnabled, setPushEnabled } = useProfile();
   const [sheet, setSheet] = useState<Sheet>(null);
 
   const openUrl = (url: string) => {
@@ -62,6 +62,28 @@ export default function ProfileScreen({ navigation }: { navigation: any }) {
             last
           />
         </Card>
+
+        <SectionLabel text="알림" />
+        <Card>
+          <Row
+            icon="notifications-none"
+            label="푸시 알림"
+            value={pushEnabled ? '받는 중' : '받지 않음'}
+            valueAccent={pushEnabled}
+            trailing={<Switch on={pushEnabled} onPress={() => setPushEnabled(!pushEnabled)} />}
+            last
+          />
+        </Card>
+        {/* 끈 상태를 그냥 두지 않고 무엇이 달라지는지 말한다 — 루틴 화면에서 알림 표시가
+            사라지는 이유를 여기서 알 수 있어야 한다 */}
+        {!pushEnabled && (
+          <View style={styles.noteBox}>
+            <MaterialIcons name="info-outline" size={16} color={AppColors.greenMuted} />
+            <Text style={styles.noteText}>
+              알림을 끄면 루틴·제품 시간이 되어도 알려주지 않아요. 기록은 그대로 쌓입니다.
+            </Text>
+          </View>
+        )}
 
         <SectionLabel text="데이터" />
         <Card>

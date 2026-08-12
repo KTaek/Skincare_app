@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, View } from 'react-native';
-import Svg, { Circle, Path, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { AppColors } from '../theme';
 import { CoarseGroupId } from '../monitoring/bodyParts';
 
@@ -9,6 +9,26 @@ import { CoarseGroupId } from '../monitoring/bodyParts';
 // 327×949 좌표계를 쓴다(임의로 잡은 캔버스 크기일 뿐, 실제 픽셀과는 무관).
 const VIEWBOX_W = 327;
 const VIEWBOX_H = 949;
+/**
+ * 몸 그림 둘레에 두는 viewBox 여백.
+ *
+ * **react-native-svg는 viewBox 밖을 잘라낸다.** 예전 주석은 자르지 않는다고 적어 두었는데
+ * 사실이 아니었고, 그래서 전신 지도의 넓이 원(최대 반지름 118)이 팔 자리에서 좌우로 68씩,
+ * 머리 자리에서 위로 28만큼 잘려 나갔다 — 카드에는 좌우 여백이 남아 있는데도 그림만 잘리니
+ * 화면이 고장 난 것처럼 보인다.
+ *
+ * 몸 좌표(0~327, 0~949)는 그대로 두고 **보는 창만 넓힌다.** 그래야 OUTLINE_PATH·GROUP_MARKERS·
+ * TORSO_HALF_WIDTH 같은 기존 좌표를 한 줄도 건드리지 않는다. 세로는 위쪽만 넓히면 된다
+ * (아래쪽은 다리 마커 650 + 118 = 768로 949 안에 들어온다) — 세로를 넓히면 높이에 맞춰
+ * 그리는 이 그림이 그만큼 작아지므로 필요한 만큼만 준다.
+ */
+const PAD_X = 80;
+const PAD_TOP = 40;
+/** 실제로 그리는 창 — 몸 좌표계에 여백을 두른 것이다 */
+const VIEW_X = -PAD_X;
+const VIEW_Y = -PAD_TOP;
+const VIEW_W = VIEWBOX_W + PAD_X * 2;
+const VIEW_H = VIEWBOX_H + PAD_TOP;
 
 // 어느 부위를 고르든 항상 이 초록 하나로 칠한다 — 앱 다른 곳(선택된 칩 등)과 같은 강조색을 써서
 // "부위마다 색이 다르다"는 인상을 주지 않는다.
@@ -152,13 +172,17 @@ export interface BodyPoint2D {
 /** 동그라미 하나의 표시값 — 색은 상태(피부 종합 상태), 반지름은 병변 넓이(%)를 나타낸다 */
 export interface PartMarkerStyle {
   color: string;
-  /** 뷰박스(327×949) 좌표 기준 반지름. 생략하면 DEFAULT_MARKER_R(예전 고정 크기)을 쓴다 */
+  /** 불투명 원의 반지름 (뷰박스 327×949 좌표). 생략하면 DEFAULT_MARKER_R */
   radius?: number;
   /**
-   * 동그라미 가운데 적을 숫자(전신 결과 화면의 "존재하는 세부 증상 개수"). 생략하면 숫자를
-   * 그리지 않는다 — 지켜보지 않는 부위(기록 없음)는 잴 값이 없으니 숫자도 없어야 한다.
+   * 점선 원의 반지름 — **넓이를 잰 회차에만** 넘어온다. 없으면 점선 원을 그리지 않는다.
+   *
+   * 두 원이 서로 다른 것을 말한다: 불투명 원은 **얼마나 나쁜가**(피부 종합 상태 색), 점선 원은
+   * **얼마나 넓은가**(부위 대비 병변 넓이). 둘을 한 원의 색과 크기로 겹쳐 두면 "색이 진해졌는데
+   * 작아졌다"처럼 서로 다른 축의 변화가 한 도형 안에서 섞여 읽히지 않는다. 그리고 넓이는 잰
+   * 회차에만 있는 값이라, 없을 때 크기를 0으로 두면 "병변이 사라졌다"로 보인다 — 아예 안 그린다.
    */
-  count?: number;
+  areaRadius?: number;
 }
 
 /** partMarkers에 radius를 안 넘겼을 때(예전 호출부와의 호환)의 고정 크기 */
@@ -170,9 +194,10 @@ const DEFAULT_MARKER_R = 42;
  * 그림 위 어디를 눌러도 눈에 보이는 그 부위가 정확히 골라진다.
  *
  * partMarkers를 넘기면(전신 결과 화면이 쓴다) 덩어리 전체를 칠하는 대신, GROUP_MARKERS에 미리
- * 정해 둔 자리에 그 색·크기로 작은 동그라미만 찍는다 — "이 부위 전체"가 아니라 "이 부위에 병변이
- * 있고, 이만큼 넓다"는 표시라서다. highlightGroup·partMarkers는 같이 써도 되지만 실제로는
- * 화면마다 하나만 쓴다.
+ * 정해 둔 자리에 도형을 찍는다 — "이 부위 전체"가 아니라 "이 부위가 지금 어떤 상태인가"의 표시다.
+ * 도형은 둘이고 서로 다른 것을 말한다: **불투명 원은 얼마나 나쁜가(색), 점선 원은 얼마나
+ * 넓은가(크기).** 넓이를 잰 회차가 아니면 점선 원은 아예 그리지 않는다.
+ * highlightGroup·partMarkers는 같이 써도 되지만 실제로는 화면마다 하나만 쓴다.
  */
 export default function Body2DView({
   highlightGroup,
@@ -191,8 +216,8 @@ export default function Body2DView({
   const pulse = useRef(new Animated.Value(1)).current;
   const wrapRef = useRef<View>(null);
   // 화면 절대좌표(pageX/Y) 기준 그림의 위치·크기 — locationX/Y는 RN Web에서 aspectRatio로
-  // 감싼 레이어 때문에 그림 실제 위치와 어긋나는 경우가 있어서, ItchSurveyScreen의
-  // VasSlider와 같은 방식(measureInWindow + pageX/Y)으로 직접 계산한다.
+  // 감싼 레이어 때문에 그림 실제 위치와 어긋나는 경우가 있어서, ItchVasSlider와 같은
+  // 방식(measureInWindow + pageX/Y)으로 직접 계산한다.
   const geom = useRef({ x: 0, y: 0, width: 0, height: 0 });
 
   useEffect(() => {
@@ -219,8 +244,10 @@ export default function Body2DView({
     if (width === 0 || height === 0) return;
     const localX = e.nativeEvent.pageX - x;
     const localY = e.nativeEvent.pageY - y;
-    const vx = (localX / width) * VIEWBOX_W;
-    const vy = (localY / height) * VIEWBOX_H;
+    // 창에 여백이 생겼으므로 원점(VIEW_X/Y)과 배율(VIEW_W/H)을 함께 반영해야 한다 —
+    // 여백을 빼먹으면 탭한 자리가 몸 좌표로 옮겨질 때 통째로 밀린다
+    const vx = VIEW_X + (localX / width) * VIEW_W;
+    const vy = VIEW_Y + (localY / height) * VIEW_H;
     const group = classifyGroup(vx, vy);
     if (!group || !onPick) return;
     onPick(group, { x: localX, y: localY });
@@ -230,10 +257,9 @@ export default function Body2DView({
     <View style={styles.container}>
       <View ref={wrapRef} style={styles.figureWrap} onLayout={measureWrap}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onPress}>
-          {/* react-native-svg는 웹 SVG와 달리 viewBox 밖으로 나간 도형을 자동으로 자르지 않는다
-              (overflow 속성 자체를 지원하지 않는다 — 시도해 보면 타입 에러가 난다) — 그래서
-              부위별 동그라미(partMarkers)가 몸 윤곽 밖으로 걸쳐도 별도 설정 없이 그대로 보인다. */}
-          <Svg width="100%" height="100%" viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`}>
+          {/* viewBox 밖은 잘린다(위 PAD_X 주석) — 그래서 몸 좌표 그대로 두고 창만 넓혀 두었다.
+              부위별 동그라미(partMarkers)가 몸 윤곽 밖으로 걸쳐도 그 여백 안에서 온전히 그려진다. */}
+          <Svg width="100%" height="100%" viewBox={`${VIEW_X} ${VIEW_Y} ${VIEW_W} ${VIEW_H}`}>
             {/* 1) 바탕: 몸 전체를 도형 하나로 채운다. 네 덩어리를 각자 도형으로 이어붙이면(예전 방식)
                 맞닿는 경계에서 안티에일리어싱 때문에 실선처럼 보이는 실금이 생겨서, 안 보이는
                 덩어리 넷 대신 이 도형 하나로만 바탕을 채운다. */}
@@ -249,10 +275,6 @@ export default function Body2DView({
               (Object.keys(partMarkers) as CoarseGroupId[]).flatMap((group) => {
                 const style = partMarkers[group]!;
                 const r = style.radius ?? DEFAULT_MARKER_R;
-                // 숫자 하나(0~4)가 동그라미를 거의 꽉 채우도록 반지름보다 큰 배수를 쓴다 —
-                // 글자는 em 상자 안에서 실제 획이 차지하는 부분이 작아서, r과 같은 크기로만
-                // 키우면 여전히 동그라미 안에 여백이 많이 남아 작아 보인다.
-                const fontSize = r * 1.15;
                 return GROUP_MARKERS[group].map((pt, i) => (
                   <React.Fragment key={`${group}-${i}`}>
                     <Circle
@@ -263,18 +285,22 @@ export default function Body2DView({
                       stroke="#FFFFFF"
                       strokeWidth={3}
                     />
-                    {style.count != null && (
-                      <SvgText
-                        x={pt.x}
-                        y={pt.y}
-                        dy={fontSize * 0.35}
-                        fontSize={fontSize}
-                        fontWeight="800"
-                        fill="#FFFFFF"
-                        textAnchor="middle"
-                      >
-                        {style.count}
-                      </SvgText>
+                    {/*
+                      넓이 원은 **불투명 원 위에** 옅게 얹는다. 아래에 깔면 넓이가 작은 회차에서
+                      불투명 원에 완전히 가려져 "넓이를 못 쟀다"와 구분되지 않는다 —
+                      위에 얹으면 작든 크든 점선 테두리가 항상 보인다.
+                    */}
+                    {style.areaRadius != null && (
+                      <Circle
+                        cx={pt.x}
+                        cy={pt.y}
+                        r={style.areaRadius}
+                        fill={style.color}
+                        fillOpacity={0.22}
+                        stroke={style.color}
+                        strokeWidth={3}
+                        strokeDasharray="8,7"
+                      />
                     )}
                   </React.Fragment>
                 ));
@@ -302,7 +328,7 @@ const styles = StyleSheet.create({
   // 세로가 이 칸보다 훨씬 길어져 아래 칩·버튼과 겹친다. 대신 세로를 이 칸 높이 기준으로 잡고
   // (100%보다 조금 작게 — 그림이 칸에 꽉 차 보이지 않도록) 가로는 aspectRatio로 따라오게 해서,
   // 어떤 화면에서도 넘치지 않고 딱 들어맞는 쪽(보통 세로)에 맞춰 줄어든다.
-  figureWrap: { height: '92%', maxWidth: '100%', aspectRatio: VIEWBOX_W / VIEWBOX_H },
+  figureWrap: { height: '92%', maxWidth: '100%', aspectRatio: VIEW_W / VIEW_H },
   marker: {
     position: 'absolute',
     width: 18,

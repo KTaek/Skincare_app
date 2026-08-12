@@ -185,7 +185,7 @@ function AddCareSheet({
 }: {
   kind: CareKind | null;
   onClose: () => void;
-  onSave: (kind: CareKind, draft: { name: string; times: (string | null)[]; push: boolean; cycleDays: number }) => void;
+  onSave: (kind: CareKind, draft: { name: string; times: (string | null)[]; cycleDays: number }) => void;
 }) {
   const [name, setName] = useState('');
   // 하루 횟수만큼 시각을 들고 있는다 — 횟수를 늘리면 저녁 시간대를 기본값으로 채워 둔다
@@ -197,7 +197,6 @@ function AddCareSheet({
   // 기본값도 "설정 안 함"이다 — 시각을 정하는 쪽이 아니라 사용자가 직접 골라야 하는 선택지다.
   const [timeSpecified, setTimeSpecified] = useState(false);
   const [timeMenuOpen, setTimeMenuOpen] = useState(false);
-  const [push, setPush] = useState<boolean | null>(null);
   const [cycleDays, setCycleDays] = useState(1);
 
   const resetForm = () => {
@@ -206,7 +205,6 @@ function AddCareSheet({
     setTimesPerDay(1);
     setTimeSpecified(false);
     setTimeMenuOpen(false);
-    setPush(null);
     setCycleDays(1);
   };
 
@@ -219,7 +217,8 @@ function AddCareSheet({
   if (!kind) return null;
 
   const isProduct = kind === 'product';
-  const canSave = !!name.trim() && push != null;
+  // 알림 수신은 더 이상 항목마다 묻지 않는다(내 정보 → 알림) — 이름만 있으면 저장할 수 있다
+  const canSave = !!name.trim();
 
   /** 사용 주기 칸의 "몇 번" 스테퍼 — 횟수가 늘면 그만큼 실행 시각 칸에 회차가 새로 생긴다 */
   const setTimesPerDayClamped = (n: number) => {
@@ -345,14 +344,6 @@ function AddCareSheet({
               </>
             )}
 
-            <View style={{ height: 14 }} />
-            <Text style={styles.fieldLabel}>PUSH 알람 수신 여부</Text>
-            <View style={{ height: 6 }} />
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <ChoiceBtn label="예" active={push === true} onPress={() => setPush(true)} />
-              <ChoiceBtn label="아니오" active={push === false} onPress={() => setPush(false)} />
-            </View>
-
             <View style={{ height: 20 }} />
             <Pressable
               style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}
@@ -361,7 +352,7 @@ function AddCareSheet({
                 const draftTimes: (string | null)[] = timeSpecified
                   ? times.slice(0, timesPerDay).map(fmtHHMM)
                   : Array(timesPerDay).fill(null);
-                onSave(kind, { name: name.trim(), times: draftTimes, push: push === true, cycleDays });
+                onSave(kind, { name: name.trim(), times: draftTimes, cycleDays });
                 resetForm();
               }}
             >

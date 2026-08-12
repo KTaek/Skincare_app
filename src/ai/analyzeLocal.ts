@@ -6,6 +6,7 @@ import { buildLesionRegions } from './lesionRegions';
 import { renderMaskOverlay } from './maskOverlay';
 import { roiOf, tiltOf, SCALE_SPEC, type ScaleFrame, type ScaleRoi } from './scaleFrame';
 import { decodeSign } from './dex';
+import { span, spanAsync } from './profile';
 import { labels, SIGN_KEYS, IGA_GRADE_TO_SEVERITY, type SignKey } from './labels';
 
 export interface LesionBox {
@@ -223,22 +224,28 @@ async function runStage1(image: SkImage, colorGain?: readonly number[], region?:
   const mask = await runSegModel(stage1Input);
 
   // bbox는 분석 영역 안의 좌표로 나오므로 원본 좌표로 옮겨 준다 (영역이 사진 전체면 오프셋이 0이다)
-  const { bbox: local, found } = maskToBbox(mask, size, size, src.width, src.height, {
-    threshold: labels.mask_threshold,
-    margin: labels.crop_margin,
-    minRatio: labels.min_crop_ratio,
-  });
+  const { bbox: local, found } = span('후처리 bbox 추출', () =>
+    maskToBbox(mask, size, size, src.width, src.height, {
+      threshold: labels.mask_threshold,
+      margin: labels.crop_margin,
+      minRatio: labels.min_crop_ratio,
+    }),
+  );
   const { crop: bboxCrop, box: bbox } = localRectToImage(src, local);
 
-  let on = 0;
-  let soft = 0;
-  const lo = labels.mask_threshold - AREA_SOFT_HALF;
-  const span = AREA_SOFT_HALF * 2;
-  for (let i = 0; i < mask.length; i++) {
-    if (mask[i] > labels.mask_threshold) on += 1;
-    const w = (mask[i] - lo) / span;
-    if (w > 0) soft += w > 1 ? 1 : w;
-  }
+  // 512² 마스크를 한 번 훑는다 — 순수 JS 루프라 Hermes에서 공짜가 아니다
+  const { on, soft } = span('후처리 면적 합산(512²)', () => {
+    let onCount = 0;
+    let softSum = 0;
+    const lo = labels.mask_threshold - AREA_SOFT_HALF;
+    const width = AREA_SOFT_HALF * 2;
+    for (let i = 0; i < mask.length; i++) {
+      if (mask[i] > labels.mask_threshold) onCount += 1;
+      const w = (mask[i] - lo) / width;
+      if (w > 0) softSum += w > 1 ? 1 : w;
+    }
+    return { on: onCount, soft: softSum };
+  });
   const maskAreaPct = mask.length > 0 ? Math.round((on / mask.length) * 1000) / 10 : 0;
 
   return { origW, origH, src, mask, maskOn: on, maskSoft: soft, bbox, bboxCrop, found, maskAreaPct };
@@ -338,7 +345,7 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
     : undefined;
 
   const { origW, origH, src, mask, maskOn, maskSoft, bbox, bboxCrop, found, maskAreaPct } =
-    await runStage1(image, colorGain, roi);
+    await spanAsync('Stage1 분할(seg)', () => runStage1(image, colorGain, roi));
   const size = labels.img_size_seg;
 
   /*
@@ -365,23 +372,29 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
 
   // 판정 단위를 정한다 — 연결 덩어리로 쪼갠 뒤, 경계 사이가 가까운 것끼리 묶는다.
   // 마스크가 비면 빈 배열이고, 그때는 maskToBbox의 전체 이미지 폴백으로 한 번만 돌린다.
-  const { regions: maskRegions, regionOf, dropped } = found
-    ? buildLesionRegions(mask, size, size, labels.mask_threshold, {
-        margin: labels.crop_margin,
-        minRatio: labels.min_crop_ratio,
-        maxRegions: MAX_REGIONS,
-      })
-    : { regions: [], regionOf: null, dropped: 0 };
+  const { regions: maskRegions, regionOf, dropped } = span('후처리 판정단위 분리(연결요소)', () =>
+    found
+      ? buildLesionRegions(mask, size, size, labels.mask_threshold, {
+          margin: labels.crop_margin,
+          minRatio: labels.min_crop_ratio,
+          maxRegions: MAX_REGIONS,
+        })
+      : { regions: [], regionOf: null, dropped: 0 },
+  );
 
   // 결과 화면에 보여줄 오버레이. 합성이 실패해도 판정은 그대로 나가야 하므로 여기서 삼킨다
   // (그림이 없는 것과 분석이 죽는 것은 전혀 다른 무게의 실패다).
   let maskUri: string | null = null;
   if (found) {
-    try {
-      maskUri = renderMaskOverlay(image, mask, size, labels.mask_threshold, regionOf, roi);
-    } catch {
-      maskUri = null;
-    }
+    // 화면에 보여줄 그림을 만드는 자리 — 판정에는 쓰이지 않는데도 사진 크기의 픽셀을 합성하고
+    // JPEG로 인코딩한다. 결과창이 늦게 뜨는 이유가 "판정이 느려서"가 아닐 수 있는 유일한 후보다.
+    maskUri = span('후처리 오버레이 합성+JPEG', () => {
+      try {
+        return renderMaskOverlay(image, mask, size, labels.mask_threshold, regionOf, roi);
+      } catch {
+        return null;
+      }
+    });
   }
 
   const rects = maskRegions.length
@@ -404,18 +417,21 @@ async function analyzeImage(image: SkImage, opts: AnalyzeOptions): Promise<Local
     let signs: SignResult[];
     let iga: { grade: number; gradeName: string };
     if (gradeSeverity) {
-      const stage2Input = extractNormalizedRGB(
-        image,
-        cropRect,
-        labels.img_size_cls,
-        labels.imagenet_mean,
-        labels.imagenet_std,
-        colorGain,
-      );
-      const clsOut = await runClsModel(stage2Input);
+      // 판정 단위마다 한 번씩 도는 자리 — 계측기가 같은 이름의 형제 단계를 합치고 ×N으로 센다
+      const clsOut = await spanAsync('Stage2 중증도(sev)', async () => {
+        const stage2Input = extractNormalizedRGB(
+          image,
+          cropRect,
+          labels.img_size_cls,
+          labels.imagenet_mean,
+          labels.imagenet_std,
+          colorGain,
+        );
+        return runClsModel(stage2Input);
+      });
       signs = SIGN_KEYS.map((key) => {
-        const decoded = decodeSign(clsOut[key], labels.dex_thresholds_by_sign[key], labels.grade_names_by_sign[key]);
-        return { sign: key, grade: decoded.grade, gradeName: decoded.gradeName };
+        const d = decodeSign(clsOut[key], labels.dex_thresholds_by_sign[key], labels.grade_names_by_sign[key]);
+        return { sign: key, grade: d.grade, gradeName: d.gradeName };
       });
       iga = decodeSign(clsOut.iga, labels.dex_thresholds_by_sign.iga, labels.grade_names_by_sign.iga);
     } else {

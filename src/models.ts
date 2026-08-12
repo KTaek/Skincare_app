@@ -23,7 +23,6 @@ export interface Routine {
   times: (string | null)[];
   done: boolean;
   /** PUSH 알람 수신 여부 */
-  push: boolean;
 }
 
 /** 사용 제품 — 루틴에 "사용 주기(일)"가 붙은 것 */
@@ -43,7 +42,6 @@ export interface CareItem {
   /** 이 실행(occurrence) 하나의 시각 — 정해두지 않았으면 null */
   time: string | null;
   done: boolean;
-  push: boolean;
   kind: CareKind;
   /** 제품일 때만 채워진다 */
   cycleDays?: number;
@@ -132,17 +130,16 @@ export const kUserName = '임경택';
 
 /** 일상 루틴 시드 — 사용자가 직접 추가/삭제할 수 있다 */
 export const initialRoutines = (): Routine[] => [
-  { id: 4, name: '피부 상태 사진찍기', times: ['09:00'], done: false, push: true },
-  { id: 1, name: '손톱 짧게 깎기', times: ['12:00'], done: false, push: true },
-  { id: 2, name: '물 마시기', times: ['14:00'], done: false, push: true },
-  { id: 3, name: '미지근한 물로 샤워하기', times: ['18:00'], done: false, push: false },
+  { id: 4, name: '피부 상태 사진찍기', times: ['09:00'], done: false },
+  // 가려움은 밤에 심해지므로 하루를 마치며 남기게 둔다 (가려움 문진 화면과 짝이 되는 줄이다)
+  { id: 5, name: '가려움증 문진하기', times: ['21:00'], done: false },
 ];
 
 /** 사용 제품 시드 — 상세 결과의 "사용한 제품"도 이 목록에서 나온다 */
 export const initialProducts = (): CareProduct[] => [
-  { id: 1, name: 'BT4 Complex', times: ['09:00', '21:00'], done: false, push: true, cycleDays: 1 },
-  { id: 2, name: '음압 패치', times: ['14:00'], done: false, push: true, cycleDays: 2 },
-  { id: 3, name: '보습제', times: ['18:00'], done: false, push: false, cycleDays: 1 },
+  { id: 1, name: 'BT4 Complex', times: ['09:00'], done: false, cycleDays: 1 },
+  { id: 2, name: '음압 패치', times: ['14:00'], done: false, cycleDays: 2 },
+  { id: 3, name: '보습제', times: ['18:00'], done: false, cycleDays: 1 },
 ];
 
 /** 1970-01-01부터 며칠째인지 — 사용 주기 판정의 기준축 */

@@ -19,12 +19,13 @@ import { makeRng } from '../folders/store';
  * 실사용자가 루틴 탭에서 직접 체크해야 하는 날이라, 미리 체크돼 있으면 "오늘의 피부 케어"가
  * 이미 다 한 것처럼 보여서 혼란스럽다.
  *
- * id 1(BT4 Complex, 하루 2회)·2(음압 패치, 격일)는 models.ts의 initialProducts 시드와 짝이
- * 맞아야 한다 — 시드가 바뀌면 이 함수도 같이 고쳐야 한다.
+ * id 1(BT4 Complex, 하루 1회)·2(음압 패치, 격일)는 models.ts의 initialProducts 시드와 짝이
+ * 맞아야 한다 — 시드가 바뀌면 이 함수도 같이 고쳐야 한다. (BT4가 하루 2회이던 시절에는 여기서
+ * 두 번째 시각의 key도 함께 채웠는데, 그 key는 이제 어느 줄과도 짝이 없어 조용히 버려진다.)
  */
 function seedDemoCompletions(): Record<string, Set<string>> {
   const rng = makeRng(20260215);
-  const bt4Keys = [careItemKey('product', 1, 0), careItemKey('product', 1, 1)]; // BT4 Complex — 하루 2회
+  const bt4Keys = [careItemKey('product', 1, 0)]; // BT4 Complex — 하루 1회
   const patchKey = careItemKey('product', 2, 0); // 음압 패치 — 격일
   const map: Record<string, Set<string>> = {};
   for (let offset = 60; offset >= 1; offset--) {
@@ -44,7 +45,6 @@ export interface CareDraft {
   name: string;
   /** 하루 실행 시각들 — Routine.times와 같은 규칙(원소 수 = 하루 횟수, null = 시각 안 정함) */
   times: (string | null)[];
-  push: boolean;
   /** 제품일 때만 의미가 있다 (기본 1 = 매일) */
   cycleDays?: number;
 }
@@ -122,7 +122,6 @@ function expandForDate<T extends Routine>(
         id: item.id,
         name: item.name,
         time,
-        push: item.push,
         kind,
         cycleDays: (item as unknown as CareProduct).cycleDays,
         key,
@@ -199,7 +198,7 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
 
   const add = useCallback((kind: CareKind, draft: CareDraft) => {
     const times = draft.times.length > 0 ? draft.times : [null];
-    const base = { id: Date.now(), name: draft.name, times, done: false, push: draft.push };
+    const base = { id: Date.now(), name: draft.name, times, done: false };
     if (kind === 'product') {
       setProducts((prev) => [...prev, { ...base, cycleDays: Math.max(1, draft.cycleDays ?? 1) }]);
     } else {
@@ -213,7 +212,6 @@ export function RoutineProvider({ children }: { children: React.ReactNode }) {
       const next: any = { ...item };
       if (patch.name != null) next.name = patch.name;
       if (patch.times != null) next.times = patch.times.length > 0 ? patch.times : [null];
-      if (patch.push != null) next.push = patch.push;
       if (patch.cycleDays != null) next.cycleDays = Math.max(1, patch.cycleDays);
       return next;
     };

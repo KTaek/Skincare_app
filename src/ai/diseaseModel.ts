@@ -2,6 +2,7 @@ import { createModelSlot } from './modelLoader';
 import { extractNormalizedRGB, withSkImage, type CropRect } from './skiaPixels';
 import { roiOf, tiltOf, type ScaleFrame } from './scaleFrame';
 import { skinCropOf } from '../monitoring/skinMask';
+import { span, spanAsync } from './profile';
 import meta from '../../assets/models/disease_labels.json';
 
 /**
@@ -68,17 +69,29 @@ export async function classifyDisease(
   /** 촬영 때 찾아 둔 자 — 있으면 그 관심영역을 기울기까지 되돌려 잘라 쓴다 */
   scale?: ScaleFrame | null,
 ): Promise<DiseasePrediction[]> {
-  const input = await withSkImage(uri, (image) => {
-    const full = { x: 0, y: 0, width: image.width(), height: image.height() };
-    const src: CropRect = scale
-      ? { ...roiOf(scale, image.width(), image.height()), rotation: tiltOf(scale) }
-      : (skinCropOf(image) ?? full);
-    return extractNormalizedRGB(image, src, IMG_SIZE, meta.mean, meta.std, colorGain);
-  });
-  const model = await getModel();
+  const input = await spanAsync('질환분류 전처리', () =>
+    withSkImage(uri, (image) => {
+      const full = { x: 0, y: 0, width: image.width(), height: image.height() };
+      /*
+        자가 없는 촬영(바로 스캔)에서는 여기서 피부 자리를 찾느라 픽셀을 한 번 더 훑는다 —
+        모델 추론이 아닌데도 시간이 드는 자리라 따로 잰다.
+      */
+      const src: CropRect = scale
+        ? { ...roiOf(scale, image.width(), image.height()), rotation: tiltOf(scale) }
+        : (span('피부영역 탐색(skinCropOf)', () => skinCropOf(image)) ?? full);
+      return extractNormalizedRGB(image, src, IMG_SIZE, meta.mean, meta.std, colorGain);
+    }),
+  );
+  const model = await spanAsync('모델 대기(disease)', () => getModel());
   // 입출력 모두 float32 — 버퍼를 그대로 주고받는다 (float16 변환 없음)
-  const [output] = await model.run([input.buffer as ArrayBuffer]);
-  const probs = softmax(new Float32Array(output));
-  return CLASSES.map((key, i) => ({ key, label: DISPLAY[i] ?? key, score: probs[i] }))
-    .sort((a, b) => b.score - a.score);
+  const output = await spanAsync('추론 disease_cls_512', async () => {
+    const [out] = await model.run([input.buffer as ArrayBuffer]);
+    return out;
+  });
+  return span('질환분류 후처리(softmax+정렬)', () => {
+    const probs = softmax(new Float32Array(output));
+    return CLASSES.map((key, i) => ({ key, label: DISPLAY[i] ?? key, score: probs[i] })).sort(
+      (a, b) => b.score - a.score,
+    );
+  });
 }

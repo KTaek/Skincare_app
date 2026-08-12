@@ -12,6 +12,16 @@ export const monitoringColors = {
   warn: '#F0924B', // sev2·sev3 사이를 보간한 4단계용 주황 (AppColors엔 없어 sev 톤에 맞춰 추가)
 };
 
+/**
+ * 등급을 매길 수 없는 자리의 색.
+ *
+ * 4가지 증상·IGA 모델은 아토피 채점 기준으로 학습돼 있어서 다른 질환(건선·주사 등)에는 근거가
+ * 없다. 그 자리에 4단계 색 중 하나를 붙이면 없는 판정을 지어내는 것이라, **어느 단계도 아니라는
+ * 뜻의 채도 없는 회색**을 쓴다. 전신 지도의 동그라미와 폴더 화면의 요약 칸이 같은 색이어야
+ * "이건 못 재는 자리구나"가 한 번만 학습된다.
+ */
+export const NO_GRADE_COLOR = '#AEB6C0';
+
 /** 흰 카드 공통 그림자 — 공용 cardDecoration을 쓰되 기본 반경만 이 화면들에 맞춰 18로 둔다 */
 export function monitoringCard(radius = 18) {
   return cardDecoration(radius);

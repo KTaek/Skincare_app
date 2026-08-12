@@ -37,12 +37,17 @@ export default function MonitoringDetailScreen({ navigation, route }) {
   const [zoomPage, setZoomPage] = useState(0);
   // 수면 점수는 스마트워치(Samsung Health) 연동으로 들어오는 값이라, 미연동이면 "미기재"로 둔다
   const { healthConnected } = useProfile();
-
   if (!folder) {
     return <SafeAreaView style={styles.container}><Text style={{ padding: 20, color: mc.sub }}>폴더를 찾을 수 없습니다.</Text></SafeAreaView>;
   }
 
   const record = folder.records.find((r) => r.id === recordId) || folder.records[folder.records.length - 1];
+  /*
+    이 회차의 병변 오버레이. 실제 촬영은 분석이 합성한 것을 저장하고(recordExam의 maskUri),
+    데모 기록은 미리 구운 에셋을 쓴다(tools/bake_dump_overlays.py) — 둘 다 진짜 세그 결과다.
+    없으면 null이고, 그때 화면은 원본 사진을 그대로 보여준다.
+  */
+  const overlay = record.overlay;
 
   // 4가지 증상·IGA 모델은 아토피피부염 채점 기준이라, 이 폴더의 진단명이 그게 아니면 두 카드 다 숨긴다
   const hasSeverity = folderHasSeverity(folder);
@@ -70,11 +75,11 @@ export default function MonitoringDetailScreen({ navigation, route }) {
         <View style={[monitoringCard(), styles.photoCard]}>
           <View style={styles.photoRow}>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(0)}>
-              <LesionThumb photo={record.photo} areaPct={record.lesionAreaPct} seed={record.seed} mode="photo" size={PHOTO_SIZE} />
+              <LesionThumb photo={record.photo} mode="photo" size={PHOTO_SIZE} />
               <Text style={styles.photoCaption}>촬영 이미지 (원본)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(1)}>
-              <LesionThumb photo={record.photo} overlay={record.overlay} areaPct={record.lesionAreaPct} seed={record.seed} mode="overlay" size={PHOTO_SIZE} />
+              <LesionThumb photo={record.photo} overlay={overlay} mode="overlay" size={PHOTO_SIZE} />
               <Text style={styles.photoCaption}>증상 부위 표시</Text>
             </TouchableOpacity>
           </View>

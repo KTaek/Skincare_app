@@ -5,7 +5,9 @@ import { AppColors, cardDecoration } from '../theme';
 import Body2DView, { PartMarkerStyle } from '../components/Body2DView';
 import { BodyPartId, COARSE_OF_PART, CoarseGroupId, COARSE_GROUPS, partsOfSpotId } from '../monitoring/bodyParts';
 import { useFolders, addDaysKey, daysBetween, todayKey, folderHasSeverity } from '../folders/store';
-import { DISPLAY_SCALE, skinConditionInfo, SKIN_SEGMENTS } from '../folders/theme';
+// 넓이 환산은 폴더 카드와 **같은 출처**를 쓴다 — 두 화면이 같은 값을 다르게 말하면 안 된다
+import { coveragePctOf, scaleKindOfRecord } from '../folders/areaTrend';
+import { DISPLAY_SCALE, skinConditionInfo, SKIN_SEGMENTS, NO_GRADE_COLOR } from '../folders/theme';
 import { useMonitoring } from '../context/MonitoringContext';
 import { plainSiteLabel } from '../models';
 
@@ -17,12 +19,25 @@ import { plainSiteLabel } from '../models';
  * 전체를 색으로 칠하지만, 여기서는 덩어리 전체가 아니라 그 덩어리 안 정해진 자리에 작은 동그라미만
  * 찍는다(partMarkers) — 팔 전체가 병변인 게 아니라 "팔 어딘가에 병변이 있다"는 뜻이라서다.
  *
- * 동그라미 색은 그 시점 "피부 종합 상태" 값 그대로다 — 다른 화면(피부 종합 상태 카드·그래프)과
- * 같은 4단계(좋음·주의·나쁨·매우 나쁨, SKIN_SEGMENTS)를 써서, 여기서만 다른 색 체계(호전/유지/
- * 악화)를 따로 배우지 않아도 된다. 아래 "부위별 변화" 목록의 왼쪽 색 막대(trendSwatch)도 같은
- * skinConditionInfo 색을 쓴다 — 지도의 동그라미와 목록의 그 자리가 같은 색이어야 "이게 그 부위구나"
- * 하고 눈으로 바로 잇는다. 그 시점 대비 좋아지고 있었는지/나빠지고 있었는지는 색이 아니라 오른쪽
- * 화살표·태그(개선/악화/유지)로 따로 보여준다 — 그래서 그 태그만 별도의 호전/악화 색 체계를 쓴다.
+ * 자리마다 **도형이 둘**이고 서로 다른 것을 말한다:
+ *
+ *   불투명 원 — 얼마나 나쁜가. 그 시점 "피부 종합 상태" 4단계 색 그대로(SKIN_SEGMENTS)라
+ *     다른 화면(카드·그래프)과 같은 체계를 쓴다. 크기는 고정이다.
+ *   점선 원   — 얼마나 넓은가. 부위 대비 병변 넓이에 비례한다. **넓이를 잰 회차에만** 그린다.
+ *
+ * 하나의 원이 색과 크기로 둘을 함께 말하던 때가 있었는데, 그러면 "색이 진해졌는데 작아졌다"처럼
+ * 서로 다른 축의 변화가 한 도형에서 섞여 어느 쪽이 나빠진 것인지 읽을 수 없었다.
+ *
+ * **아토피가 아닌 질환은 회색이다.** 4가지 증상·IGA 모델이 아토피 채점 기준으로 학습돼 있어서
+ * 다른 질환에는 등급의 근거가 없고, 기록에는 자리 채우기 0이 들어 있다. 예전에는 그런 폴더를
+ * 지도에서 통째로 뺐지만 — 0을 색으로 옮기면 "완전 정상"이 되니 맞는 판단이었다 — 대가로
+ * 지켜보는 자리가 지도에 아예 없는 상태가 됐다. 지금은 올리되 어느 단계도 아닌 회색으로 둔다.
+ * 넓이는 질환과 무관하게 성립하므로 그 자리에도 점선 원은 그대로 그린다.
+ *
+ * 아래 "부위별 변화" 목록의 왼쪽 색 막대(trendSwatch)도 같은 색 규칙을 쓴다 — 지도의 동그라미와
+ * 목록의 그 자리가 같은 색이어야 "이게 그 부위구나" 하고 눈으로 바로 잇는다. 그 시점 대비
+ * 좋아지고 있었는지/나빠지고 있었는지는 색이 아니라 오른쪽 화살표·태그(개선/악화/유지)로 따로
+ * 보여준다 — 그래서 그 태그만 별도의 호전/악화 색 체계를 쓴다.
  *
  * 아래 슬라이더를 끌면 그 날짜 시점의 색으로 바뀐다 — "그때 이 부위가 어떤 상태였나"를 되짚어
  * 보는 타임라인이다.
@@ -38,7 +53,6 @@ const TREND_COLORS = {
 } as const;
 
 /** 지켜보지 않는 부위(동그라미)·아직 기록이 없는 구간의 회색 — 지도 범례·동그라미 둘 다 이 색을 쓴다 */
-const NO_RECORD_COLOR = '#DCE1E8';
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
@@ -59,54 +73,45 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
  * (folders/components/LesionThumb.js)도 같은 원칙(√area% 비례)을 쓴다 — 앱 전체가 병변
  * 넓이를 그리는 방식을 통일해 둔 것이다.
  *
- * ── 구간을 정하는 기준값 ──────────────────────────────────────────
- * ⚠️ AREA_FULL을 한 번 8%까지 낮췄다가(민감도만 보고) 되돌린 적이 있다 — 데모 폴더의 실제 병변
- *    넓이는 보통 6~28% 사이를 오가는데, 상한을 8%로 두면 그 범위 대부분이 이미 상한을 넘겨
- *    "항상 최대 크기"로 고정되고, 슬라이더를 끝까지 움직여도 동그라미가 거의 안 움직이는
- *    것처럼 보였다(회차 대부분이 saturate 구간에 몰려서). 상한은 반드시 **실제로 관찰되는 값의
- *    범위를 덮어야** 그 안에서 변화가 보인다 — 민감도는 상한을 낮추는 대신 MIN_R/MAX_R 폭을
- *    넓혀서 확보한다.
- *   AREA_MIN  0.5%  — recordExam이 기록을 저장할 때 두는 하한(clamp)과 같다 — 그 아래 값 자체가
- *                   없으므로 이 값이 곧 "동그라미가 가장 작아지는 지점"이다.
- *   AREA_FULL 25%  — 이 이상은 최대 크기로 고정한다(saturate). store.js 데모 폴더들의 병변 넓이
- *                   상한이 대략 22~28% 사이라(폴더마다 다른 from/to의 iga로 정해짐), 그 실측
- *                   범위를 거의 다 덮는 값으로 잡았다 — 그래야 슬라이더를 끝에서 끝까지 움직이는
- *                   동안 대부분의 구간에서 동그라미가 실제로 커졌다 작아졌다 한다.
- *   MIN_R 16, MAX_R 68 — 반지름 폭(52px)을 크게 잡아서, 상한을 25%로 넉넉히 잡고도 웬만큼
- *                   민감하게 반응한다 — 예: 15%→13.3%(약 −1.7%p, 한 회차 정도의 전형적인 변화)만
- *                   돼도 반지름이 56.0→53.6으로 준다. 가운데 숫자(존재하는 세부 증상 개수)도
- *                   항상 큼직하게 보여야 하므로 하한(16)도 예전보다 작게 잡지 않았다. 몸 그림
- *                   (Body2DView)의 SVG는 잘라내지 않으므로(그 컴포넌트의 주석 참고) 동그라미가
- *                   몸 윤곽 밖으로, 서로 겹치는 자리까지도 걸칠 수 있다 — 그래도 잘리지 않고
- *                   그대로 그려진다.
+ * ── 무엇을 넣는가 ────────────────────────────────────────────────
+ * **부위 대비 넓이(coveragePct)**다 — 폴더 카드가 "얼굴의 12%"로 보여주는 바로 그 값. 예전에는
+ * 사진 대비 %(lesionAreaPct)를 넣었는데 그건 10cm만 가까이 가도 두 배가 되는 값이라, 같은 병변이
+ * 촬영 거리에 따라 다른 크기로 그려졌다. 지도는 회차를 넘겨 가며 보는 화면이라 그 값을 쓸 수 없다.
  *
- * 예시(면적% → 반지름 px):  0.5%→16   3%→32.6   5%→38.3   7%→42.8   10%→48.4   15%→56.0   20%→62.4   25%↑→68
+ * ── 구간을 정하는 기준값 ──────────────────────────────────────────
+ *   AREA_MIN  0.5%  — 이 값이 곧 "점선 원이 가장 작아지는 지점"이다.
+ *   AREA_FULL 25%   — 이 이상은 최대 크기로 고정한다(saturate).
+ *   MIN_R 24, MAX_R 118 — 반지름 폭(94px)을 크게 잡아 상한이 넉넉해도 민감하게 반응한다.
+ *                   **몸 윤곽을 넘어가도 된다** — Body2DView의 SVG는 잘라내지 않으므로 원이
+ *                   몸 밖으로, 서로 겹치는 자리까지 걸쳐도 그대로 그려진다. 넓이는 이 지도에서
+ *                   유일하게 "크기"로만 말하는 값이라, 작게 그리면 변화가 아예 안 읽힌다 —
+ *                   몸 그림을 가리지 않는 것보다 그쪽이 훨씬 나쁜 거래다.
+ *
+ * ⚠️ 상한 25%는 사진 대비 %를 쓰던 시절 데모 폴더의 관측 범위(6~28%)에서 나온 값이다. 입력이
+ *    부위 대비 %로 바뀌었으므로 **실제 기록이 쌓이면 다시 잡아야 한다** — 상한은 반드시 실제로
+ *    관찰되는 범위를 덮어야 그 안에서 변화가 보인다(한 번 8%로 낮췄다가 회차 대부분이 saturate
+ *    구간에 몰려 동그라미가 안 움직이는 것처럼 보여 되돌린 적이 있다).
+ *
+ * 예시(넓이% → 반지름 px):  0.5%→24   3%→54   5%→64   7%→72   10%→82   15%→96   25%↑→118
  */
 const AREA_MIN = 0.5;
 const AREA_FULL = 25;
-const MARKER_MIN_R = 16;
-const MARKER_MAX_R = 68;
+const MARKER_MIN_R = 24;
+const MARKER_MAX_R = 118;
 
 function areaToRadius(areaPct: number): number {
   const t = clamp01((areaPct - AREA_MIN) / (AREA_FULL - AREA_MIN));
   return MARKER_MIN_R + (MARKER_MAX_R - MARKER_MIN_R) * Math.sqrt(t);
 }
 
-/** 지켜보지 않는(기록 없는) 덩어리의 동그라미 — 크기로도 "잴 값이 없다"를 보여주려 최소 크기로 둔다 */
-const NO_RECORD_RADIUS = MARKER_MIN_R;
-
 /**
- * 존재하는 세부 증상 개수 — 홍반·구진·긁은 상처·태선화 중 0보다 큰(=등급이 매겨진) 것만 센다.
+ * 불투명 원(피부 종합 상태)의 반지름 — **고정이다.**
  *
- * 부위별 증상 카드(ExamResultScreen의 RegionSymptomsCard)와 달리 **크롭 이미지 기준이 아니라
- * 그 촬영의 대표값(가장 나쁜 판정 단위)** 그대로다 — 기록에 저장되는 값 자체가 이미 그 대표값이라
- * (folders/store.js recordExam), 특정 판정 단위 하나만 골라 셀 수도 없고 그럴 필요도 없다. 전신
- * 지도는 "이 부위 전체가 지금 어떤 상태인가"를 보는 화면이라, 그 자리의 기록이 대표하는 값 하나로
- * 충분하다.
+ * 예전에는 이 원 하나가 색으로 상태를, 크기로 넓이를 함께 말했다. 그러면 "색이 진해졌는데
+ * 작아졌다"처럼 서로 다른 축의 변화가 한 도형 안에서 섞여, 어느 쪽이 나빠진 것인지 읽을 수 없다.
+ * 지금은 상태는 색만, 넓이는 점선 원만 맡는다.
  */
-function symptomCountOf(record: any): number {
-  return [record.redness, record.bumps, record.scratch, record.thickening].filter((v) => v > 0).length;
-}
+const IGA_MARKER_R = 28;
 
 /**
  * 색만으로는 미묘한 차이가 읽히지 않아서 글자로도 같이 알려 준다.
@@ -127,6 +132,8 @@ interface TrackedSite {
   label: string;
   parts: BodyPartId[];
   records: any[];
+  /** IGA 등급을 매길 수 있는 자리인지 (아토피피부염 폴더만) — false면 색을 회색으로 둔다 */
+  gradable: boolean;
 }
 
 /** 슬라이더가 가리키는 시점에서 한 자리가 어떤 상태였는지 */
@@ -149,9 +156,6 @@ export default function WholeBodyResultScreen() {
     const out: TrackedSite[] = [];
     for (const folder of folders) {
       if (!folder.records.length) continue;
-      // 이 지도는 IGA(피부 종합 상태) 변화를 비교하는 화면이라, 아토피피부염이 아닌 폴더는 그
-      // 값 자체가 없어(플레이스홀더 0) 끼워 넣으면 늘 "완전 정상"으로 잘못 보인다.
-      if (!folderHasSeverity(folder)) continue;
       const target = folder.targetId ? findTarget(folder.targetId) : undefined;
       if (!target) continue;
       const parts = partsOfSpotId(target.spotId) ?? [target.part];
@@ -160,6 +164,16 @@ export default function WholeBodyResultScreen() {
         label: plainSiteLabel(target.label),
         parts,
         records: folder.records,
+        /*
+          등급(IGA)을 매길 수 있는 자리인지. 4가지 증상·IGA 모델은 아토피 채점 기준으로 학습돼
+          있어서 다른 질환에는 근거가 없고, 그런 촬영의 기록에는 **자리 채우기 0**이 들어 있다.
+
+          예전에는 이런 폴더를 지도에서 통째로 뺐다. 0을 그대로 쓰면 "완전 정상"으로 잘못 보이니
+          맞는 판단이었지만, 대가로 **지켜보는 자리인데 지도에 아예 없는** 상태가 됐다. 지금은
+          올리되 색을 회색으로 둔다 — "여기를 지켜보고 있고, 다만 등급은 매길 수 없다"가
+          아무것도 없는 것보다 정확하다. 넓이(점선 원)는 질환과 무관하게 성립하므로 그대로 그린다.
+        */
+        gradable: folderHasSeverity(folder),
       });
     }
     return out;
@@ -208,36 +222,56 @@ export default function WholeBodyResultScreen() {
   // (상태 vs 넓이)에서 나오므로 둘은 독립적으로 움직인다. 가운데 숫자(존재하는 세부 증상 개수)도
   // 같은 방식으로 평균 내어 반올림한다 — 슬라이더로 회차를 넘겨 호전되면 이 숫자가 줄어든다.
   const groupMarkers = useMemo<Partial<Record<CoarseGroupId, PartMarkerStyle>>>(() => {
-    const acc = new Map<CoarseGroupId, { skinSum: number; areaSum: number; symptomSum: number; n: number }>();
+    const acc = new Map<
+      CoarseGroupId,
+      { skinSum: number; skinN: number; areaSum: number; areaN: number }
+    >();
     trends.forEach((t) => {
-      const skinValue = DISPLAY_SCALE.iga(t.current.iga);
-      // 옛 dump 기록 등 lesionAreaPct가 없는 경우를 대비해 0으로 폴백 — 최소 크기로 그려진다
-      const areaValue = typeof t.current.lesionAreaPct === 'number' ? t.current.lesionAreaPct : 0;
-      const symptomValue = symptomCountOf(t.current);
+      // 등급을 매길 수 없는 자리의 iga는 자리 채우기 0이라, 평균에 넣으면 "완전 정상"으로 끌어올린다
+      const skinValue = t.site.gradable ? DISPLAY_SCALE.iga(t.current.iga) : 0;
+      /*
+        넓이는 **잰 회차에만** 있다. lesionAreaFaceIndex가 null이면 그날은 자격이 안 돼서 빠진
+        것이므로, 0으로 채워 평균에 넣으면 안 된다 — 안 잰 것이 "넓이 0"으로 섞여 들어가 점선
+        원이 실제보다 작게 그려진다. 그래서 넓이는 분모(areaN)를 따로 센다.
+
+        값은 areaTrend와 같은 환산을 쓴다 — "부위의 몇 %"(coveragePct). 폴더 카드가 "얼굴의 12%"로
+        보여주는 그 숫자와 같아야, 두 화면이 같은 것을 다르게 말하지 않는다.
+      */
+      const idx = t.current.lesionAreaFaceIndex;
+      const hasArea = typeof idx === 'number' && idx > 0;
+      const areaValue = hasArea ? coveragePctOf(idx, scaleKindOfRecord(t.current)) : 0;
       const groups = new Set(t.site.parts.map((p) => COARSE_OF_PART[p]));
       groups.forEach((g) => {
-        const cur = acc.get(g);
-        if (cur) {
+        const cur = acc.get(g) ?? { skinSum: 0, skinN: 0, areaSum: 0, areaN: 0 };
+        if (t.site.gradable) {
           cur.skinSum += skinValue;
+          cur.skinN += 1;
+        }
+        if (hasArea) {
           cur.areaSum += areaValue;
-          cur.symptomSum += symptomValue;
-          cur.n += 1;
-        } else acc.set(g, { skinSum: skinValue, areaSum: areaValue, symptomSum: symptomValue, n: 1 });
+          cur.areaN += 1;
+        }
+        acc.set(g, cur);
       });
     });
-    // 지켜보지 않는 덩어리도 "기록 없음" 색·최소 크기로 명시해 둔다 — 동그라미를 아예 안 찍으면
-    // 범례와 어긋나서 "왜 이 부위엔 동그라미가 없지"가 된다. count는 아예 넣지 않는다 —
-    // 잴 값이 없는 부위에 "0"을 적으면 "다 나았다"처럼 보인다.
+    /*
+      기록이 있는 덩어리만 그린다. 예전에는 지켜보지 않는 덩어리에도 "기록 없음" 색의 최소 크기
+      동그라미를 찍었는데, 넷 중 셋이 회색 점인 지도는 **읽을 것이 없는 표시로 그림을 채우는**
+      셈이었다. 아무것도 없는 자리는 비워 두는 편이 "여기엔 기록이 없다"를 더 분명히 말한다.
+    */
     const out: Partial<Record<CoarseGroupId, PartMarkerStyle>> = {};
     COARSE_GROUPS.forEach((group) => {
       const v = acc.get(group);
-      out[group] = v
-        ? {
-            color: skinConditionInfo(v.skinSum / v.n).color,
-            radius: areaToRadius(v.areaSum / v.n),
-            count: Math.round(v.symptomSum / v.n),
-          }
-        : { color: NO_RECORD_COLOR, radius: NO_RECORD_RADIUS };
+      if (!v) return;
+      out[group] = {
+        /*
+          한 덩어리에 등급 있는 자리와 없는 자리가 섞이면 **등급 있는 쪽을 따른다** — 회색은
+          "잴 수 있는 것이 하나도 없다"는 뜻이라야 의미가 있다.
+        */
+        color: v.skinN > 0 ? skinConditionInfo(v.skinSum / v.skinN).color : NO_GRADE_COLOR,
+        radius: IGA_MARKER_R,
+        areaRadius: v.areaN > 0 ? areaToRadius(v.areaSum / v.areaN) : undefined,
+      };
     });
     return out;
   }, [trends]);
@@ -350,20 +384,34 @@ function DaySlider({ max, value, onChange }: { max: number; value: number; onCha
 }
 
 /** 지도 동그라미와 같은 기준(SKIN_SEGMENTS) — 안 좋은 쪽부터 정의돼 있어서 좋은 쪽부터 보이게 뒤집는다 */
+/**
+ * 두 도형이 서로 다른 것을 말하므로 범례도 두 줄이다 — 색은 상태, 점선은 넓이.
+ * "기록 없음" 항목은 뺐다: 이제 기록이 없는 부위에는 아무것도 그리지 않으므로 가리킬 도형이 없다.
+ */
 function Legend() {
-  const items: { color: string; text: string }[] = [
-    ...[...SKIN_SEGMENTS].reverse().map((s) => ({ color: s.color, text: s.ko })),
-    { color: NO_RECORD_COLOR, text: '기록 없음' },
-  ];
   return (
-    <View style={styles.legendRow}>
-      {items.map((it) => (
-        <View key={it.text} style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: it.color }]} />
-          <Text style={styles.legendText}>{it.text}</Text>
+    <>
+      <View style={styles.legendRow}>
+        {[...SKIN_SEGMENTS].reverse().map((seg) => (
+          <View key={seg.ko} style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
+            <Text style={styles.legendText}>{seg.ko}</Text>
+          </View>
+        ))}
+        {/* 아토피가 아닌 질환 — 등급 모델의 근거가 없어 어느 단계도 아니다 */}
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: NO_GRADE_COLOR }]} />
+          <Text style={styles.legendText}>등급 없음</Text>
         </View>
-      ))}
-    </View>
+      </View>
+      <View style={{ height: 6 }} />
+      <View style={styles.legendRow}>
+        <View style={styles.legendItem}>
+          <View style={styles.legendAreaDot} />
+          <Text style={styles.legendText}>점선 = 병변 넓이 (잰 회차에만)</Text>
+        </View>
+      </View>
+    </>
   );
 }
 
@@ -371,16 +419,30 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
   const { site, current, previous, delta } = trend;
   const skinValue = DISPLAY_SCALE.iga(current.iga);
   const skin = skinConditionInfo(skinValue);
-  const tag = previous ? trendLabel(delta) : null;
+  // 등급이 없는 자리에는 변화도 없다 — 0에서 0으로 간 것을 "유지"라고 말하면 안 된다
+  const tag = site.gradable && previous ? trendLabel(delta) : null;
 
   return (
     <View style={[cardDecoration(16), styles.trendRow]}>
-      <View style={[styles.trendSwatch, { backgroundColor: skin.color }]} />
+      <View
+        style={[styles.trendSwatch, { backgroundColor: site.gradable ? skin.color : NO_GRADE_COLOR }]}
+      />
       <View style={{ flex: 1 }}>
         <Text style={styles.trendSite}>{site.label}</Text>
+        {/*
+          등급을 매길 수 없는 자리에는 점수를 적지 않는다. 기록에 들어 있는 0은 자리 채우기라,
+          "피부 종합 상태 100 좋음"으로 적으면 앱이 없는 판정을 지어내는 것이 된다.
+        */}
         <Text style={styles.trendMeta}>
-          {current.date.replace(/-/g, '.')} 기준 · 피부 종합 상태 {Math.round(skinValue)}
-          <Text style={{ color: skin.color }}> {skin.ko}</Text>
+          {current.date.replace(/-/g, '.')} 기준 ·{' '}
+          {site.gradable ? (
+            <>
+              피부 종합 상태 {Math.round(skinValue)}
+              <Text style={{ color: skin.color }}> {skin.ko}</Text>
+            </>
+          ) : (
+            '아토피가 아니라 등급을 매기지 않아요'
+          )}
         </Text>
       </View>
       {tag ? (
@@ -390,7 +452,7 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
         </View>
       ) : (
         <View style={styles.trendTag}>
-          <Text style={styles.trendTagText}>첫 기록</Text>
+          <Text style={styles.trendTagText}>{site.gradable ? '첫 기록' : '등급 없음'}</Text>
         </View>
       )}
     </View>
@@ -427,6 +489,15 @@ const styles = StyleSheet.create({
 
   legendRow: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap' },
   legendItem: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 8 },
+  /** 점선 원 범례 — 지도의 도형과 같은 모양이라야 무엇을 가리키는지 바로 읽힌다 */
+  legendAreaDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: AppColors.sub,
+  },
   legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 5 },
   legendText: { fontSize: 11.5, color: AppColors.sub },
 

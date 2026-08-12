@@ -329,18 +329,16 @@ export const COARSE_LABELS: Record<CoarseGroupId, string> = {
   leg: '다리',
 };
 
-/** 선택 화면에서만 덧붙이는 설명 — 어디까지 이 덩어리인지 알려준다 */
-export const COARSE_HINTS: Record<CoarseGroupId, string | undefined> = {
-  head: '얼굴/목',
-  torso: '가슴/복부/등/허리/엉덩이',
-  arm: undefined,
-  leg: undefined,
-};
-
-/** 선택 화면에 그대로 쓰는 표시용 이름 (예: "머리 (얼굴/목)") */
+/**
+ * 선택 화면에 그대로 쓰는 표시용 이름 — 덩어리 이름 그대로다.
+ *
+ * 예전에는 어디까지 이 덩어리인지 괄호로 덧붙였다("머리 (얼굴/목)", "몸통 (가슴/복부/등/허리/엉덩이)").
+ * 그런데 넷 중 둘만 괄호가 붙어 칩 너비가 제각각이 되고, 특히 몸통은 이름보다 설명이 길어서
+ * 한 줄을 통째로 차지했다. 고르는 사람이 실제로 하는 판단은 "머리냐 몸통이냐 팔이냐 다리냐"
+ * 하나뿐이고, 그 판단에 설명이 필요하지 않다 — 몸 그림이 같은 정보를 이미 보여준다.
+ */
 export function coarseDisplayName(group: CoarseGroupId): string {
-  const hint = COARSE_HINTS[group];
-  return hint ? `${COARSE_LABELS[group]} (${hint})` : COARSE_LABELS[group];
+  return COARSE_LABELS[group];
 }
 
 /** 3D 메시의 부위 태그 → 네 덩어리 */

@@ -6,6 +6,7 @@ import { AppColors } from '../theme';
 import { analyzeLocal, normalSkinResult, unsupportedDiseaseResult, LocalAnalysisResult } from '../ai/analyzeLocal';
 import { classifyDisease, preloadDiseaseModel } from '../ai/diseaseModel';
 import { preloadModels } from '../ai/tfliteService';
+import { endProfile, note, span, spanAsync, startProfile } from '../ai/profile';
 import { GRADE_NAMES_KO, SEVERITY_SUPPORTED_DISEASE } from '../ai/labels';
 import { DUMP_RESULTS, makeDumpDiseases, makeDumpLocalResult } from '../exam/dumpAnalysis';
 import { useRecords } from '../context/RecordsContext';
@@ -42,7 +43,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
   const [stage, setStage] = useState<Stage>('start');
   const [kind, setKind] = useState<ExamKind>('new');
   /** 홈에서 들어왔을 때 시작 화면에 미리 골라 둘 선택지 */
-  const [startPick, setStartPick] = useState<'new' | 'followUp' | 'quick' | null>(null);
+  const [startPick, setStartPick] = useState<'new' | 'followUp' | null>(null);
   const [followUp, setFollowUp] = useState<{ folderId: string; target: MonitorTarget } | null>(null);
   const [capture, setCapture] = useState<ExamCapture | null>(null);
   const [analysis, setAnalysis] = useState<ExamAnalysis | null>(null);
@@ -133,6 +134,16 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     async (cap: ExamCapture) => {
       setCapture(cap);
       setStage('analyzing');
+      /*
+        "계속"을 누른 순간부터 결과창이 뜰 때까지 — 사용자가 로딩 스피너를 보는 두 번째 기다림.
+        기능 이름을 라벨에 박아 둔다: 바로 스캔과 기록하기는 같은 코드를 지나가지만 도는 모델
+        개수가 다르다(바로 스캔은 자가 없어 관심영역 대신 사진 전체를 보고, 이어서 기록하기는
+        질환 분류를 통째로 건너뛴다). 라벨이 없으면 나중에 두 수치를 구분할 수 없다.
+      */
+      const kindLabel =
+        cap.kind === 'quick' ? '피부 바로 스캔' : cap.kind === 'followUp' ? '이어서 기록하기' : '신규 증상 기록하기';
+      startProfile(`분석 (${kindLabel})`);
+      note(cap.session.scale ? `자=${cap.session.scale.kind}(관심영역 분석)` : '자 없음(사진 전체 분석)');
       try {
         // 촬영 후처리가 계산해 둔 조명 보정 게인 — 사진은 그대로 두고 모델 입력에만 적용한다.
         // 기준 세션이거나 조명을 추정하지 못한 촬영에서는 [1,1,1]이라 아무 효과가 없다.
@@ -140,6 +151,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
 
         // 진단명을 직접 넣어 둔 자리이거나 이어서 기록이면 질환 분류 모델은 건너뛴다
         const skipDisease = cap.kind === 'followUp' || !!cap.target.diagnosis?.diagnosed;
+        if (skipDisease) note('질환 분류 건너뜀');
         let diseases: ExamAnalysis['diseases'] = null;
         let predictedDisease: string | undefined;
         // 이 촬영에서 최종적으로 쓰는 진단명 — 새로 분류했으면 그 이름, 건너뛰었으면 이미 알던 이름
@@ -155,7 +167,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
           */
           const predictions = DUMP_RESULTS
             ? makeDumpDiseases(cap.session.id)
-            : await classifyDisease(cap.photoUri, colorGain, cap.session.scale);
+            : await spanAsync('질환 분류 전체', () => classifyDisease(cap.photoUri, colorGain, cap.session.scale));
           diseases = predictions.slice(0, 3);
           // 추정한 이름을 대상에 붙여 둔다 — 폴더 이름과 기록의 질환명이 여기서 나온다
           const top = predictions[0];
@@ -180,23 +192,28 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
 
         // dump 모드에서는 모델을 부르지 않고 지어낸 값으로 결과 화면을 채운다.
         // 세션 id를 씨앗으로 써서 같은 촬영이면 항상 같은 숫자가 나온다.
-        const local = DUMP_RESULTS
-          ? makeDumpLocalResult(cap.session.id)
-          : isNormalSkin
-            ? await normalSkinResult(cap.photoUri)
-            : isAtopic
-              /*
-                촬영 때 찾아 둔 자를 함께 넘긴다. 이게 있으면 분할이 **관심영역만** 보고(사진
-                전체를 512로 누르지 않는다) 병변 넓이를 부위 크기로 나눈 지수까지 나온다 —
-                회차 간 비교가 되는 유일한 넓이다. 없으면 예전과 똑같이 사진 전체를 분석한다.
-              */
-              ? await analyzeLocal(cap.photoUri, { colorGain, scale: cap.session.scale })
-              /*
-                아토피가 아닌 질환 — **부위 표시와 넓이는 그대로 하고 등급만 비운다.**
-                자(scale)도 함께 넘겨야 관심영역을 크롭하고 넓이 지수가 나온다: 넓이 추이는
-                질환 이름과 무관하게 성립하고, 사용자는 앱이 무엇을 보고 판단했는지 볼 수 있어야 한다.
-              */
-              : await unsupportedDiseaseResult(cap.photoUri, colorGain, cap.session.scale);
+        // 세 갈래의 비용이 완전히 다르다: 정상은 모델을 아예 안 돌리고, 아토피는 Stage1+Stage2를
+        // 다 돌리며, 그 밖의 질환은 Stage1만 돌린다. 어느 갈래였는지를 남겨야 수치가 읽힌다.
+        note(isNormalSkin ? '정상 판정 → 세그·중증도 생략' : isAtopic ? 'Stage1+Stage2' : 'Stage1만(등급 생략)');
+        const local = await spanAsync('병변 분석 전체', async () =>
+          DUMP_RESULTS
+            ? makeDumpLocalResult(cap.session.id)
+            : isNormalSkin
+              ? await normalSkinResult(cap.photoUri)
+              : isAtopic
+                /*
+                  촬영 때 찾아 둔 자를 함께 넘긴다. 이게 있으면 분할이 **관심영역만** 보고(사진
+                  전체를 512로 누르지 않는다) 병변 넓이를 부위 크기로 나눈 지수까지 나온다 —
+                  회차 간 비교가 되는 유일한 넓이다. 없으면 예전과 똑같이 사진 전체를 분석한다.
+                */
+                ? await analyzeLocal(cap.photoUri, { colorGain, scale: cap.session.scale })
+                /*
+                  아토피가 아닌 질환 — **부위 표시와 넓이는 그대로 하고 등급만 비운다.**
+                  자(scale)도 함께 넘겨야 관심영역을 크롭하고 넓이 지수가 나온다: 넓이 추이는
+                  질환 이름과 무관하게 성립하고, 사용자는 앱이 무엇을 보고 판단했는지 볼 수 있어야 한다.
+                */
+                : await unsupportedDiseaseResult(cap.photoUri, colorGain, cap.session.scale),
+        );
 
         // 경과 이어서 기록은 이미 이어붙일 폴더가 정해져 있으므로 바로 오늘 기록으로 남긴다
         if (cap.kind === 'followUp' && cap.folderId) {
@@ -216,11 +233,22 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         // 분석이 끝나는 순간 결과를 남긴다 — 예전에는 결과 화면의 "결과 저장하고 기록 보기"를
         // 눌러야 저장됐는데, 그 버튼을 못 누르고 나가면 방금 찍은 것이 통째로 사라졌다.
         // 저장은 앱이 알아서 하고, 버튼은 어디로 갈지만 고르게 한다.
-        if (cap.kind !== 'quick') saveExamRecord(cap, local, predictedDisease);
+        if (cap.kind !== 'quick') span('기록 저장', () => saveExamRecord(cap, local, predictedDisease));
 
         setAnalysis({ local, diseases, severitySupported });
         setStage('result');
+        /*
+          여기서 닫는 값은 **결과 화면이 그려지기 직전**까지다. setStage 뒤의 렌더(오버레이
+          data URI를 <Image>가 디코딩하는 비용 포함)는 React가 이 함수 밖에서 하므로 잡히지 않는다 —
+          "기타(미계측)"에도 들어오지 않는 시간이라, 체감과 수치가 어긋나면 그 자리를 의심할 것.
+        */
+        endProfile({
+          병변수: local.regions.length,
+          마스크면적: `${local.maskAreaPct}%`,
+          질환: predictedDisease ?? diseaseName ?? '-',
+        });
       } catch (e: any) {
+        endProfile({ 실패: e?.message ?? 'unknown' });
         setError(e?.message ?? '알 수 없는 오류가 발생했어요');
         setStage('error');
       }
@@ -280,11 +308,6 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
         initialPick={startPick}
         onNewExam={() => {
           setKind('new');
-          setFollowUp(null);
-          setStage('flow');
-        }}
-        onQuickScan={() => {
-          setKind('quick');
           setFollowUp(null);
           setStage('flow');
         }}

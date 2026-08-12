@@ -28,6 +28,18 @@ import PhotoZoomModal from '../components/PhotoZoomModal';
 const GRAPH_ROW_H = 340; // 날짜 칸 줄 + 그래프가 함께 차지하는 높이
 const GRAPH_H_DEFAULT = GRAPH_ROW_H - 60;
 const PHOTO_SIZE = 110;
+/**
+ * 폴더 화면에 병변 넓이 카드를 보여줄지.
+ *
+ * false로 두면 **화면에서만 사라진다** — 넓이 측정과 기록 저장, 전신 지도의 점선 원은 그대로
+ * 동작한다. 지금 끈 이유는 값이 틀려서가 아니라 **아직 흔들리기 때문**이다: 자·게이트·문턱의
+ * 임계값이 전부 실기기 캘리브레이션 전이라 회차마다 값이 튀는데, 이 카드는 "얼굴의 12%,
+ * 첫 촬영 대비 −18%"처럼 숫자를 정면으로 말해서 사용자가 그 흔들림을 병변의 변화로 읽는다.
+ *
+ * 그렇다고 계산을 멈추면 안 된다 — 임계값을 잡으려면 실제 기록이 쌓여야 하고, 그건 계속 재야만
+ * 생긴다. 그래서 "재되 말하지 않는" 상태로 둔다.
+ */
+const SHOW_AREA_CARD = false;
 const SYMPTOM_ORDER = ['redness', 'bumps', 'scratch', 'thickening'];
 // 부위별 증상 칩을 2×2로 고정 배치하기 위한 줄 나누기 — [피부 붉기, 오돌토돌함] / [긁은 상처,
 // 피부 두꺼워짐]. flexWrap에 맡기면 칩 너비·화면 폭에 따라 3개+1개처럼 들쭉날쭉하게 잘려서,
@@ -70,6 +82,12 @@ const LIGHT_PILL_BGS = [mc.sevCaution, mc.warn];
  */
 function SummaryBox({ label, value, pillText, pillColor, icon, circleColor, iconSize = 22 }) {
   const pillTextColor = LIGHT_PILL_BGS.includes(pillColor) ? mc.ink : '#fff';
+  /*
+    값 자리에 점수 대신 글자(질환명)가 올 수 있다 — 등급을 매길 수 없는 질환에서 그렇다.
+    22px 굵은 글씨는 두 자리 숫자에 맞춘 크기라 "아토피피부염" 같은 이름이 들어오면 칸을
+    넘긴다. 숫자가 아니면 크기를 줄이고 한 줄로 눌러 담는다.
+  */
+  const isText = typeof value === 'string' && Number.isNaN(Number(value));
   return (
     <View style={[monitoringCard(14), styles.summaryBox]}>
       <View style={[styles.summaryIconCircle, { backgroundColor: circleColor }]}>
@@ -77,11 +95,20 @@ function SummaryBox({ label, value, pillText, pillColor, icon, circleColor, icon
       </View>
       <Text style={styles.summaryLabel} numberOfLines={1}>{label}</Text>
       <View style={styles.summaryValueRow}>
-        <Text style={styles.summaryValue}>{value}</Text>
+        <Text
+          style={[styles.summaryValue, isText && styles.summaryValueText]}
+          numberOfLines={1}
+          adjustsFontSizeToFit={isText}
+          minimumFontScale={0.7}
+        >
+          {value}
+        </Text>
       </View>
-      <View style={[styles.summaryPill, { backgroundColor: pillColor }]}>
-        <Text style={[styles.summaryPillText, { color: pillTextColor }]} numberOfLines={1}>{pillText}</Text>
-      </View>
+      {pillText != null && (
+        <View style={[styles.summaryPill, { backgroundColor: pillColor }]}>
+          <Text style={[styles.summaryPillText, { color: pillTextColor }]} numberOfLines={1}>{pillText}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -271,6 +298,12 @@ export default function MonitoringFolderScreen({ navigation, route }) {
   // 상태"·"4가지 증상"을 요약칸·그래프·상세 카드 어디에도 보여주지 않는다.
   const hasSeverity = folderHasSeverity(folder);
   const chartSeries = hasSeverity ? ['skin', 'itch', 'sleep'] : ['itch', 'sleep'];
+  /*
+    이 회차의 병변 오버레이. 실제 촬영은 분석이 합성한 것을 저장하고(recordExam의 maskUri),
+    데모 기록은 미리 구운 에셋을 쓴다(tools/bake_dump_overlays.py) — 둘 다 진짜 세그 결과다.
+    없으면 null이고, 그때 화면은 원본 사진을 그대로 보여준다.
+  */
+  const overlay = selectedRecord.overlay;
   const skinDisplay = DISPLAY_SCALE.iga(selectedRecord.iga);
   const itchDisplay = DISPLAY_SCALE.itch(selectedRecord.itchVas);
   // 수면 점수는 스마트워치(Samsung Health) 연동 값이라, 미연동이면 "미기재"로 비워 둔다
@@ -325,17 +358,20 @@ export default function MonitoringFolderScreen({ navigation, route }) {
             세 지표 모두 DISPLAY_SCALE로 0~100 표시값으로 맞춰서 같은 축·같은 기준으로 비교할 수 있다.
             처음 기록 대비 증감은 여기 없다 — 아래 루틴 이행률 카드의 오른쪽 열에서 보여준다. */}
         <View style={styles.summaryRow}>
-          {hasSeverity && (
-            <SummaryBox
-              label="피부 종합 상태"
-              value={Math.round(skinDisplay)}
-              pillText={skin.ko}
-              pillColor={skin.color}
-              icon={SKIN_ICON}
-              circleColor={CHART_SERIES.skin.color}
-              iconSize={32}
-            />
-          )}
+          {/*
+            첫 칸은 **질환에 관계없이 질환명 하나**만 적는다 (기록 탭의 카드와 같은 규칙).
+
+            등급을 매길 수 없는 질환에 "등급 없음" 배지를 달아 봤지만, 세 칸 중 한 칸만 다른
+            말을 하니 오히려 눈이 그리로 끌렸다 — 없는 것을 굳이 가리키는 셈이었다. 아토피에도
+            같은 규칙을 적용해 세 칸의 생김새를 맞춘다. pillText를 넘기지 않으면 배지가 빠진다.
+          */}
+          <SummaryBox
+            label="피부 종합 상태"
+            value={folder.disease || '진단 전'}
+            icon={SKIN_ICON}
+            circleColor={CHART_SERIES.skin.color}
+            iconSize={32}
+          />
           <SummaryBox
             label="가려움 안정도"
             value={itchDisplay}
@@ -459,13 +495,19 @@ export default function MonitoringFolderScreen({ navigation, route }) {
         </View>
 
         {/*
-          병변 넓이 추이 — 넓이를 잴 수 있는 자리(지금은 얼굴)의 폴더에서만 나온다.
+          병변 넓이 추이 — 넓이를 잴 수 있는 자리(얼굴·몸통)의 폴더에서만 나온다.
 
           결합 그래프(TrendChart)에 못 올리는 값이라 카드를 따로 둔다: 넓이는 상한이 없고, 그날 한
           장에서 읽는 값이 아니라 첫 촬영과 견줘야만 의미가 생긴다. 잴 수 없는 자리에서는 영영
           채워지지 않을 카드를 띄우지 않는다.
+
+          ⚠️ SHOW_AREA_CARD로 **화면에서만** 잠시 내려 두었다. 임계값들이 아직 캘리브레이션 전이라
+             숫자가 흔들리는데, 여기 카드는 "얼굴의 12%"처럼 값을 정면으로 말하기 때문에 사용자가
+             그 흔들림을 병변의 변화로 읽는다. 측정·저장·전신 지도의 점선 원은 그대로 돈다 —
+             데이터가 쌓여야 임계값을 잡을 수 있고, 그러려면 계산은 계속돼야 한다.
+             다시 켤 때는 이 상수만 true로 되돌리면 된다.
         */}
-        {areaTrackable && (
+        {SHOW_AREA_CARD && areaTrackable && (
           <View onLayout={(e) => setAreaCardW(e.nativeEvent.layout.width)}>
             {/* 위 날짜 띠에서 고른 회차의 넓이를 보여준다 — 다른 카드들과 같은 회차를 가리켜야 한다 */}
             <AreaTrendCard records={folder.records} width={areaCardW} selectedId={selectedRecord.id} />
@@ -480,11 +522,11 @@ export default function MonitoringFolderScreen({ navigation, route }) {
           </View>
           <View style={styles.photoRow}>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(0)}>
-              <LesionThumb photo={selectedRecord.photo} areaPct={selectedRecord.lesionAreaPct} seed={selectedRecord.seed} mode="photo" size={PHOTO_SIZE} />
+              <LesionThumb photo={selectedRecord.photo} mode="photo" size={PHOTO_SIZE} />
               <Text style={styles.photoCaption}>촬영 이미지 (원본)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.photoCol} activeOpacity={0.85} onPress={() => openZoom(1)}>
-              <LesionThumb photo={selectedRecord.photo} overlay={selectedRecord.overlay} areaPct={selectedRecord.lesionAreaPct} seed={selectedRecord.seed} mode="overlay" size={PHOTO_SIZE} />
+              <LesionThumb photo={selectedRecord.photo} overlay={overlay} mode="overlay" size={PHOTO_SIZE} />
               <Text style={styles.photoCaption}>증상 부위 표시</Text>
             </TouchableOpacity>
           </View>
@@ -529,7 +571,14 @@ export default function MonitoringFolderScreen({ navigation, route }) {
         )}
       </ScrollView>
 
-      <PhotoZoomModal visible={!!zoomRecord} record={zoomRecord} initialPage={zoomPage} onClose={() => setZoomRecord(null)} />
+      <PhotoZoomModal
+        visible={!!zoomRecord}
+        record={zoomRecord}
+        /* 확대는 지금 고른 회차에서만 열리므로 그 회차의 오버레이를 그대로 넘긴다 */
+        overlay={overlay}
+        initialPage={zoomPage}
+        onClose={() => setZoomRecord(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -555,6 +604,8 @@ const styles = StyleSheet.create({
   summaryLabel: { fontSize: 13.5, color: mc.sub, fontWeight: '700' },
   summaryValueRow: { flexDirection: 'row', alignItems: 'flex-end' },
   summaryValue: { fontSize: 22, fontWeight: '800', color: mc.ink },
+  /** 값 자리에 질환명이 올 때 — 숫자용 크기 그대로 두면 칸을 넘긴다 */
+  summaryValueText: { fontSize: 15 },
   summaryPill: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 3, maxWidth: '100%' },
   summaryPillText: { fontSize: 10.5, fontWeight: '800' },
 

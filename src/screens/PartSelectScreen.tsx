@@ -46,9 +46,9 @@ export default function PartSelectScreen({
         />
       </View>
 
-      {/* 정면 그림만으로는 짚기 어려운 부위(등·엉덩이 등)를 위해 같은 선택지를 칩으로도 둔다.
-          "머리 몸통 / 팔 다리" 2줄로 고정되도록 두 줄로 나눠 배치한다 — flexWrap에 맡기면
-          화면 너비에 따라 3+1로 잘려서 넷째 칩이 혼자 남는다. */}
+      {/* 정면 그림만으로는 짚기 어려운 부위(등·엉덩이 등)를 위해 같은 선택지를 버튼으로도 둔다.
+          2행 2열 격자로 고정한다 — flexWrap에 맡기면 화면 너비에 따라 3+1로 잘려 넷째가 혼자
+          남고, 칸 너비도 글자 수에 따라 들쭉날쭉해진다. 넷은 서로 대등한 선택지라 같은 크기여야 한다. */}
       <View style={styles.chipGrid}>
         {[COARSE_GROUPS.slice(0, 2), COARSE_GROUPS.slice(2)].map((row, i) => (
           <View key={i} style={styles.chipRow}>
@@ -98,25 +98,27 @@ const styles = StyleSheet.create({
   viewer: { flex: 1, minHeight: 280 },
 
   chipGrid: {
-    gap: 8,
+    gap: 10,
     paddingHorizontal: 20,
     paddingTop: 8,
   },
   chipRow: {
     flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
+    gap: 10,
   },
+  /** flex: 1 — 한 줄의 두 칸이 항상 화면을 반씩 나눠 갖는다 (글자 수와 무관하게 같은 크기) */
   chip: {
-    borderRadius: 999,
+    flex: 1,
+    borderRadius: 14,
     borderWidth: 1.5,
     borderColor: '#E7E9EC',
     backgroundColor: '#F7F8FA',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chipSelected: { borderColor: AppColors.greenTop, backgroundColor: AppColors.greenTop },
-  chipText: { fontSize: 13, fontWeight: '700', color: AppColors.ink },
+  chipText: { fontSize: 15, fontWeight: '700', color: AppColors.ink },
   chipTextSelected: { color: '#16320A' },
 
   footer: { paddingHorizontal: 24, paddingBottom: 24, paddingTop: 12 },

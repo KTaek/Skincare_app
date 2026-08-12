@@ -71,4 +71,24 @@ export const DEMO_TARGETS: MonitorTarget[] = [
     createdAt: new Date(),
     sessionCount: 0,
   },
+  /*
+    ⚠️ 새 대상은 **반드시 배열 끝에** 붙일 것 — folders/store.js가 DEMO_TARGETS[0..3]을 인덱스로
+    참조한다. 가운데에 끼워 넣으면 프리셋 폴더가 조용히 다른 대상을 가리키게 된다.
+  */
+  {
+    /*
+      몸통 아토피 — 넓이 측정이 켜진 두 부위(얼굴·몸통) 중 몸통 쪽 예시다. 전신 지도에 네 덩어리
+      중 세 곳이 서로 다른 색으로 뜨게 하는 역할도 겸한다(아토피 폴더만 지도에 오르는데, 예전에는
+      머리·다리 둘뿐이라 색이 두 가지밖에 안 나왔다).
+    */
+    id: 'tgt_demo_torso',
+    modelId: 'adultMale',
+    spotId: 'demo:torso',
+    part: 'chest',
+    facing: 'back',
+    label: '몸통',
+    diagnosis: { diagnosed: true, disease: '아토피피부염', source: 'self' },
+    createdAt: new Date(),
+    sessionCount: 0,
+  },
 ];

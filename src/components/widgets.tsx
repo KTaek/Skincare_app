@@ -3,6 +3,7 @@ import { Text, View, Pressable, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors } from '../theme';
 import { CareItem, cycleLabel, sevOf } from '../models';
+import { useProfile } from '../context/ProfileContext';
 
 /** "루틴 >" 처럼 제목 + 원형 화살표 버튼 */
 export function SectionHeader({ title, onMore }: { title: string; onMore?: () => void }) {
@@ -31,6 +32,8 @@ export function RoutineRowContent({
   onToggle?: () => void;
   onDelete?: () => void;
 }) {
+  // 알림 아이콘은 앱 전체 설정을 따른다 (아래 주석 참고)
+  const { pushEnabled } = useProfile();
   const isProduct = item.kind === 'product';
   const showCycle = isProduct && (item.cycleDays ?? 1) > 1;
   return (
@@ -68,7 +71,13 @@ export function RoutineRowContent({
           <Text style={styles.cyclePillText}>{cycleLabel(item.cycleDays ?? 1)}</Text>
         </View>
       )}
-      {item.push && (
+      {/*
+        알림 표시는 이제 **앱 전체 설정**(내 정보 → 알림)을 따른다. 예전에는 항목마다 켜고 끌 수
+        있어서 줄마다 아이콘이 있거나 없었는데, 사용자가 실제로 내리는 결정은 "알림을 받을까"
+        하나뿐이라 그 선택을 등록 흐름에서 매번 묻고 있었다. 꺼져 있으면 아이콘도 사라진다 —
+        어느 줄에도 알림이 안 온다는 사실이 목록에서 바로 보여야 한다.
+      */}
+      {pushEnabled && (
         <MaterialIcons name="notifications-active" size={14} color="#C0C4CB" style={{ marginRight: 6 }} />
       )}
       {/* 시각을 정해두지 않았으면 시각 대신 "1회/2회"로 하루 몇 번째 실행인지만 보여준다 —

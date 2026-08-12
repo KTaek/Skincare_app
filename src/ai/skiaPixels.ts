@@ -1,4 +1,5 @@
 import { Skia, ColorType, AlphaType, type SkImage, type SkRect } from '@shopify/react-native-skia';
+import { span, spanAsync } from './profile';
 
 /**
  * uri의 이미지를 열어 fn에 넘기고, 끝나면 반드시 해제한다.
@@ -12,8 +13,12 @@ import { Skia, ColorType, AlphaType, type SkImage, type SkRect } from '@shopify/
  * 호출부마다 해제 순서를 지켜야 하는데, 그건 언젠가 반드시 빠뜨린다.
  */
 export async function withSkImage<T>(uri: string, fn: (image: SkImage) => T | Promise<T>): Promise<T> {
-  const data = await Skia.Data.fromURI(uri);
-  const image = Skia.Image.MakeImageFromEncoded(data);
+  // 파일 읽기 + JPEG 디코딩. 분석 한 번에 두세 번 도는 자리라 따로 잰다
+  // (질환 분류·세그가 각자 이미지를 연다 — 계측이 이 중복을 드러낸다).
+  const { data, image } = await spanAsync('디코딩(파일읽기+JPEG)', async () => {
+    const d = await Skia.Data.fromURI(uri);
+    return { data: d, image: Skia.Image.MakeImageFromEncoded(d) };
+  });
   if (!image) {
     data.dispose();
     throw new Error('이미지를 디코딩하지 못했어요');
@@ -179,18 +184,25 @@ export function extractNormalizedRGB(
   const gG = colorGain?.[1] ?? 1;
   const gB = colorGain?.[2] ?? 1;
 
-  return withOffscreen(image, src, outSize, outSize, (pixels) => {
-    const out = new Float32Array(outSize * outSize * 3);
-    let o = 0;
-    for (let i = 0; i < pixels.length; i += 4) {
-      // 게인은 0~1 스케일에서 곱하고 1로 잘라낸다 — 보정이 범위를 넘어서면 학습 때 본 적 없는
-      // 값이 되므로, 넘치는 만큼은 포기하는 편이 낫다
-      out[o++] = (Math.min(1, (pixels[i] / 255) * gR) - mean[0]) / std[0];
-      out[o++] = (Math.min(1, (pixels[i + 1] / 255) * gG) - mean[1]) / std[1];
-      out[o++] = (Math.min(1, (pixels[i + 2] / 255) * gB) - mean[2]) / std[2];
-    }
-    return out;
-  });
+  // 전처리는 두 부분이다: Skia가 GPU/CPU로 잘라 리사이즈하는 부분(withOffscreen)과,
+  // 그 픽셀을 JS 루프로 정규화하는 부분. 후자는 outSize²번 도는 순수 JS라 Hermes에서 무겁고,
+  // 전자와 성격이 완전히 달라서(네이티브 vs 인터프리터) 갈라 재야 어디를 고칠지가 보인다.
+  return span(`전처리 ${outSize}px`, () =>
+    withOffscreen(image, src, outSize, outSize, (pixels) =>
+      span('정규화 루프(JS)', () => {
+        const out = new Float32Array(outSize * outSize * 3);
+        let o = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          // 게인은 0~1 스케일에서 곱하고 1로 잘라낸다 — 보정이 범위를 넘어서면 학습 때 본 적 없는
+          // 값이 되므로, 넘치는 만큼은 포기하는 편이 낫다
+          out[o++] = (Math.min(1, (pixels[i] / 255) * gR) - mean[0]) / std[0];
+          out[o++] = (Math.min(1, (pixels[i + 1] / 255) * gG) - mean[1]) / std[1];
+          out[o++] = (Math.min(1, (pixels[i + 2] / 255) * gB) - mean[2]) / std[2];
+        }
+        return out;
+      }),
+    ),
+  );
 }
 
 /**

@@ -10,8 +10,10 @@ import type { SkImage } from '@shopify/react-native-skia';
 import { withSkImage } from '../ai/skiaPixels';
 import { normalizeOrientation } from '../ai/imageOrientation';
 import { humanError } from '../ai/errorText';
+import { endProfile, note, span, spanAsync, startProfile } from '../ai/profile';
 import { detectScaleFrame, isScaleAvailable, preloadScaleModel } from '../ai/scaleDetect';
-import { roiOf, type ScaleFrame, type ScaleKind } from '../ai/scaleFrame';
+import { roiOf, type ScaleFrame, type ScaleFraming, type ScaleKind } from '../ai/scaleFrame';
+import { buildScaleGhost, type ScaleGhost } from '../ai/scaleGhost';
 import { scaleKindOf } from '../monitoring/bodyParts';
 import ScaleGuideOverlay from '../components/ScaleGuideOverlay';
 import {
@@ -175,14 +177,18 @@ async function analyzeFrame(
   kind: ScaleKind | null,
   baseline?: Baseline,
   prevSignature?: Float32Array | null,
+  /** 화면에 깔린 지난 사진의 구도 — 있으면 정렬 목표가 표준 도형이 아니라 그 사진이 된다 */
+  ghostFraming?: ScaleFraming,
 ): Promise<{ evaluation: FrameEvaluation; scale: ScaleFrame | null; width: number; height: number }> {
   const width = image.width();
   const height = image.height();
 
-  const scale = kind ? await detectScaleFrame(image, kind) : null;
+  // 자 검출은 모델 추론(얼굴 128px 또는 몸통 224+256px)이고, 품질 측정은 픽셀 통계다 —
+  // 성격이 달라 갈라 잰다. 넓이를 재지 않는 자리(바로 스캔)에서는 앞쪽이 통째로 없다.
+  const scale = kind ? await spanAsync(`자 검출(${kind})`, () => detectScaleFrame(image, kind)) : null;
   const roi = scale ? roiOf(scale, width, height) : undefined;
 
-  const metrics = measureImageQuality(image, { roi });
+  const metrics = span('품질 측정(픽셀 통계)', () => measureImageQuality(image, { roi }));
   const evaluation = evaluateFrame(
     metrics,
     baseline,
@@ -194,9 +200,11 @@ async function analyzeFrame(
           imageWidth: width,
           imageHeight: height,
           /*
-            이 앱은 프리뷰에 지난 사진을 깔지 않는다(고스트를 걷어낸 이유는 아래 화면 주석 참고).
-            그래서 구도 목표는 항상 표준 가이드 도형이고, 자세만 기준 세션과 견준다.
+            고스트가 깔려 있으면 **그 사진의 구도가 목표**다. 화면에 지난 사진을 깔아 두고 맞추라고
+            하면서 게이트는 표준 도형을 재면, 사용자가 눈으로 맞춘 바로 그 순간에 판정이 실패한다.
+            고스트가 없으면(첫 촬영·못 읽은 경우) 예전처럼 표준 도형이 목표다.
           */
+          framing: ghostFraming,
           reference: baseline?.scale,
         }
       : undefined,
@@ -276,6 +284,7 @@ export default function MonitorCaptureScreen({
   target,
   source: initialSource,
   measureArea = true,
+  ghostUri,
   onCancel,
   onComplete,
 }: {
@@ -289,6 +298,14 @@ export default function MonitorCaptureScreen({
    * 견줄 회차가 영영 없는데, 임시 대상의 부위는 다른 자리로 잡혀 있다.
    */
   measureArea?: boolean;
+  /**
+   * 프리뷰에 반투명하게 깔 지난 사진 — **이어서 기록할 때 그 폴더의 첫 사진**이다.
+   *
+   * 첫 사진을 쓰는 것이 중요하다. 매번 직전 사진을 목표로 삼으면 회차마다 허용 오차만큼 밀린
+   * 구도가 다음 목표가 되어 서서히 흘러간다(drift). 첫 사진 하나로 고정하면 모든 회차가 같은
+   * 자리로 수렴한다.
+   */
+  ghostUri?: string | null;
   onCancel: () => void;
   /** 후처리까지 끝난 사진을 상위 흐름(분석·기록 저장)으로 넘긴다 */
   onComplete: (processedUri: string, session: MonitorSession) => void;
@@ -335,6 +352,19 @@ export default function MonitorCaptureScreen({
   const [measureError, setMeasureError] = useState<string | null>(null);
   /** 음성 안내 — 조용한 곳에서 찍을 때를 위해 끌 수 있다 */
   const [soundOn, setSoundOn] = useState(true);
+  /**
+   * 프리뷰에 깔린 지난 사진과 그 구도. 자를 읽지 못하면 null이고, 그때는 표준 가이드로 돌아간다.
+   *
+   * 구도를 못 읽은 사진을 그림만 깔아 두면 **사용자는 눈대중으로 맞추는데 게이트는 다른 자리를
+   * 잰다.** 그래서 그림과 목표는 언제나 함께 오거나 함께 없다.
+   */
+  const [ghost, setGhost] = useState<ScaleGhost | null>(null);
+  /**
+   * 고스트를 화면에 겹칠지. **끌 수 있어야 한다** — 이 앱이 예전에 고스트를 통째로 걷어낸 이유가
+   * "반투명하게 깔린 지난 사진이 지금 피부와 섞여 보여서 무엇을 찍는지 알아보기 어렵다"였다.
+   * 옅게 깔고 끌 수 있게 두면 그 문제는 사용자가 그 자리에서 해결할 수 있다.
+   */
+  const [ghostOn, setGhostOn] = useState(true);
 
   /**
    * 판정 결과 안내는 화면 대신 소리로 나간다. 매 틱마다 부르지만 같은 말을 반복하지 않도록
@@ -375,6 +405,25 @@ export default function MonitorCaptureScreen({
     DUMP_RESULTS || scaleBroken || !measureArea ? null : scaleKindOf(target.part);
   /** 마지막 판정 프레임의 크기 — 화면 가이드를 프레임 좌표와 맞추는 데 쓴다 */
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+
+  /*
+    이어서 기록할 때 넘어온 첫 사진에서 구도를 읽어 둔다 — 그림을 깔고 정렬 목표로도 쓴다.
+    넓이를 재는 자리(얼굴·몸통)에서만 의미가 있다: 자가 없으면 구도를 잴 방법이 없고,
+    맞출 목표 없이 사진만 깔면 화면과 판정이 서로 다른 곳을 가리키게 된다.
+  */
+  useEffect(() => {
+    if (!ghostUri || !scaleKind) {
+      setGhost(null);
+      return;
+    }
+    let alive = true;
+    buildScaleGhost(ghostUri, scaleKind).then((g) => {
+      if (alive) setGhost(g);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [ghostUri, scaleKind]);
 
   // 넓이를 재는 자리에 들어오면 검출 모델을 미리 올려 둔다 — 첫 틱이 모델 로딩을 기다리지 않도록.
   // 못 올리면 그 자리에서 자 측정을 끈다 (실패를 판정 루프까지 끌고 가지 않는다).
@@ -460,6 +509,8 @@ export default function MonitorCaptureScreen({
       );
       setSession(created);
       setPhase('review');
+      // 확인 화면이 뜨는 지점 = 첫 번째 기다림의 끝. 다음 기다림(분석)은 "계속"을 누른 뒤다.
+      endProfile({ 자: chosen.scale ? scaleKind : '없음', 경로: capturePath, 신뢰도: confidence.score });
     },
     [addSession, baseline, scaleKind, facing, target.id],
   );
@@ -475,14 +526,23 @@ export default function MonitorCaptureScreen({
       setError(null);
       setMeasureError(null);
       setPhase('processing');
+      /*
+        사진 한 장이 파이프라인에 들어오는 지점. 여기부터 확인 화면이 뜰 때까지가 첫 번째 기다림이고,
+        그 뒤 "계속"을 누르면 두 번째 기다림(분석)이 시작된다 — 사이에 사람이 버튼을 누르는 시간이
+        끼므로 하나의 총합으로 재면 안 되고, 계측도 둘로 갈라 둔다.
+      */
+      startProfile(`촬영 후처리 (${src === 'album' ? '앨범' : '카메라'})`);
+      note(scaleKind ? `자=${scaleKind}` : '자 없음(넓이 미측정)');
       // 방향을 먼저 바로잡는다 — 이 uri가 곧 기록 사진이자 분석 입력이다
-      const uri = await normalizeOrientation(rawUri);
+      const uri = await spanAsync('EXIF 방향 보정(재인코딩)', () => normalizeOrientation(rawUri));
       let evaluation: FrameEvaluation | null = null;
       let scale: ScaleFrame | null = null;
       if (!DUMP_RESULTS) {
         try {
           // 자를 함께 찾는다 — 이 값이 있어야 분석이 관심영역만 보고 넓이를 정규화할 수 있다
-          const measured = await withSkImage(uri, async (img) => analyzeFrame(img, scaleKind, baseline));
+          const measured = await spanAsync('품질 판정 + 자 검출', () =>
+            withSkImage(uri, async (img) => analyzeFrame(img, scaleKind, baseline, null, ghost?.framing)),
+          );
           evaluation = measured.evaluation;
           scale = measured.scale;
         } catch (e: any) {
@@ -494,7 +554,7 @@ export default function MonitorCaptureScreen({
       }
       finalize({ uri, evaluation, scale }, src === 'album' ? 'album' : 'manual');
     },
-    [baseline, scaleKind, finalize],
+    [baseline, scaleKind, finalize, ghost],
   );
 
   const shootNow = useCallback(async () => {
@@ -588,7 +648,9 @@ export default function MonitorCaptureScreen({
           검출이 하나 붙는데, 걷어낸 세그와 비교하면 입력이 16분의 1이라 틱 주기에 부담이 없다.
         */
         const prev = prevSig.current;
-        const measured = await withSkImage(photo.uri, (img) => analyzeFrame(img, scaleKind, baseline, prev));
+        const measured = await withSkImage(photo.uri, (img) =>
+          analyzeFrame(img, scaleKind, baseline, prev, ghost?.framing),
+        );
         const { evaluation } = measured;
         prevSig.current = evaluation.metrics.signature;
         if (cancelled.current) return;
@@ -727,7 +789,9 @@ export default function MonitorCaptureScreen({
         let areaEval: FrameEvaluation | undefined;
         if (scaleKind) {
           try {
-            const aligned = await withSkImage(uri, (img) => analyzeFrame(img, scaleKind, baseline));
+            const aligned = await withSkImage(uri, (img) =>
+              analyzeFrame(img, scaleKind, baseline, null, ghost?.framing),
+            );
             scale = aligned.scale;
             areaEval = aligned.evaluation;
           } catch (e: any) {
@@ -762,7 +826,7 @@ export default function MonitorCaptureScreen({
       cancelled.current = true;
       clearInterval(id);
     };
-  }, [mode, phase, permission?.granted, cameraReady, facing, baseline, scaleKind, finalize]);
+  }, [mode, phase, permission?.granted, cameraReady, facing, baseline, scaleKind, finalize, ghost]);
 
   /** 확인 화면에서 다시 찍기 — 앨범으로 들어왔더라도 여기서는 카메라로 갈아탄다 */
   const retake = () => {
@@ -883,7 +947,31 @@ export default function MonitorCaptureScreen({
           지난 사진을 반투명하게 깔던 고스트는 이 앱에서 걷어냈다(위 화면 주석). 그래서 목표는
           항상 이 표준 도형이고, 그만큼 정렬 게이트도 첫 사진의 구도가 아니라 표준 구도를 잰다.
         */}
-        {scaleKind && (
+        {/*
+          지난 사진을 그대로 반투명하게 깐다. 잘라내거나 윤곽선을 뽑지 않는다 — 맞춰야 할 대상이
+          지난 사진 그 자체이고, 화면에 보이는 그림과 게이트가 재는 대상이 같아야 한다
+          (정렬 목표도 이 사진의 구도다 — 위 analyzeFrame의 ghostFraming).
+
+          전면 카메라는 프리뷰가 좌우로 뒤집혀 보이므로 고스트도 같이 뒤집는다. 안 그러면
+          거울에 비친 몸과 뒤집히지 않은 지난 사진을 맞추라고 요구하게 된다.
+        */}
+        {ghost && ghostOn && (
+          <Image
+            source={{ uri: ghost.uri }}
+            style={[
+              StyleSheet.absoluteFill,
+              styles.ghost,
+              facing === 'front' && { transform: [{ scaleX: -1 }] },
+            ]}
+            resizeMode="cover"
+          />
+        )}
+
+        {/*
+          가이드 도형은 고스트가 없을 때만 그린다. 둘을 함께 두면 맞출 목표가 둘이 되는데,
+          정작 판정이 겨냥하는 것은 하나뿐이라 사용자는 반드시 틀린 쪽을 맞추게 된다.
+        */}
+        {scaleKind && !(ghost && ghostOn) && (
           <ScaleGuideOverlay
             kind={scaleKind}
             imageWidth={frameSize.w}
@@ -905,11 +993,13 @@ export default function MonitorCaptureScreen({
         <Text style={[styles.hint, areaHeld && styles.hintHeld]}>
           {areaHeld
             ? `${scaleKind === 'face' ? '얼굴' : '양 어깨'}가 더 담겨야 넓이까지 기록돼요 — 조금 더 멀리서 잡거나, 아래 버튼을 눌러 그냥 찍어도 돼요`
-            : scaleKind === 'face'
-              ? '가이드에 얼굴을 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
-              : scaleKind === 'torso'
-                ? '양 어깨가 들어오게 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
-                : '가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요'}
+            : ghost && ghostOn
+              ? '지난 사진에 겹쳐 맞추면 넓이 변화를 정확히 볼 수 있어요'
+              : scaleKind === 'face'
+                ? '가이드에 얼굴을 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
+                : scaleKind === 'torso'
+                  ? '양 어깨가 들어오게 맞추면 병변 넓이 변화까지 함께 볼 수 있어요'
+                  : '가이드라인에 맞춰 촬영하면 분석 정확도가 높아져요'}
         </Text>
 
         <Pressable style={styles.closeBtn} onPress={onCancel}>
@@ -921,6 +1011,21 @@ export default function MonitorCaptureScreen({
           <MaterialIcons name={soundOn ? 'volume-up' : 'volume-off'} size={16} color="#FFFFFF" />
           <Text style={styles.soundBtnText}>음성 {soundOn ? 'ON' : 'OFF'}</Text>
         </Pressable>
+
+        {/*
+          겹쳐 보기를 끌 수 있어야 한다 — 이 앱이 예전에 고스트를 통째로 걷어낸 이유가 바로
+          "지난 사진이 지금 피부와 섞여 보여 무엇을 찍는지 알아보기 어렵다"였다. 끄면 가이드
+          도형으로 돌아가고, 정렬 목표는 그대로 지난 사진의 구도를 유지한다.
+        */}
+        {ghost && (
+          <Pressable
+            style={[styles.ghostBtn, ghostOn && styles.soundBtnOn]}
+            onPress={() => setGhostOn((v) => !v)}
+          >
+            <MaterialIcons name={ghostOn ? 'layers' : 'layers-clear'} size={16} color="#FFFFFF" />
+            <Text style={styles.soundBtnText}>겹쳐 보기 {ghostOn ? 'ON' : 'OFF'}</Text>
+          </Pressable>
+        )}
 
         {/*
           필수 조건 셋을 이름표 + 막대로 보여준다. 채워진 정도가 "얼마나 왔는지",
@@ -1233,6 +1338,26 @@ const styles = StyleSheet.create({
   gaugeTrack: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.18)', overflow: 'hidden' },
   gaugeFill: { height: 6, borderRadius: 3 },
 
+  /**
+   * 지난 사진의 불투명도.
+   *
+   * 0.35에서 올렸다 — 그 정도로는 윤곽이 잘 안 보여 맞출 것이 없었다. 반대 방향의 실패도
+   * 분명하다: 진하게 깔면 지금 피부가 안 보이고, 그것이 예전에 이 기능을 통째로 걷어내게 만든
+   * 이유였다. 그래서 **끌 수 있게 해 둔 채로**(겹쳐 보기 ON/OFF) 겹쳐 맞출 만큼만 올린다.
+   */
+  ghost: { opacity: 0.62 },
+  ghostBtn: {
+    position: 'absolute',
+    right: 16,
+    top: 62,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
   soundBtn: {
     position: 'absolute',
     right: 16,

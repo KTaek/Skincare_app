@@ -154,8 +154,13 @@ export default function ExamResultScreen({
           </>
         )}
 
-        {capture.itchVas != null && (
+        {/* 가려움은 이 촬영이 재는 값이 아니라 기록 탭에서 하루에 한 번 적는 값이다 — 아직 적지
+            않은 날이면 칸을 지우지 않고 수면 점수와 같은 방식으로 "미기재"를 남긴다. 자리가
+            통째로 사라지면 사용자 눈에는 분석이 그 항목을 놓친 것으로 보인다. */}
+        {capture.itchVas != null ? (
           <MetricCard label="가려움 안정도" value={itchDisplayValue(capture.itchVas)} unit="/100" segments={ITCH_SEGMENTS} />
+        ) : (
+          <EmptyMetricCard label="가려움 안정도" text="미기재" />
         )}
 
         {/* 스마트워치 연동 값 — 이 촬영이 재는 값이 아니라 기기 전체에서 가장 최근 값을 그대로 보여준다 */}

@@ -11,9 +11,14 @@ import { MonitorTarget } from '../monitoring/types';
 /**
  * 피부 촬영 탭의 첫 화면 — 이번에 무엇을 할지 고른다.
  *
- *   이어서 기록하기   : 지켜보던 자리에 오늘 기록을 더한다 (가려움 문진 → 촬영 → 결과)
- *   신규 증상 기록하기: 새 자리를 등록하고 처음부터 기록한다 (부위 → 면 → 가려움 문진 → 촬영 → 결과)
- *   피부 바로 스캔    : 문진도 등록도 없이 지금 피부만 찍고 분석 결과만 본다
+ *   이어서 기록하기   : 지켜보던 자리에 오늘 기록을 더한다 (촬영 방법 → 촬영 → 결과)
+ *   신규 증상 기록하기: 새 자리를 등록하고 처음부터 기록한다 (부위 → 촬영 방법 → 촬영 → 결과)
+ *
+ * **피부 바로 스캔은 여기 없다.** 기록으로 남지 않는 촬영이라 "지켜보는 자리를 쌓는" 이 탭의
+ * 성격과 어긋나고, 나란히 두면 기록을 남기려던 사용자가 저장되지 않는 쪽을 고르게 된다.
+ * 들어오는 길은 홈 화면의 카드 하나로 남겨 둔다 — 화면(onQuickScan)과 흐름(kind='quick')은
+ * 그대로 살아 있고, 홈이 mode='quick'으로 이 탭을 열면 이 화면을 건너뛰고 바로 촬영으로 간다
+ * (CameraScreen의 useFocusEffect).
  *
  * 이어서 기록하는 경우가 훨씬 잦아서 왼쪽(먼저)에 두고, 고르는 즉시 **다음 페이지로 넘어가지 않고**
  * 바로 아래에 최근 기록 목록을 펼친다 — 자리를 고르러 한 화면 더 들어갔다 나오는 게 이 흐름에서
@@ -22,17 +27,15 @@ import { MonitorTarget } from '../monitoring/types';
 export default function ExamStartScreen({
   initialPick = null,
   onNewExam,
-  onQuickScan,
   onFollowUp,
 }: {
   /** 홈의 버튼으로 들어오면 그 선택지를 미리 고른 상태로 연다 */
-  initialPick?: 'new' | 'followUp' | 'quick' | null;
+  initialPick?: 'new' | 'followUp' | null;
   onNewExam: () => void;
-  onQuickScan: () => void;
   onFollowUp: (folderId: string, target: MonitorTarget) => void;
 }) {
   const insets = useSafeAreaInsets();
-  const [picked, setPicked] = useState<'new' | 'followUp' | 'quick' | null>(initialPick);
+  const [picked, setPicked] = useState<'new' | 'followUp' | null>(initialPick);
   const [pickedFolderId, setPickedFolderId] = useState<string | null>(null);
   const folders = useFolders();
   const { findTarget } = useMonitoring();
@@ -52,11 +55,10 @@ export default function ExamStartScreen({
   );
 
   const selected = candidates.find((c: any) => c.folder.id === pickedFolderId);
-  const canProceed = picked === 'new' || picked === 'quick' || (picked === 'followUp' && !!selected);
+  const canProceed = picked === 'new' || (picked === 'followUp' && !!selected);
 
   const proceed = () => {
     if (picked === 'new') onNewExam();
-    else if (picked === 'quick') onQuickScan();
     else if (selected) onFollowUp(selected.folder.id, selected.target);
   };
 
@@ -115,26 +117,6 @@ export default function ExamStartScreen({
           </>
         )}
 
-        <View style={{ height: 12 }} />
-        {/* 문진도 등록도 없이 지금 피부만 찍어보는 길 — 다른 둘과 같이 고른 뒤 "선택"으로 넘어간다 */}
-        <Pressable
-          style={[cardDecoration(), styles.quickCard, picked === 'quick' && styles.choiceCardSelected]}
-          onPress={() => setPicked('quick')}
-        >
-          <View style={[styles.quickIcon, picked === 'quick' && styles.choiceIconSelected]}>
-            <MaterialIcons
-              name="center-focus-strong"
-              size={22}
-              color={picked === 'quick' ? '#16320A' : AppColors.ink}
-            />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.quickTitle}>피부 바로 스캔</Text>
-            <Text style={styles.quickCaption}>피부를 빠르게 촬영하고 분석 결과를 확인해요</Text>
-            {/* 고르기 전부터 보이게 둔다 — 촬영을 마치고 나서 "저장이 안 된다"를 알면 이미 늦다 */}
-            <Text style={styles.noticeText}>피부 바로 스캔 기능으로 촬영한 사진은 저장되지 않아요</Text>
-          </View>
-        </Pressable>
       </ScrollView>
 
       <View style={styles.footer}>

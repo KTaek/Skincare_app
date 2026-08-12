@@ -1,5 +1,6 @@
 import { labels, SIGN_KEYS, type SignKey } from './labels';
 import { createModelSlot, preloadInOrder } from './modelLoader';
+import { span, spanAsync } from './profile';
 
 /**
  * 온디바이스 모델 2종 로더 — 증상 부위 분할(Stage1)과 중증도 분류(Stage2).
@@ -38,9 +39,14 @@ export async function preloadModels(): Promise<void> {
 
 /** Stage1: 분할 모델 실행. 512×512×3 정규화 입력 → 512×512 마스크 확률(0~1) */
 export async function runSegModel(input: Float32Array): Promise<Float32Array> {
-  const model = await getSegModel();
-  const [output] = await model.run([input.buffer as ArrayBuffer]);
-  return new Float32Array(output);
+  // 모델 대기와 추론을 갈라 잰다 — preload가 제때 끝났으면 앞은 0에 가깝고, 그렇지 않으면
+  // "추론이 느린 것"이 아니라 "37MB를 그때 받고 있는 것"이다. 둘은 고칠 방법이 다르다.
+  const model = await spanAsync('모델 대기(seg)', () => getSegModel());
+  const output = await spanAsync('추론 seg_lesion_512', async () => {
+    const [out] = await model.run([input.buffer as ArrayBuffer]);
+    return out;
+  });
+  return span('출력 복사(512²)', () => new Float32Array(output));
 }
 
 export type ClsLogits = Record<SignKey | 'iga', Float32Array>;
@@ -52,14 +58,17 @@ export type ClsLogits = Record<SignKey | 'iga', Float32Array>;
  * 대조해 알아낸 실제 순서를 labels.json의 cls_output_order에 적어 두고 그대로 따른다.
  */
 export async function runClsModel(input: Float32Array): Promise<ClsLogits> {
-  const model = await getClsModel();
-  const outputs = await model.run([input.buffer as ArrayBuffer]);
+  const model = await spanAsync('모델 대기(sev)', () => getClsModel());
+  const outputs = await spanAsync('추론 sev_cls_384', () => model.run([input.buffer as ArrayBuffer]));
   const order = labels.cls_output_order;
 
-  const result = {} as ClsLogits;
-  SIGN_KEYS.forEach((key, i) => {
-    result[key] = new Float32Array(outputs[order[i]]);
+  // 헤드 5개 합쳐도 21개 값이라 사실상 공짜다 — 잰 값이 0에 붙는 것 자체가 정보다
+  return span('출력 정리(헤드 5개)', () => {
+    const result = {} as ClsLogits;
+    SIGN_KEYS.forEach((key, i) => {
+      result[key] = new Float32Array(outputs[order[i]]);
+    });
+    result.iga = new Float32Array(outputs[order[SIGN_KEYS.length]]);
+    return result;
   });
-  result.iga = new Float32Array(outputs[order[SIGN_KEYS.length]]);
-  return result;
 }

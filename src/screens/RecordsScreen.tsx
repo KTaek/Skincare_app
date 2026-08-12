@@ -10,6 +10,7 @@ import LesionThumb from '../folders/components/LesionThumb';
 import { useMonitoring } from '../context/MonitoringContext';
 import { useProfile } from '../context/ProfileContext';
 import MemoBlock from '../records/MemoBlock';
+import DayItchCard from '../records/DayItchCard';
 import { MemoTarget, normalizeDateKey, useDatesWithMemos, useHasMemo } from '../records/memoStore';
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
@@ -78,6 +79,13 @@ export default function RecordsScreen() {
         onSelect={setSelectedKey}
         onChangeWeek={changeWeek}
       />
+
+      <View style={{ height: 16 }} />
+      {/* 촬영 흐름에 있던 가려움 문진이 여기로 왔다 — 하루에 한 번 적으면 그날 촬영한 기록에
+          전부 적용된다(records/itchStore). 달력 바로 밑이 자리인 이유는 "그날 무엇을 남겼나"를
+          보는 흐름의 첫 칸이 이 값이기 때문이다. 날짜를 아직 고르지 않았으면 오늘을 받는다. */}
+      {/* 날짜가 바뀌면 편집 중이던 값이 남지 않도록 카드를 새로 세운다 */}
+      <DayItchCard key={selectedKey ?? 'today'} dateKey={selectedKey ?? todayCellKey()} />
 
       <View style={{ height: 16 }} />
       {/* 이 탭에서 가장 자주 쓰는 길 — 지켜보는 자리별 추이를 보러 간다. 날짜를 골라야만 나오는
@@ -398,14 +406,7 @@ function DetailCard({
               넘지 않도록 이 칸도 라벨·점수·단계 세 줄로만 짧게 고정한다. */}
           <View style={{ flexDirection: 'row' }}>
             <View style={{ alignItems: 'center' }}>
-              <LesionThumb
-                photo={record.photo}
-                areaPct={record.lesionAreaPct}
-                seed={record.seed}
-                mode="photo"
-                size={64}
-                style={undefined}
-              />
+              <LesionThumb photo={record.photo} mode="photo" size={64} style={undefined} />
               {siteLabel != null && (
                 <>
                   <View style={{ height: 6 }} />
@@ -425,13 +426,17 @@ function DetailCard({
                 <MaterialIcons name="chevron-right" size={16} color={AppColors.sub} />
               </View>
               <View style={{ height: 8 }} />
+              {/*
+                첫 칸은 **질환에 관계없이 질환명 하나**만 적는다.
+
+                등급을 매길 수 없는 질환에 "등급 없음" 배지를 달아 봤지만, 세 칸 중 한 칸만
+                다른 말을 하니 오히려 눈이 그리로 끌렸다 — 없는 것을 굳이 가리키는 셈이었다.
+                아토피에도 같은 규칙을 적용해 세 칸의 생김새를 맞춘다(band를 넘기지 않으면
+                배지 줄 자체가 빠진다).
+              */}
               <View style={styles.statCols}>
-                {hasSeverity && (
-                  <>
-                    <StatCol label="피부 종합 상태" value={Math.round(skinValue)} band={skin} />
-                    <View style={styles.statColDivider} />
-                  </>
-                )}
+                <StatCol label="피부 종합 상태" value={diseaseName} />
+                <View style={styles.statColDivider} />
                 <StatCol label="가려움 안정도" value={itchValue} band={itch} />
                 <View style={styles.statColDivider} />
                 <StatCol label="수면 점수" value={sleep ? record.sleepScore : '-'} band={sleep} />
@@ -457,19 +462,34 @@ function StatCol({
 }: {
   label: string;
   value: number | string;
-  band: { ko: string; color: string } | null;
+  /**
+   * 단계 배지. **넘기지 않으면 배지 줄을 아예 그리지 않는다** — null은 "잴 수 있는데 값이
+   * 없다"(수면 미연동의 "미기재")를 뜻하므로 "애초에 배지가 없는 칸"과 구분해야 한다.
+   */
+  band?: { ko: string; color: string } | null;
 }) {
+  const isText = typeof value === 'string' && Number.isNaN(Number(value));
   return (
     <View style={styles.statCol}>
       <Text style={styles.statColLabel} numberOfLines={1}>
         {label}
       </Text>
-      <Text style={styles.statColValue}>{value}</Text>
-      <View style={[styles.statColBadge, { backgroundColor: band?.color ?? AppColors.sub }]}>
-        <Text style={styles.statColBandText} numberOfLines={1}>
-          {band?.ko ?? '미기재'}
-        </Text>
-      </View>
+      {/* 값 자리에 점수 대신 질환명이 올 수 있다 — 숫자용 크기 그대로면 칸을 넘긴다 */}
+      <Text
+        style={[styles.statColValue, isText && styles.statColValueText]}
+        numberOfLines={1}
+        adjustsFontSizeToFit={isText}
+        minimumFontScale={0.7}
+      >
+        {value}
+      </Text>
+      {band !== undefined && (
+        <View style={[styles.statColBadge, { backgroundColor: band?.color ?? AppColors.sub }]}>
+          <Text style={styles.statColBandText} numberOfLines={1}>
+            {band?.ko ?? '미기재'}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -527,6 +547,8 @@ const styles = StyleSheet.create({
   statColDivider: { width: 1, backgroundColor: AppColors.line, marginHorizontal: 6 },
   statColLabel: { fontSize: 9.5, fontWeight: '600', color: AppColors.sub },
   statColValue: { fontSize: 15, fontWeight: '800', color: AppColors.ink, marginTop: 2 },
+  /** 값 자리에 질환명이 올 때 — 세 칸으로 나눈 좁은 폭이라 숫자보다 더 줄여야 한다 */
+  statColValueText: { fontSize: 11 },
   statColBadge: { borderRadius: 7, paddingHorizontal: 6, paddingVertical: 2, marginTop: 3, maxWidth: '100%' },
   statColBandText: { fontSize: 9.5, fontWeight: '800', color: '#FFFFFF' },
 });

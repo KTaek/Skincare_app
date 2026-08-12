@@ -1,6 +1,6 @@
 /**
  * 사진 확대 보기 — 어두운 배경 위에 크게 띄우는 톤을 쓴다.
- * 좌우로 넘기면 "사진" ↔ "증상 부위 표시(윤곽만)" 두 페이지를 전환한다.
+ * 좌우로 넘기면 "사진" ↔ "증상 부위 표시" 두 페이지를 전환한다.
  * 상세 결과 화면에서 원본/오버레이 썸네일을 나란히 두고 각각 탭하면, 탭한 쪽 페이지가 바로
  * 보이도록 initialPage로 열 페이지를 지정할 수 있다(기본은 0=사진).
  *
@@ -18,12 +18,13 @@ import LesionThumb from './LesionThumb';
 
 const PAGES = [
   { mode: 'photo', label: '사진' },
-  { mode: 'overlay', label: '증상 부위 표시 (윤곽만)' },
+  // "윤곽만"이 아니다 — 분석이 합성한 실제 마스크(반투명 면 + 테두리)를 그대로 보여준다
+  { mode: 'overlay', label: '증상 부위 표시' },
 ];
 
 const PAGE_PADDING = 64; // 사진 좌우/상하 여백 — 이만큼을 뺀 정사각형으로 사진을 보여준다
 
-export default function PhotoZoomModal({ visible, record, initialPage = 0, onClose }) {
+export default function PhotoZoomModal({ visible, record, initialPage = 0, onClose, overlay = null }) {
   const [page, setPage] = useState(initialPage);
   // 화면(window) 전체 크기가 아니라, 이 컴포넌트가 실제로 차지하는 박스 크기를 직접 실측한다.
   const [box, setBox] = useState({ width: 0, height: 0 });
@@ -73,7 +74,7 @@ export default function PhotoZoomModal({ visible, record, initialPage = 0, onClo
             {PAGES.map((p) => (
               <View key={p.mode} style={[styles.page, { width: box.width }]}>
                 <View style={styles.imgWrap} pointerEvents="none">
-                  <LesionThumb photo={record.photo} overlay={record.overlay} areaPct={record.lesionAreaPct} seed={record.seed} mode={p.mode} size={photoSize} />
+                  <LesionThumb photo={record.photo} overlay={overlay} mode={p.mode} size={photoSize} />
                 </View>
               </View>
             ))}
