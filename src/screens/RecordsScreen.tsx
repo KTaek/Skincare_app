@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import Svg, { Rect } from 'react-native-svg';
 import { useNavigation } from '@react-navigation/native';
 import { AppColors, cardDecoration } from '../theme';
 import { plainSiteLabel } from '../models';
 import { useFolders, folderHasSeverity } from '../folders/store';
-import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand, NO_GRADE_COLOR } from '../folders/theme';
+import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
 import LesionThumb from '../folders/components/LesionThumb';
 import { useMonitoring } from '../context/MonitoringContext';
 import { useProfile } from '../context/ProfileContext';
@@ -94,6 +95,16 @@ export default function RecordsScreen({ route }: { route?: any }) {
     setSelectedKey(null);
   };
 
+  /** 달력이 "이번 달 전체보기"일 때 화살표가 한 달씩 옮긴다 */
+  const changeMonth = (delta: number) => {
+    setView((v) => {
+      const d = new Date(v);
+      d.setMonth(d.getMonth() + delta);
+      return d;
+    });
+    setSelectedKey(null);
+  };
+
   return (
     <ScrollView
       ref={scrollRef}
@@ -113,6 +124,7 @@ export default function RecordsScreen({ route }: { route?: any }) {
         selectedKey={selectedKey}
         onSelect={setSelectedKey}
         onChangeWeek={changeWeek}
+        onChangeMonth={changeMonth}
       />
 
       <View style={{ height: 16 }} />
@@ -199,45 +211,10 @@ function startOfWeek(date: Date): Date {
 const fmtDot = (d: Date) => `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
 
 /**
- * 그 날짜 칸에 찍는 점 **세 개** — 피부 종합 상태 · 가려움 안정도 · 수면 점수 (항상 이 순서).
- *
- * 예전에는 점 하나가 촬영 기록 하나였고(최대 3개) 색은 그 기록의 피부 종합 상태였다. 두 가지가
- * 어긋나 있었다: 점 개수가 "그날 몇 건 찍었나"라는, 달력에서 알 필요가 거의 없는 것을 말하고
- * 있었고 — 정작 그 아래 상세 카드가 건수를 다시 적는다 — 세 지표 중 하나만 보여주면서도 어느
- * 것인지 화면 어디에도 없었다. 이제 개수는 고정이고 자리가 곧 지표다.
- *
- * 세 지표가 같은 4단계 색을 공유하므로(folders/theme의 LEVEL_COLORS) 색만으로는 어느 점이
- * 무엇인지 알 수 없다 — 순서를 달력 아래 한 줄로 적어 준다.
- *
- * 잴 수 없는 값은 회색이다:
- *   · 피부 — 그날 기록이 전부 아토피가 아닌 폴더면 등급의 근거가 없다(자리 채우기 0을 색으로
- *     옮기면 "완전 정상"이 된다).
- *   · 수면 — 삼성헬스를 연동하지 않았으면 기록의 값은 이어받은 자리 채우기다.
- * 가려움은 회색이 없다 — 그날 적지 않았어도 직전 값을 물려받은 유효한 값이 항상 들어 있다.
- */
-function dayDotColors(entries: FolderEntry[], healthConnected: boolean): string[] {
-  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-
-  // 같은 날 여러 곳을 찍었으면 평균이다 — 칸 하나가 하루 전체를 말하는 자리라 대표값이 필요하다
-  const gradable = entries.filter((e) => folderHasSeverity(e.folder));
-  const skin = gradable.length
-    ? skinConditionInfo(avg(gradable.map((e) => DISPLAY_SCALE.iga(e.record.iga)))).color
-    : NO_GRADE_COLOR;
-
-  // 가려움은 하루에 하나뿐인 값이라(records/itchStore) 그날 기록들이 이미 같은 값을 들고 있다
-  const itch = itchBand(avg(entries.map((e) => DISPLAY_SCALE.itch(e.record.itchVas)))).color;
-
-  const sleep = healthConnected
-    ? sleepBand(avg(entries.map((e) => e.record.sleepScore))).color
-    : NO_GRADE_COLOR;
-
-  return [skin, itch, sleep];
-}
-
-/**
- * 달력 카드 — 한 주(일~토) 7칸만 보여주고, 화살표로 이전/다음 주로 옮긴다.
- * 예전엔 한 달 전체(최대 6주)를 그려서 기록이 없는 달에도 카드가 크게 자리를 차지했는데,
- * 지금은 늘 7칸 한 줄이라 카드 높이가 고정되고 필요한 주만 오간다.
+ * 달력 카드 — 기본은 한 주(일~토) 7칸만 보여주고, 화살표로 이전/다음 주로 옮긴다.
+ * 헤더의 토글 버튼을 누르면 그 달 전체(5~6주)로 펼쳐지고, 다시 누르면 원래의 한 줄짜리
+ * 주간 보기로 돌아온다 — 두 모드 모두 같은 anchor 날짜(view)를 공유해서 전환해도
+ * 보고 있던 시점을 잃지 않는다.
  */
 function CalendarCard({
   view,
@@ -245,26 +222,33 @@ function CalendarCard({
   selectedKey,
   onSelect,
   onChangeWeek,
+  onChangeMonth,
 }: {
-  /** 지금 보여줄 주에 속한 아무 날짜 하나(주의 시작으로 정규화해서 쓴다) */
+  /** 지금 보여줄 주(또는 달)에 속한 아무 날짜 하나 */
   view: Date;
   entriesByDate: Record<string, FolderEntry[]>;
   selectedKey: string | null;
   onSelect: (k: string) => void;
   onChangeWeek: (d: number) => void;
+  onChangeMonth: (d: number) => void;
 }) {
   const today = new Date();
   const memoDates = useDatesWithMemos();
-  // 수면 점수는 삼성헬스 연동 값이라, 연동 전에는 점을 색으로 칠할 근거가 없다
-  const { healthConnected } = useProfile();
-  const start = startOfWeek(view);
-  const weekDays = Array.from({ length: 7 }, (_, i) => {
+  const [monthMode, setMonthMode] = useState(false);
+
+  const monthStart = new Date(view.getFullYear(), view.getMonth(), 1);
+  const start = monthMode ? startOfWeek(monthStart) : startOfWeek(view);
+  // 월간 보기는 그 달의 1일이 속한 주부터, 말일이 속한 주까지 — 항상 7의 배수(보통 5~6주)
+  const numDays = monthMode
+    ? Math.ceil((monthStart.getDay() + new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate()) / 7) * 7
+    : 7;
+  const gridDays = Array.from({ length: numDays }, (_, i) => {
     const day = new Date(start);
     day.setDate(start.getDate() + i);
     return day;
   });
 
-  const cells = weekDays.map((day) => {
+  const cells = gridDays.map((day) => {
     const year = day.getFullYear();
     const month = day.getMonth();
     const d = day.getDate();
@@ -273,6 +257,8 @@ function CalendarCard({
     const hasMemo = memoDates.has(normalizeDateKey(key));
     const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === d;
     const isSel = selectedKey === key;
+    // 월간 보기에서 앞뒤 달에 걸친 칸은 흐리게 — 날짜는 눌러도 정상 동작하지만 이번 달이 아님을 알려준다
+    const inCurrentMonth = !monthMode || month === view.getMonth();
     return (
       <Pressable key={key} style={styles.cell} onPress={() => onSelect(key)}>
         <View
@@ -286,18 +272,23 @@ function CalendarCard({
             style={{
               fontSize: 14,
               fontWeight: isSel || isToday ? '800' : '400',
-              color: isSel ? '#143006' : AppColors.ink,
+              color: isSel ? '#143006' : inCurrentMonth ? AppColors.ink : AppColors.navInactive,
             }}
           >
             {d}
           </Text>
-          {entries && entries.length > 0 && (
-            <View style={styles.dotsRow}>
-              {dayDotColors(entries, healthConnected).map((color, i) => (
-                <View key={i} style={[styles.dot, { backgroundColor: color }]} />
-              ))}
-            </View>
-          )}
+          {/* 그날 찍은 검사 건수 — 예전엔 지표 세 개를 점으로 찍었는데, 상세 카드가 이미
+              같은 정보를 더 정확히 보여주므로 달력 칸에는 "몇 건 찍었나"만 남긴다. 이 슬롯은
+              건수가 없는 날에도 항상 자리를 차지해야 날짜 숫자가 칸마다 같은 높이에 온다. */}
+          <View style={styles.dayCountSlot}>
+            {entries && entries.length > 0 && (
+              <View style={[styles.dayCountPill, isSel && styles.dayCountPillSelected]}>
+                <Text style={[styles.dayCountText, isSel && styles.dayCountTextSelected]}>
+                  {entries.length}건
+                </Text>
+              </View>
+            )}
+          </View>
           {/* 메모가 있는 날 — 아래 촬영 점과 헷갈리지 않도록 칸 오른쪽 위에 따로 표시한다 */}
           {hasMemo && (
             <MaterialIcons
@@ -312,24 +303,37 @@ function CalendarCard({
     );
   });
 
-  const end = weekDays[6];
-  const sameYear = start.getFullYear() === end.getFullYear();
-  const sameMonth = sameYear && start.getMonth() === end.getMonth();
-  const endLabel = sameMonth
-    ? `${end.getDate()}`
-    : sameYear
-      ? `${end.getMonth() + 1}.${end.getDate()}`
-      : fmtDot(end);
-  const rangeLabel = `${fmtDot(start)} - ${endLabel}`;
+  const rangeLabel = monthMode
+    ? `${view.getFullYear()}.${view.getMonth() + 1}`
+    : (() => {
+        const end = gridDays[6];
+        const sameYear = start.getFullYear() === end.getFullYear();
+        const sameMonth = sameYear && start.getMonth() === end.getMonth();
+        const endLabel = sameMonth
+          ? `${end.getDate()}`
+          : sameYear
+            ? `${end.getMonth() + 1}.${end.getDate()}`
+            : fmtDot(end);
+        return `${fmtDot(start)} - ${endLabel}`;
+      })();
 
   return (
     <View style={[cardDecoration(), styles.calendarCard]}>
       <View style={styles.calendarHeader}>
         <Text style={styles.rangeLabel}>{rangeLabel}</Text>
-        <View style={{ flexDirection: 'row' }}>
-          <NavBtn icon="chevron-left" onPress={() => onChangeWeek(-1)} />
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {/* 주간 ↔ 월간 전환 — 켜져 있을 때 초록으로 채워서 지금 어느 모드인지 바로 보이게 */}
+          <Pressable
+            style={[styles.viewToggleBtn, monthMode && styles.viewToggleBtnActive]}
+            onPress={() => setMonthMode((v) => !v)}
+            hitSlop={4}
+          >
+            <CalendarMonthIcon color={monthMode ? '#143006' : '#555555'} size={25} />
+          </Pressable>
+          <View style={{ width: 8 }} />
+          <NavBtn icon="chevron-left" onPress={() => (monthMode ? onChangeMonth(-1) : onChangeWeek(-1))} />
           <View style={{ width: 6 }} />
-          <NavBtn icon="chevron-right" onPress={() => onChangeWeek(1)} />
+          <NavBtn icon="chevron-right" onPress={() => (monthMode ? onChangeMonth(1) : onChangeWeek(1))} />
         </View>
       </View>
       <View style={{ height: 14 }} />
@@ -342,20 +346,37 @@ function CalendarCard({
       </View>
       <View style={{ height: 8 }} />
       <View style={styles.grid}>{cells}</View>
+    </View>
+  );
+}
 
-      {/*
-        점 세 개가 무엇인지 — 셋이 같은 4단계 색을 쓰므로 순서를 말해 주지 않으면 색만 보고는
-        어느 점이 무엇인지 알 수 없다. 회색은 잴 근거가 없다는 뜻이라 함께 적어 둔다.
-      */}
-      <View style={styles.dotLegend}>
-        {['피부 종합 상태', '가려움', '수면'].map((label, i) => (
-          <View key={label} style={styles.dotLegendItem}>
-            <View style={[styles.dotLegendDot, { backgroundColor: AppColors.navInactive }]} />
-            <Text style={styles.dotLegendText}>
-              {i + 1}. {label}
-            </Text>
-          </View>
+/**
+ * 스프링 링·접힌 모서리가 있는 탁상달력 모양 안에 숫자를 박아 넣은 아이콘 — 주간/월간
+ * 전환 버튼에 쓴다. 숫자는 지금 보고 있는 주가 아니라 실제 오늘 날짜의 달(예: 8월 → "08")로,
+ * 달력 앱 아이콘처럼 매달 자동으로 바뀐다.
+ */
+function CalendarMonthIcon({ color, size = 18 }: { color: string; size?: number }) {
+  const month = String(new Date().getMonth() + 1).padStart(2, '0');
+  return (
+    <View style={{ width: size, height: size }}>
+      <Svg width={size} height={size} viewBox="0 0 24 24" style={StyleSheet.absoluteFill}>
+        {[5.6, 9.87, 14.13, 18.4].map((x, i) => (
+          <Rect key={i} x={x - 0.9} y={1.5} width={1.8} height={5} rx={0.9} fill={color} />
         ))}
+        <Rect x={3} y={5} width={18} height={17} rx={3.5} stroke={color} strokeWidth={1.3} fill="none" />
+      </Svg>
+      <View
+        style={{
+          position: 'absolute',
+          top: size * 0.21,
+          left: 0,
+          right: 0,
+          bottom: size * 0.08,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <Text style={{ fontSize: size * 0.4, fontWeight: '800', color }}>{month}</Text>
       </View>
     </View>
   );
@@ -471,7 +492,6 @@ function DetailCard({
     <View style={[cardDecoration(), styles.detailCard, collapsed && styles.detailCardCollapsed]}>
       {/* 제목 줄 전체가 접기 버튼이다 — 접으면 병명·부위만 한 줄로 남는다 */}
       <Pressable style={{ flexDirection: 'row', alignItems: 'center' }} onPress={onToggle}>
-        <Text style={styles.detailDate}>기록</Text>
         {collapsed && (
           <Text style={styles.detailPeek} numberOfLines={1}>
             {[diseaseName, siteLabel].filter(Boolean).join(' · ')}
@@ -610,17 +630,24 @@ const styles = StyleSheet.create({
   calendarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rangeLabel: { fontSize: 16, fontWeight: '800', color: AppColors.ink },
   navBtn: { width: 30, height: 30, borderRadius: 9, backgroundColor: '#F1F3F6', alignItems: 'center', justifyContent: 'center' },
+  viewToggleBtn: { width: 30, height: 30, borderRadius: 9, backgroundColor: '#F1F3F6', alignItems: 'center', justifyContent: 'center' },
+  viewToggleBtnActive: { backgroundColor: AppColors.greenTop },
   weekdayCell: { flex: 1, alignItems: 'center' },
   weekdayText: { fontSize: 12, fontWeight: '600', color: AppColors.sub },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
   cell: { width: `${100 / 7}%`, aspectRatio: 1, padding: 2 },
   cellInner: { flex: 1, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
-  dotsRow: { position: 'absolute', bottom: 6, flexDirection: 'row' },
-  dot: { width: 5, height: 5, borderRadius: 2.5, marginHorizontal: 1 },
-  dotLegend: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', marginTop: 10 },
-  dotLegendItem: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 5 },
-  dotLegendDot: { width: 5, height: 5, borderRadius: 2.5, marginRight: 3 },
-  dotLegendText: { fontSize: 10.5, color: AppColors.sub },
+  /** 건수 배지가 있든 없든 항상 같은 높이를 차지해 — 날짜 숫자가 칸마다 같은 자리에 오도록 */
+  dayCountSlot: { height: 17, marginTop: 2, alignItems: 'center', justifyContent: 'flex-start' },
+  dayCountPill: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 6,
+    backgroundColor: '#E7F2DC',
+  },
+  dayCountPillSelected: { backgroundColor: 'rgba(20,48,6,0.16)' },
+  dayCountText: { fontSize: 9, fontWeight: '700', color: AppColors.greenMuted },
+  dayCountTextSelected: { color: '#143006' },
   memoMark: { position: 'absolute', top: 3, right: 4 },
   noRecord: { fontSize: 14, color: AppColors.sub },
 
@@ -631,7 +658,6 @@ const styles = StyleSheet.create({
 
   detailCard: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 18 },
   detailCardCollapsed: { paddingTop: 13, paddingBottom: 13 },
-  detailDate: { fontSize: 13, fontWeight: '600', color: AppColors.sub },
   detailPeek: { flexShrink: 1, fontSize: 13, fontWeight: '700', color: AppColors.ink, marginLeft: 8 },
   detailLink: { fontSize: 12, fontWeight: '700', color: AppColors.sub },
   regionPill: { backgroundColor: '#F1F3F6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
