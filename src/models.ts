@@ -139,8 +139,11 @@ export const kUserName = '임경택';
  */
 export const ITCH_SURVEY_ROUTINE = '가려움증 문진하기';
 
+/** 카메라 탭의 "이어서 기록하기"로 바로 이어주는 루틴의 이름 — 이름으로 알아보는 이유는 위와 같다 */
+export const SKIN_RECORD_ROUTINE = '피부 상태 기록하기';
+
 export const initialRoutines = (): Routine[] => [
-  { id: 4, name: '피부 상태 사진찍기', times: ['09:00'], done: false },
+  { id: 4, name: SKIN_RECORD_ROUTINE, times: ['09:00'], done: false },
   // 가려움은 밤에 심해지므로 하루를 마치며 남기게 둔다 (가려움 문진 화면과 짝이 되는 줄이다)
   { id: 5, name: ITCH_SURVEY_ROUTINE, times: ['21:00'], done: false },
 ];

@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, View } from 'react-native';
-import Svg, { Circle, Path } from 'react-native-svg';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import Svg, { Circle, Path, Text as SvgText } from 'react-native-svg';
 import { AppColors } from '../theme';
 import { CoarseGroupId } from '../monitoring/bodyParts';
 
@@ -183,6 +183,14 @@ export interface PartMarkerStyle {
    * 회차에만 있는 값이라, 없을 때 크기를 0으로 두면 "병변이 사라졌다"로 보인다 — 아예 안 그린다.
    */
   areaRadius?: number;
+  /**
+   * 불투명 원 가운데 흰 숫자로 적을 값 — 아토피피부염이면 그 병변의 세부 증상(피부 붉기·
+   * 오돌토돌함·긁은 상처·피부 두꺼워짐) 중 나타난 개수. 넘기지 않으면 숫자를 안 그린다
+   * (등급이 없는 질환의 회색 원 등).
+   */
+  count?: number;
+  /** count가 가리키는 숫자를 누르면 말풍선에 적을 증상 이름 목록 — 없으면(빈 배열) "증상 없음"으로 보여준다 */
+  symptomLabels?: string[];
 }
 
 /** partMarkers에 radius를 안 넘겼을 때(예전 호출부와의 호환)의 고정 크기 */
@@ -243,6 +251,8 @@ export default function Body2DView({
   // 감싼 레이어 때문에 그림 실제 위치와 어긋나는 경우가 있어서, ItchVasSlider와 같은
   // 방식(measureInWindow + pageX/Y)으로 직접 계산한다.
   const geom = useRef({ x: 0, y: 0, width: 0, height: 0 });
+  /** 세부 증상 개수가 적힌 동그라미를 눌렀을 때 뜨는 말풍선 — 위치는 figureWrap 기준 픽셀 좌표 */
+  const [openBubble, setOpenBubble] = useState<{ x: number; y: number; r: number; labels: string[] } | null>(null);
 
   useEffect(() => {
     if (!marker) return;
@@ -257,11 +267,34 @@ export default function Body2DView({
     return () => anim.stop();
   }, [marker, pulse]);
 
+  // 회차가 바뀌면(슬라이더 등) 열려 있던 말풍선의 증상 목록이 지금 동그라미와 안 맞을 수 있어 닫는다
+  useEffect(() => {
+    setOpenBubble(null);
+  }, [partMarkers]);
+
   const measureWrap = () => {
     wrapRef.current?.measureInWindow((x, y, width, height) => {
       geom.current = { x, y, width, height };
     });
   };
+
+  /** 렌더링과 탭 판정이 같은 자리 계산을 쓰도록 미리 펼쳐 둔다 */
+  const flatMarkers = useMemo(() => {
+    const out: { key: string; group: CoarseGroupId; pt: BodyPoint2D; style: PartMarkerStyle }[] = [];
+    if (!partMarkers) return out;
+    (Object.keys(partMarkers) as CoarseGroupId[]).forEach((group) => {
+      const list = partMarkers[group]!;
+      GROUP_MARKERS[group].forEach((anchor, ai) => {
+        list.forEach((style, i) => {
+          const r = style.radius ?? DEFAULT_MARKER_R;
+          // 병변이 여럿이면 그 자리 둘레로 흩어 놓는다 (하나면 자리 그대로)
+          const pt = markerSpot(anchor, i, list.length, r);
+          out.push({ key: `${group}-${ai}-${i}`, group, pt, style });
+        });
+      });
+    });
+    return out;
+  }, [partMarkers]);
 
   const onPress = (e: { nativeEvent: { pageX: number; pageY: number } }) => {
     const { x, y, width, height } = geom.current;
@@ -272,6 +305,27 @@ export default function Body2DView({
     // 여백을 빼먹으면 탭한 자리가 몸 좌표로 옮겨질 때 통째로 밀린다
     const vx = VIEW_X + (localX / width) * VIEW_W;
     const vy = VIEW_Y + (localY / height) * VIEW_H;
+
+    // 숫자가 적힌 동그라미(세부 증상 개수)를 눌렀으면 말풍선을 열고 부위 선택으로는 넘기지 않는다
+    const hit = flatMarkers.find((m) => {
+      if (m.style.count == null) return false;
+      const r = m.style.radius ?? DEFAULT_MARKER_R;
+      const dx = vx - m.pt.x;
+      const dy = vy - m.pt.y;
+      return dx * dx + dy * dy <= r * r;
+    });
+    if (hit) {
+      const r = hit.style.radius ?? DEFAULT_MARKER_R;
+      setOpenBubble({
+        x: ((hit.pt.x - VIEW_X) / VIEW_W) * width,
+        y: ((hit.pt.y - VIEW_Y) / VIEW_H) * height,
+        r: (r / VIEW_W) * width,
+        labels: hit.style.symptomLabels ?? [],
+      });
+      return;
+    }
+    setOpenBubble(null);
+
     const group = classifyGroup(vx, vy);
     if (!group || !onPick) return;
     onPick(group, { x: localX, y: localY });
@@ -295,46 +349,47 @@ export default function Body2DView({
             {/* 4) 부위별 동그라미 — 테두리 위에 그려서 항상 또렷하게 보인다. count가 있으면
                 가운데에 숫자(존재하는 세부 증상 개수)를 함께 적어, 슬라이더로 회차를 넘길 때
                 동그라미가 작아지는 것과 숫자가 줄어드는 것을 같이 볼 수 있게 한다. */}
-            {partMarkers &&
-              (Object.keys(partMarkers) as CoarseGroupId[]).flatMap((group) => {
-                const list = partMarkers[group]!;
-                return GROUP_MARKERS[group].flatMap((anchor, ai) =>
-                  list.map((style, i) => {
-                    const r = style.radius ?? DEFAULT_MARKER_R;
-                    // 병변이 여럿이면 그 자리 둘레로 흩어 놓는다 (하나면 자리 그대로)
-                    const pt = markerSpot(anchor, i, list.length, r);
-                    return (
-                      <React.Fragment key={`${group}-${ai}-${i}`}>
-                        <Circle
-                          cx={pt.x}
-                          cy={pt.y}
-                          r={r}
-                          fill={style.color}
-                          stroke="#FFFFFF"
-                          strokeWidth={3}
-                        />
-                        {/*
-                          넓이 원은 **불투명 원 위에** 옅게 얹는다. 아래에 깔면 넓이가 작은 회차에서
-                          불투명 원에 완전히 가려져 "넓이를 못 쟀다"와 구분되지 않는다 —
-                          위에 얹으면 작든 크든 점선 테두리가 항상 보인다.
-                        */}
-                        {style.areaRadius != null && (
-                          <Circle
-                            cx={pt.x}
-                            cy={pt.y}
-                            r={style.areaRadius}
-                            fill={style.color}
-                            fillOpacity={0.22}
-                            stroke={style.color}
-                            strokeWidth={3}
-                            strokeDasharray="8,7"
-                          />
-                        )}
-                      </React.Fragment>
-                    );
-                  }),
-                );
-              })}
+            {flatMarkers.map(({ key, pt, style }) => {
+              const r = style.radius ?? DEFAULT_MARKER_R;
+              // 이 원은 실제 화면에서 뷰박스 배율만큼 줄어들어 그려지므로(약 1/3) r 대비 비율을
+              // 꽤 크게 잡아야 화면에서 읽히는 크기가 나온다 — 예전 0.85배는 실제로 7px 안팎이었다
+              const countFontSize = r * 1.7;
+              return (
+                <React.Fragment key={key}>
+                  <Circle cx={pt.x} cy={pt.y} r={r} fill={style.color} stroke="#FFFFFF" strokeWidth={3} />
+                  {/*
+                    넓이 원은 **불투명 원 위에** 옅게 얹는다. 아래에 깔면 넓이가 작은 회차에서
+                    불투명 원에 완전히 가려져 "넓이를 못 쟀다"와 구분되지 않는다 —
+                    위에 얹으면 작든 크든 점선 테두리가 항상 보인다.
+                  */}
+                  {style.areaRadius != null && (
+                    <Circle
+                      cx={pt.x}
+                      cy={pt.y}
+                      r={style.areaRadius}
+                      fill={style.color}
+                      fillOpacity={0.22}
+                      stroke={style.color}
+                      strokeWidth={3}
+                      strokeDasharray="8,7"
+                    />
+                  )}
+                  {/* 세부 증상 개수 — 원 가운데 흰 숫자. 탭 판정(hit test)은 위 onPress가 r로 따로 한다 */}
+                  {style.count != null && (
+                    <SvgText
+                      x={pt.x}
+                      y={pt.y + countFontSize * 0.36}
+                      fontSize={countFontSize}
+                      fontWeight="800"
+                      fill="#FFFFFF"
+                      textAnchor="middle"
+                    >
+                      {style.count}
+                    </SvgText>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </Svg>
         </Pressable>
 
@@ -346,6 +401,33 @@ export default function Body2DView({
               { left: marker.x - 9, top: marker.y - 9, transform: [{ scale: pulse }] },
             ]}
           />
+        )}
+
+        {/* 세부 증상 말풍선 — 누른 동그라미 바로 위, 아래 꼬리가 그 동그라미를 가리킨다 */}
+        {openBubble && (
+          <View
+            pointerEvents="box-none"
+            style={[
+              styles.bubbleAnchor,
+              { left: openBubble.x - 88, bottom: geom.current.height - openBubble.y + openBubble.r + 8 },
+            ]}
+          >
+            <View style={styles.bubbleCard}>
+              <Pressable onPress={() => setOpenBubble(null)} style={styles.bubbleClose} hitSlop={8}>
+                <Text style={styles.bubbleCloseText}>×</Text>
+              </Pressable>
+              {openBubble.labels.length > 0 ? (
+                openBubble.labels.map((label) => (
+                  <Text key={label} style={styles.bubbleText}>
+                    • {label}
+                  </Text>
+                ))
+              ) : (
+                <Text style={styles.bubbleText}>나타난 세부 증상이 없어요</Text>
+              )}
+            </View>
+            <View style={styles.bubbleTail} />
+          </View>
         )}
       </View>
     </View>
@@ -367,5 +449,37 @@ const styles = StyleSheet.create({
     backgroundColor: MARKER_COLOR,
     borderWidth: 2,
     borderColor: '#FFFFFF',
+  },
+  bubbleAnchor: { position: 'absolute', width: 176, alignItems: 'center' },
+  bubbleCard: {
+    width: '100%',
+    backgroundColor: '#1C1C1E',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  bubbleClose: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  bubbleCloseText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800', lineHeight: 16 },
+  bubbleText: { color: '#FFFFFF', fontSize: 13.5, fontWeight: '700', lineHeight: 20, paddingRight: 16 },
+  bubbleTail: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 8,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#1C1C1E',
+    marginTop: -1,
   },
 });

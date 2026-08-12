@@ -7,7 +7,7 @@ import { BodyPartId, COARSE_OF_PART, CoarseGroupId, COARSE_GROUPS, partsOfSpotId
 import { useFolders, addDaysKey, daysBetween, todayKey, folderHasSeverity } from '../folders/store';
 // 넓이 환산은 폴더 카드와 **같은 출처**를 쓴다 — 두 화면이 같은 값을 다르게 말하면 안 된다
 import { coveragePctOf, scaleKindOfRecord } from '../folders/areaTrend';
-import { DISPLAY_SCALE, skinConditionInfo, SKIN_SEGMENTS, NO_GRADE_COLOR } from '../folders/theme';
+import { DISPLAY_SCALE, skinConditionInfo, SKIN_SEGMENTS, NO_GRADE_COLOR, SYMPTOMS } from '../folders/theme';
 import { useMonitoring } from '../context/MonitoringContext';
 import { plainSiteLabel } from '../models';
 
@@ -123,6 +123,17 @@ function areaToRadius(areaPct: number): number {
  * 지금은 상태는 색만, 넓이는 점선 원만 맡는다.
  */
 const IGA_MARKER_R = 28;
+
+/** 4가지 증상 필드 순서 — 폴더 화면(MonitoringFolderScreen)의 SYMPTOM_ORDER와 같다 */
+const SYMPTOM_ORDER: (keyof typeof SYMPTOMS)[] = ['redness', 'bumps', 'scratch', 'thickening'];
+
+/**
+ * 그 기록에서 실제로 나타난 세부 증상 이름만 골라낸다 — 원시값이 0이면 "없음"이라 뺀다.
+ * 지도 동그라미 안 숫자(개수)와 그 숫자를 눌렀을 때 뜨는 말풍선이 같은 목록을 쓴다.
+ */
+function presentSymptoms(record: any): string[] {
+  return SYMPTOM_ORDER.filter((key) => (record[key] ?? 0) > 0).map((key) => SYMPTOMS[key].label);
+}
 
 /**
  * 색만으로는 미묘한 차이가 읽히지 않아서 글자로도 같이 알려 준다.
@@ -251,6 +262,8 @@ export default function WholeBodyResultScreen() {
     interface Sum {
       /** 이 덩어리에서 가장 나쁜 IGA — 등급을 매길 수 있는 자리가 하나도 없으면 null */
       worstIga: number | null;
+      /** worstIga를 낸 그 기록 — 동그라미 안 숫자(세부 증상 개수)·말풍선 내용을 여기서 뽑는다 */
+      worstRecord: any | null;
       /** 넓이(부위 대비 %)의 합 */
       areaPct: number;
       /** 넓이를 실제로 잰 회차가 하나라도 있었는지 — 0%와 "못 쟀다"는 다르다 */
@@ -278,7 +291,7 @@ export default function WholeBodyResultScreen() {
         : [{ iga: t.current.iga, pct: pctOf(t.current.lesionAreaFaceIndex) }];
 
       new Set(t.site.parts.map((p) => COARSE_OF_PART[p])).forEach((g) => {
-        const sum = acc.get(g) ?? { worstIga: null, areaPct: 0, measured: false };
+        const sum = acc.get(g) ?? { worstIga: null, worstRecord: null, areaPct: 0, measured: false };
         lesions.forEach((lesion) => {
           /*
             등급을 매길 수 없는 자리(아토피가 아닌 질환)의 iga는 자리 채우기 0이라, 최댓값 계산에
@@ -287,6 +300,8 @@ export default function WholeBodyResultScreen() {
           */
           if (t.site.gradable && (sum.worstIga == null || lesion.iga > sum.worstIga)) {
             sum.worstIga = lesion.iga;
+            // 세부 증상(redness 등)은 병변이 아니라 기록(record) 단위 값이라 t.current를 그대로 쓴다
+            sum.worstRecord = t.current;
           }
           if (lesion.pct != null) {
             sum.areaPct += lesion.pct;
@@ -306,6 +321,8 @@ export default function WholeBodyResultScreen() {
     COARSE_GROUPS.forEach((group) => {
       const sum = acc.get(group);
       if (!sum) return;
+      // 아토피피부염(등급을 매길 수 있는 자리)일 때만 세부 증상 개수를 숫자로 적는다
+      const symptoms = sum.worstIga != null ? presentSymptoms(sum.worstRecord) : null;
       out[group] = [
         {
           color:
@@ -315,6 +332,8 @@ export default function WholeBodyResultScreen() {
           radius: IGA_MARKER_R,
           // 넓이를 못 잰 회차뿐이면 점선 원을 아예 안 그린다 — 0으로 두면 "병변이 사라졌다"가 된다
           areaRadius: sum.measured ? areaToRadius(sum.areaPct) : undefined,
+          count: symptoms?.length,
+          symptomLabels: symptoms ?? undefined,
         },
       ];
     });
@@ -347,6 +366,9 @@ export default function WholeBodyResultScreen() {
       <View style={[cardDecoration(), styles.mapCard]}>
         <View style={styles.bodyCanvas}>
           <Body2DView partMarkers={groupMarkers} />
+          {/* 색이 무슨 뜻인지는 그림과 함께 한눈에 보여야 한다 — 스크롤해서 슬라이더 아래까지
+              내려가야 보이면 정작 그림을 보는 순간에는 무슨 색인지 알 수 없다 */}
+          <ColorLegend />
         </View>
 
         <View style={{ height: 6 }} />
@@ -363,7 +385,7 @@ export default function WholeBodyResultScreen() {
         </View>
 
         <View style={{ height: 16 }} />
-        <Legend />
+        <MarkerLegend />
       </View>
 
       <View style={{ height: 18 }} />
@@ -439,46 +461,83 @@ function DaySlider({ max, value, onChange }: { max: number; value: number; onCha
  * 점선 줄은 그대로 아래에 둔다 — 색(상태)과 점선(넓이)은 원래 다른 것을 말하는 두 축이라
  * 질환 구분과는 층이 다르다.
  */
-function Legend() {
+/** 범례 한 줄 — 표시(동그라미/점선/숫자) + 그게 무슨 뜻인지. numberOfLines로 줄 수를 못박아, 칸이
+ * 좁아져도 세 줄 네 줄로 늘어지지 않고 그 안에서 자연스럽게 줄바꿈되게 한다 */
+function LegendLine({
+  mark,
+  children,
+  numberOfLines,
+}: {
+  mark: React.ReactNode;
+  children: React.ReactNode;
+  numberOfLines?: number;
+}) {
   return (
-    <>
-      <View style={styles.legendGroups}>
-        <View style={styles.legendGroup}>
-          <Text style={styles.legendGroupTitle}>아토피피부염</Text>
-          <View style={styles.legendRow}>
-            {/* SKIN_SEGMENTS는 안 좋은 쪽부터 정의돼 있어서 좋은 쪽부터 보이게 뒤집는다 */}
-            {[...SKIN_SEGMENTS].reverse().map((seg) => (
-              <View key={seg.ko} style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
-                <Text style={styles.legendText}>{seg.ko}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
+    <View style={styles.legendLine}>
+      {mark}
+      <Text style={styles.legendLineText} numberOfLines={numberOfLines}>
+        {children}
+      </Text>
+    </View>
+  );
+}
 
-        <View style={styles.legendGroupDivider} />
+/**
+ * 색 범례 — 지도 그림 왼쪽 위에 그대로 얹는다(오버레이). 스크롤해서 슬라이더 아래까지 내려가야
+ * 보이던 걸, 그림과 한눈에 같이 보이게 옮긴 것이다. 사람 그림이 캔버스 가운데~오른쪽에 서 있어
+ * 왼쪽 위는 원래 비어 있는 자리라 그림을 가리지 않는다.
+ */
+function ColorLegend() {
+  return (
+    <View style={styles.colorLegendOverlay} pointerEvents="none">
+      <Text style={styles.legendGroupTitle}>아토피피부염</Text>
+      <View style={{ height: 6 }} />
+      {/* SKIN_SEGMENTS는 안 좋은 쪽부터 정의돼 있어서 좋은 쪽부터 보이게 뒤집는다 */}
+      {[...SKIN_SEGMENTS].reverse().map((seg) => (
+        <LegendLine key={seg.ko} mark={<View style={[styles.legendDot, { backgroundColor: seg.color }]} />}>
+          {seg.ko}
+        </LegendLine>
+      ))}
 
-        <View style={styles.legendGroup}>
-          <Text style={styles.legendGroupTitle}>기타 질환</Text>
-          <View style={styles.legendRow}>
-            {/* 아토피 채점 기준으로 학습된 모델이라 다른 질환에는 등급의 근거가 없다 */}
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: NO_GRADE_COLOR }]} />
-              <Text style={styles.legendText}>등급 없음</Text>
+      <View style={{ height: 10 }} />
+      <Text style={styles.legendGroupTitle}>기타 질환</Text>
+      <View style={{ height: 6 }} />
+      {/* 아토피 채점 기준으로 학습된 모델이라 다른 질환에는 등급의 근거가 없다 */}
+      <LegendLine mark={<View style={[styles.legendDot, { backgroundColor: NO_GRADE_COLOR }]} />}>
+        등급 없음
+      </LegendLine>
+    </View>
+  );
+}
+
+/**
+ * 동그라미(점선 포함)·숫자가 무엇을 뜻하는지 — 색 범례보다 자세한 설명이라 슬라이더 아래에 그대로 둔다.
+ * 자동 줄바꿈에 맡기면 칸 폭에 따라 엉뚱한 자리에서 끊겨서, 두 줄로 보일 자리를 직접 정해 준다.
+ * 오른쪽(가운데 숫자) 설명이 더 기니 칸도 더 넓게 준다.
+ */
+function MarkerLegend() {
+  return (
+    <View style={styles.markerLegendRow}>
+      {/* 색과 크기가 서로 다른 값이라는 걸 말해 준다 — 안 그러면 큰 원을 "더 심한 곳"으로 읽는다 */}
+      <View style={[styles.markerLegendCol, { flex: 0.8 }]}>
+        <LegendLine mark={<View style={styles.legendAreaDot} />}>
+          동그라미 = 부위{'\n'}점선 = 병변 면적
+        </LegendLine>
+      </View>
+      {/* 숫자 자체도 위 원(동그라미 안 흰 숫자)과 같은 무드로 설명한다 — 눌러보면 어떤
+          증상인지까지 말풍선으로 나온다는 것도 여기서 함께 안내한다 */}
+      <View style={[styles.markerLegendCol, { flex: 1.2 }]}>
+        <LegendLine
+          mark={
+            <View style={styles.legendCountDot}>
+              <Text style={styles.legendCountDotText}>3</Text>
             </View>
-          </View>
-        </View>
+          }
+        >
+          가운데 숫자 = 세부 증상 개수{'\n'}누르면 증상이 나와요
+        </LegendLine>
       </View>
-
-      <View style={{ height: 8 }} />
-      <View style={styles.legendRow}>
-        <View style={styles.legendItem}>
-          <View style={styles.legendAreaDot} />
-          {/* 색과 크기가 서로 다른 값이라는 걸 말해 준다 — 안 그러면 큰 원을 "더 심한 곳"으로 읽는다 */}
-          <Text style={styles.legendText}>동그라미 하나 = 부위 하나 · 점선 = 그 부위 병변 넓이의 합</Text>
-        </View>
-      </View>
-    </>
+    </View>
   );
 }
 
@@ -540,6 +599,8 @@ const styles = StyleSheet.create({
 
   mapCard: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 18 },
   bodyCanvas: { width: '100%', height: 320 },
+  /** 그림 왼쪽 위 빈 자리에 얹는 색 범례 — 사람 그림이 캔버스 가운데~오른쪽에 서 있어 겹치지 않는다 */
+  colorLegendOverlay: { position: 'absolute', top: 4, left: 6 },
 
   dayLabel: { textAlign: 'center', fontSize: 15, fontWeight: '800', color: AppColors.ink },
   dateLabel: { textAlign: 'center', fontSize: 11.5, color: AppColors.sub, marginTop: 2 },
@@ -560,22 +621,15 @@ const styles = StyleSheet.create({
   sliderEnds: { flexDirection: 'row', justifyContent: 'space-between' },
   endText: { fontSize: 11, color: AppColors.sub },
 
-  /**
-   * 질환별 묶음 둘을 나란히. 좁은 화면에서는 줄바꿈해 위아래로 쌓인다 — 네 단계를 한 줄에
-   * 붙들어 두려고 글자를 줄이는 것보다, 두 줄이 되는 편이 낫다.
-   */
-  legendGroups: { flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', flexWrap: 'wrap' },
-  legendGroup: { alignItems: 'center', paddingHorizontal: 2 },
-  legendGroupTitle: { fontSize: 10.5, fontWeight: '800', color: AppColors.ink, marginBottom: 5 },
-  /** 두 묶음이 서로 다른 척도임을 세로선 하나로 갈라 준다 */
-  legendGroupDivider: { width: 1, alignSelf: 'stretch', marginHorizontal: 10, marginTop: 16, backgroundColor: AppColors.line },
-  legendRow: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap' },
-  /*
-    항목 간격이 좁다. 질환 이름 두 개와 세로선이 새로 들어오면서 한 줄에 담을 것이 늘었는데,
-    가장 좁은 기기(폭 360dp → 카드 안쪽 288dp)에서 줄바꿈되면 세로선이 줄 끝에 홀로 남아
-    무엇을 가르는 선인지 알 수 없게 된다. 재어 보니 이 크기에서 277dp라 여유가 남는다.
-  */
-  legendItem: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 4 },
+  legendGroupTitle: { fontSize: 11.5, fontWeight: '800', color: AppColors.ink },
+  /** 표시(동그라미/점선/숫자) 하나당 한 줄 — 아이콘 옆에 설명이 오는 기본 짝. 색 범례처럼 여러 줄을
+      위아래로 쌓을 때를 위해 줄마다 아래 여백을 둔다 */
+  legendLine: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 5 },
+  legendLineText: { flex: 1, fontSize: 11.5, color: AppColors.sub, lineHeight: 16 },
+  /** 동그라미·숫자 설명 둘을 위아래 대신 나란히 — 같은 높이의 두 칸으로 나눈다 */
+  markerLegendRow: { flexDirection: 'row', gap: 14 },
+  markerLegendCol: { flex: 1 },
+  legendDivider: { height: 1, backgroundColor: AppColors.line, marginVertical: 10 },
   /** 점선 원 범례 — 지도의 도형과 같은 모양이라야 무엇을 가리키는지 바로 읽힌다 */
   legendAreaDot: {
     width: 11,
@@ -584,10 +638,22 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderStyle: 'dashed',
     borderColor: AppColors.sub,
-    marginRight: 4,
+    marginRight: 6,
+    marginTop: 2,
   },
-  legendDot: { width: 9, height: 9, borderRadius: 4.5, marginRight: 4 },
-  legendText: { fontSize: 11, color: AppColors.sub },
+  legendDot: { width: 9, height: 9, borderRadius: 4.5, marginRight: 6, marginTop: 3 },
+  /** 숫자 범례 — 지도 원 안의 흰 숫자와 같은 무드(짙은 원 + 흰 굵은 숫자)로 맞춘다 */
+  legendCountDot: {
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    backgroundColor: AppColors.sub,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
+    marginTop: 1,
+  },
+  legendCountDotText: { fontSize: 8, fontWeight: '800', color: '#FFFFFF' },
 
   noneCard: { padding: 18, alignItems: 'center' },
   trendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 14 },

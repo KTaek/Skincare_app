@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Animated, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
-import { CareItem, ITCH_SURVEY_ROUTINE, plainSiteLabel } from '../models';
+import { CareItem, ITCH_SURVEY_ROUTINE, SKIN_RECORD_ROUTINE, plainSiteLabel } from '../models';
 import { SectionHeader, RoutineRowContent } from '../components/widgets';
 import { useRoutines } from '../context/RoutineContext';
 import { useProfile } from '../context/ProfileContext';
@@ -77,6 +77,8 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
         items={careItemsForOffset(0)}
         /* "가려움증 문진하기" 줄은 체크만 하는 게 아니라 실제로 적으러 갈 수 있어야 한다 */
         onOpenItch={() => navigation.navigate('Records', { focus: 'itch' })}
+        /* "피부 상태 기록하기" 줄은 카메라 탭 "이어서 기록하기"가 이미 골라진 채로 넘어간다 */
+        onQuickRecord={() => navigation.navigate('Camera', { mode: 'followUp' })}
         onToggle={(key) => toggleForOffset(0, key)}
       />
     </ScrollView>
@@ -172,10 +174,13 @@ function TodayCareCard({
   items,
   onToggle,
   onOpenItch,
+  onQuickRecord,
 }: {
   items: CareItem[];
   onToggle: (key: string) => void;
   onOpenItch: () => void;
+  /** "피부 상태 기록하기" 줄의 "바로 가기" — 카메라 탭 "이어서 기록하기"로 바로 넘어간다 */
+  onQuickRecord: () => void;
 }) {
   if (items.length === 0) {
     return (
@@ -199,6 +204,7 @@ function TodayCareCard({
             /* 문진 줄은 체크박스도 문진으로 보낸다 — 이유는 RoutineScreen 같은 자리에 적어 뒀다 */
             onToggle={item.name === ITCH_SURVEY_ROUTINE ? onOpenItch : () => onToggle(item.key)}
             onOpen={item.name === ITCH_SURVEY_ROUTINE ? onOpenItch : undefined}
+            onShortcut={item.name === SKIN_RECORD_ROUTINE ? onQuickRecord : undefined}
           />
         </View>
       ))}
@@ -211,10 +217,12 @@ function FadingCareRow({
   item,
   onToggle,
   onOpen,
+  onShortcut,
 }: {
   item: CareItem;
   onToggle?: () => void;
   onOpen?: () => void;
+  onShortcut?: () => void;
 }) {
   const opacity = useRef(new Animated.Value(item.done ? 0.45 : 1)).current;
   useEffect(() => {
@@ -226,7 +234,7 @@ function FadingCareRow({
   }, [item.done, opacity]);
   return (
     <Animated.View style={{ opacity }}>
-      <RoutineRowContent item={item} onToggle={onToggle} onOpen={onOpen} />
+      <RoutineRowContent item={item} onToggle={onToggle} onOpen={onOpen} onShortcut={onShortcut} />
     </Animated.View>
   );
 }

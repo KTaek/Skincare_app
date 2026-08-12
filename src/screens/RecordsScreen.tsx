@@ -140,7 +140,7 @@ export default function RecordsScreen({ route }: { route?: any }) {
         />
       </View>
 
-      <View style={{ height: 16 }} />
+      <View style={{ height: 10 }} />
       {/* 이 탭에서 가장 자주 쓰는 길 — 지켜보는 자리별 추이를 보러 간다. 날짜를 골라야만 나오는
           그날의 분석 결과보다 먼저 두어, 스크롤하지 않아도 항상 바로 보인다. */}
       <ActionBox
@@ -157,6 +157,7 @@ export default function RecordsScreen({ route }: { route?: any }) {
         title="전신 결과"
         caption="전신 분석 결과 모아보기"
         trailing="chevron-right"
+        accent
         onPress={() => navigation.navigate('WholeBody')}
       />
 

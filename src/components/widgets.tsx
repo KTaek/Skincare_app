@@ -28,6 +28,7 @@ export function RoutineRowContent({
   onToggle,
   onOpen,
   onDelete,
+  onShortcut,
 }: {
   item: CareItem;
   onToggle?: () => void;
@@ -40,6 +41,11 @@ export function RoutineRowContent({
    */
   onOpen?: () => void;
   onDelete?: () => void;
+  /**
+   * 시각 옆의 "바로 가기 >" — 홈 화면의 "피부 상태 기록하기" 줄에서 카메라 탭으로 바로 넘어가는
+   * 용도로 하나만 쓴다. onOpen과 같은 이유로 체크박스·이름과는 분리된 자리다.
+   */
+  onShortcut?: () => void;
 }) {
   // 알림 아이콘은 앱 전체 설정을 따른다 (아래 주석 참고)
   const { pushEnabled } = useProfile();
@@ -106,6 +112,12 @@ export function RoutineRowContent({
       ) : item.occurrenceCount > 1 ? (
         <Text style={styles.routineTime}>{item.occurrenceIndex + 1}회</Text>
       ) : null}
+      {onShortcut && (
+        <Pressable onPress={onShortcut} hitSlop={6} style={styles.shortcutBtn}>
+          <Text style={styles.shortcutText}>바로 가기</Text>
+          <MaterialIcons name="chevron-right" size={14} color={AppColors.greenMuted} />
+        </Pressable>
+      )}
       {onDelete && (
         <Pressable onPress={onDelete} style={{ paddingLeft: 8 }} hitSlop={6}>
           <MaterialIcons name="close" size={18} color="#C7CBD1" />
@@ -190,6 +202,8 @@ const styles = StyleSheet.create({
   },
   routineName: { flex: 1, fontSize: 15, fontWeight: '600' },
   routineTime: { fontSize: 15, fontWeight: '700', color: AppColors.ink },
+  shortcutBtn: { flexDirection: 'row', alignItems: 'center', marginLeft: 8 },
+  shortcutText: { fontSize: 12.5, fontWeight: '700', color: AppColors.greenMuted },
   cyclePill: {
     backgroundColor: '#EFF5E4',
     borderRadius: 7,

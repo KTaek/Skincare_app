@@ -44,6 +44,15 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
   const [kind, setKind] = useState<ExamKind>('new');
   /** 홈에서 들어왔을 때 시작 화면에 미리 골라 둘 선택지 */
   const [startPick, setStartPick] = useState<'new' | 'followUp' | null>(null);
+  /*
+    ExamStartScreen을 강제로 다시 만들기 위한 값 — 탭이 lazy:false로 계속 떠 있어서 stage가
+    'start'에 머무는 동안은 ExamStartScreen이 한 번도 unmount되지 않는다. 그 화면의 "어느 카드를
+    골랐는지"는 그 화면 안의 로컬 state라 initialPick prop이 바뀌어도 저절로 따라가지 않는다
+    (useState(initialPick)은 최초 마운트 때만 읽는다) — 눌러만 두고 다른 탭으로 나갔다 와도 고른
+    카드가 그대로 남거나, "바로 가기"로 들어와도 미리 골라 둔 카드가 반영되지 않는 원인이었다.
+    매번 포커스될 때 이 값을 올려 key로 꽂으면 매번 새로 마운트되어 고른 것이 확실히 씻긴다.
+  */
+  const [resetToken, setResetToken] = useState(0);
   const [followUp, setFollowUp] = useState<{ folderId: string; target: MonitorTarget } | null>(null);
   const [capture, setCapture] = useState<ExamCapture | null>(null);
   const [analysis, setAnalysis] = useState<ExamAnalysis | null>(null);
@@ -76,6 +85,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
     setAnalysis(null);
     setLinkedFolder(null);
     setError(null);
+    setResetToken((t) => t + 1);
   }, []);
 
   // 카메라 탭이 다시 열릴 때마다 초기화
@@ -305,6 +315,7 @@ export default function CameraScreen({ navigation, route }: { navigation: any; r
   if (stage === 'start') {
     return (
       <ExamStartScreen
+        key={resetToken}
         initialPick={startPick}
         onNewExam={() => {
           setKind('new');
