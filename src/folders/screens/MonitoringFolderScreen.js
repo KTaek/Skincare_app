@@ -359,15 +359,14 @@ export default function MonitoringFolderScreen({ navigation, route }) {
             처음 기록 대비 증감은 여기 없다 — 아래 루틴 이행률 카드의 오른쪽 열에서 보여준다. */}
         <View style={styles.summaryRow}>
           {/*
-            첫 칸은 **질환에 관계없이 질환명 하나**만 적는다 (기록 탭의 카드와 같은 규칙).
-
-            등급을 매길 수 없는 질환에 "등급 없음" 배지를 달아 봤지만, 세 칸 중 한 칸만 다른
-            말을 하니 오히려 눈이 그리로 끌렸다 — 없는 것을 굳이 가리키는 셈이었다. 아토피에도
-            같은 규칙을 적용해 세 칸의 생김새를 맞춘다. pillText를 넘기지 않으면 배지가 빠진다.
+            홈 화면·기록 탭과 같은 형태(점수 + 중증도)로 맞춘다. IGA 채점은 아토피피부염
+            기준이라 다른 질환은 매길 점수가 없어 "준비중"으로 대신하고 배지도 뺀다.
           */}
           <SummaryBox
             label="피부 종합 상태"
-            value={folder.disease || '진단 전'}
+            value={hasSeverity ? skinDisplay : '준비중'}
+            pillText={hasSeverity ? skin.ko : undefined}
+            pillColor={hasSeverity ? skin.color : undefined}
             icon={SKIN_ICON}
             circleColor={CHART_SERIES.skin.color}
             iconSize={32}

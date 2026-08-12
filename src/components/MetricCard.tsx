@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, ImageSourcePropType, StyleSheet, Text, View } from 'react-native';
 import { AppColors } from '../theme';
 import { monitoringColors as mc, monitoringCard, segmentFor } from '../folders/theme';
 import ScaleBar from '../folders/components/ScaleBar';
@@ -114,6 +114,8 @@ export function StatBox({
   label,
   value,
   band,
+  icon,
+  circleColor,
 }: {
   label: string;
   value: string;
@@ -126,11 +128,23 @@ export function StatBox({
    *                  굳이 가리키는 셈이라 세 칸 중 그 칸으로만 눈이 끌린다)
    */
   band?: { ko: string; color: string } | null;
+  /** 라벨 위 원형 배지 아이콘 — 경과 관찰 폴더 화면의 요약칸과 같은 자리, 넘기지 않으면 안 그린다 */
+  icon?: ImageSourcePropType;
+  /** 아이콘 원 배경색 — 어느 지표인지(피부/가려움/수면)를 색으로 이어준다(CHART_SERIES와 같은 색) */
+  circleColor?: string;
 }) {
   // 값 자리에 점수 대신 질환명이 올 수 있다 — 숫자용 크기 그대로면 칸을 넘긴다
   const isText = Number.isNaN(Number(value));
   return (
     <View style={styles.statBox}>
+      {icon != null && (
+        <>
+          <View style={[styles.statIconCircle, { backgroundColor: circleColor }]}>
+            <Image source={icon} style={styles.statIconImg} resizeMode="contain" />
+          </View>
+          <View style={{ height: 6 }} />
+        </>
+      )}
       <Text style={styles.statLabel} numberOfLines={1}>
         {label}
       </Text>
@@ -195,6 +209,8 @@ const styles = StyleSheet.create({
     flex: 1, alignItems: 'center', backgroundColor: '#F6F8FA', borderRadius: 14,
     paddingVertical: 12, paddingHorizontal: 4,
   },
+  statIconCircle: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  statIconImg: { width: 17, height: 17 },
   statLabel: { fontSize: 13.5, fontWeight: '700', color: AppColors.sub },
   /** 21pt 글씨 한 줄이 차지하는 높이 — 값이 숫자든 질환명이든 이 높이로 고정한다 */
   statValueSlot: { height: 26, width: '100%', justifyContent: 'center' },

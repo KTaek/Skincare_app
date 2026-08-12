@@ -6,13 +6,20 @@ import { CareItem, ITCH_SURVEY_ROUTINE, plainSiteLabel } from '../models';
 import { SectionHeader, RoutineRowContent } from '../components/widgets';
 import { useRoutines } from '../context/RoutineContext';
 import { useProfile } from '../context/ProfileContext';
+import { useMonitoring } from '../context/MonitoringContext';
 import { useLatestMonitoringRecord, folderHasSeverity } from '../folders/store';
-import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand } from '../folders/theme';
+import { DISPLAY_SCALE, skinConditionInfo, itchBand, sleepBand, CHART_SERIES } from '../folders/theme';
 import { StatBox } from '../components/MetricCard';
+
+// 경과 관찰 폴더 화면의 요약칸과 같은 원형 배지 아이콘 — 같은 지표는 어느 화면에서 봐도 같게 보이도록
+const SKIN_ICON = require('../../assets/icon/skin_icon_white.png');
+const ITCH_ICON = require('../../assets/icon/itch_icon_white.png');
+const SLEEP_ICON = require('../../assets/icon/sleep_icon_white.png');
 
 export default function HomeScreen({ navigation }: { navigation: any }) {
   const { careItemsForOffset, toggleForOffset } = useRoutines();
   const { name, healthConnected } = useProfile();
+  const { findTarget } = useMonitoring();
   const latest = useLatestMonitoringRecord();
 
   /** 요약 카드를 누르면 가장 최근 촬영의 상세 결과 페이지로 바로 넘어간다 */
@@ -20,6 +27,14 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
     if (!latest) return;
     navigation.navigate('MonitoringDetail', { folderId: latest.folder.id, recordId: latest.record.id });
   };
+
+  // 가장 최근 기록이 어느 부위를 찍은 건지 — 모니터링 대상(target)이 자리를 들고 있다
+  const latestTarget = latest?.folder.targetId ? findTarget(latest.folder.targetId) : undefined;
+  const latestSiteLabel = latestTarget ? plainSiteLabel(latestTarget.label) : undefined;
+  /* 카드 제목의 "(부위) (질환명)" 부분 — 나머지 글자와 다른 색으로 강조해서 눈에 먼저 들어오게
+     한다. 아직 진단을 안 붙인 폴더는 질환명이 없으니 부위까지만("몸통"), 부위조차 못 찾으면
+     빈 문자열이라 카드가 예전처럼 "최근 피부 상태"로 대신한다. */
+  const statusHighlight = [latestSiteLabel, latest?.folder.disease].filter(Boolean).join(' ');
 
   return (
     <ScrollView
@@ -33,8 +48,7 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
 
       <RecentStatusCard
         record={latest?.record}
-        /* 질환명은 폴더가 들고 있다 — 진단을 아직 안 붙인 폴더는 이름에서 부위만 떼어 쓴다 */
-        diseaseName={latest ? latest.folder.disease ?? plainSiteLabel(latest.folder.name) : ''}
+        highlight={statusHighlight}
         hasSeverity={latest ? folderHasSeverity(latest.folder) : false}
         healthConnected={healthConnected}
         onPress={goLatestDetail}
@@ -75,18 +89,17 @@ export default function HomeScreen({ navigation }: { navigation: any }) {
  */
 function RecentStatusCard({
   record,
-  diseaseName,
+  highlight,
   hasSeverity,
   healthConnected,
   onPress,
 }: {
   record?: { iga: number; itchVas: number; sleepScore: number };
-  /** 피부 종합 상태 칸에 적을 진단명 */
-  diseaseName: string;
+  /** 제목 가운데의 "(부위) (질환명)" — 다른 글자와 다른 색으로 강조한다. 빈 문자열이면 "최근 피부 상태"로 대신한다 */
+  highlight: string;
   /**
-   * 가장 최근 기록이 속한 폴더의 진단명이 아토피피부염인지 — 등급(IGA) 배지를 붙일지 정한다.
-   * 예전엔 아토피가 아니면 칸 자체를 뺐는데, 그러면 홈에서만 지표가 두 칸으로 줄어 기록 탭과
-   * 생김새가 달라졌다. 칸은 늘 두고 **점수 대신 질환명**을 적는다.
+   * 가장 최근 기록이 속한 폴더의 진단명이 아토피피부염인지 — IGA 점수·등급 배지를 보여줄지 정한다.
+   * 아토피가 아니면 점수 자체가 없는 지표라 배지 없이 값만 남긴다(가려움·수면과 같은 자리라 칸은 늘 셋).
    */
   hasSeverity: boolean;
   healthConnected: boolean;
@@ -110,24 +123,38 @@ function RecentStatusCard({
     <Pressable onPress={onPress} style={[cardDecoration(), styles.statusCard]}>
       <View style={styles.statusHead}>
         <Text style={styles.statusTitle} numberOfLines={1}>
-          최근 피부 상태
+          {highlight ? (
+            <>
+              최근 <Text style={styles.statusTitleHighlight}>{highlight}</Text> 상태
+            </>
+          ) : (
+            '최근 피부 상태'
+          )}
         </Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={20} color={AppColors.sub} />
       </View>
       <View style={styles.statusRow}>
-        {/* 숫자만 있으면 무엇에 대한 점수인지 여기서는 알 수 없다 — 질환명을 값으로 두고,
-            등급을 매길 수 있는 아토피만 그 단계를 배지로 덧붙인다 */}
         <StatBox
           label="피부 종합 상태"
-          value={diseaseName}
+          value={`${skinValue}`}
           band={hasSeverity ? skinConditionInfo(skinValue) : undefined}
+          icon={SKIN_ICON}
+          circleColor={CHART_SERIES.skin.color}
         />
-        <StatBox label="가려움 안정도" value={`${itchValue}`} band={itchBand(itchValue)} />
+        <StatBox
+          label="가려움 안정도"
+          value={`${itchValue}`}
+          band={itchBand(itchValue)}
+          icon={ITCH_ICON}
+          circleColor={CHART_SERIES.itch.color}
+        />
         <StatBox
           label="수면 점수"
           value={sleepValue != null ? `${sleepValue}` : '-'}
           band={sleepValue != null ? sleepBand(sleepValue) : null}
+          icon={SLEEP_ICON}
+          circleColor={CHART_SERIES.sleep.color}
         />
       </View>
     </Pressable>
@@ -211,6 +238,7 @@ const styles = StyleSheet.create({
   statusCard: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 16 },
   statusHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
   statusTitle: { fontSize: 16.5, fontWeight: '800', color: AppColors.ink, flexShrink: 1 },
+  statusTitleHighlight: { color: AppColors.greenMuted },
   statusRow: { flexDirection: 'row', gap: 8 },
 
   emptyStatus: { alignItems: 'center', paddingVertical: 28, paddingHorizontal: 20 },

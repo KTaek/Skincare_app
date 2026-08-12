@@ -470,6 +470,8 @@ function DetailCard({
   const target = folder.targetId ? findTarget(folder.targetId) : undefined;
   const siteLabel: string | undefined = target ? plainSiteLabel(target.label) : undefined;
   const diseaseName: string = target?.diagnosis?.disease ?? plainSiteLabel(folder.name);
+  // 사진 밑에 따로 붙던 부위 배지를 없애는 대신, 병명 앞에 부위를 붙여 "몸통 아토피피부염"처럼 한 줄로 보여준다
+  const displayDiseaseName = [siteLabel, diseaseName].filter(Boolean).join(' ');
   // 4가지 증상·IGA 모델은 아토피피부염 채점 기준이라, 이 폴더의 진단명이 그게 아니면 값 자체가 없다
   const hasSeverity = folderHasSeverity(folder);
 
@@ -488,68 +490,58 @@ function DetailCard({
   };
   const hasMemo = useHasMemo(memoTarget);
 
+  const goDetail = () => navigation.navigate('MonitoringDetail', { folderId: folder.id, recordId: record.id });
+
   return (
     <View style={[cardDecoration(), styles.detailCard, collapsed && styles.detailCardCollapsed]}>
-      {/* 제목 줄 전체가 접기 버튼이다 — 접으면 병명·부위만 한 줄로 남는다 */}
-      <Pressable style={{ flexDirection: 'row', alignItems: 'center' }} onPress={onToggle}>
-        {collapsed && (
-          <Text style={styles.detailPeek} numberOfLines={1}>
-            {[diseaseName, siteLabel].filter(Boolean).join(' · ')}
+      {/* 병명 줄 — 접혀 있든 펼쳐 있든 늘 보인다. "상세 결과"까지는 상세 페이지로 가는 링크라
+          접기 버튼(화살표)과 탭 영역을 따로 둔다 — 한 Pressable로 묶으면 이름을 눌러도 접힌다. */}
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <Pressable style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1 }} onPress={goDetail}>
+          <Text style={styles.detailDisease} numberOfLines={1}>
+            {displayDiseaseName}
           </Text>
-        )}
+          <Text style={styles.detailLink}>상세 결과</Text>
+          <MaterialIcons name="chevron-right" size={16} color={AppColors.sub} />
+        </Pressable>
         <View style={{ flex: 1 }} />
         {/* 접혀 있어도 메모가 달렸다는 건 보여 준다 */}
         {collapsed && hasMemo && (
           <MaterialIcons name="edit-note" size={16} color={AppColors.greenMuted} style={{ marginRight: 4 }} />
         )}
-        <MaterialIcons name={collapsed ? 'expand-more' : 'expand-less'} size={20} color={AppColors.sub} />
-      </Pressable>
+        <Pressable onPress={onToggle} hitSlop={8}>
+          <MaterialIcons name={collapsed ? 'expand-more' : 'expand-less'} size={20} color={AppColors.sub} />
+        </Pressable>
+      </View>
 
       {!collapsed && (
-        <Pressable
-          onPress={() => navigation.navigate('MonitoringDetail', { folderId: folder.id, recordId: record.id })}
-        >
+        <Pressable onPress={goDetail}>
           <View style={{ height: 10 }} />
-          {/* 사진은 왼쪽에, 병명·상세결과 링크·세 지표는 그 옆 한 칸에 — 지표 세 칸을 박스로
-              칠하지 않고 "|" 구분선만 세워 나눈다. 사진·부위 표시가 있는 왼쪽 칸의 세로 폭을
-              넘지 않도록 이 칸도 라벨·점수·단계 세 줄로만 짧게 고정한다. */}
-          <View style={{ flexDirection: 'row' }}>
-            <View style={{ alignItems: 'center' }}>
-              <LesionThumb photo={record.photo} mode="photo" size={64} style={undefined} />
-              {siteLabel != null && (
-                <>
-                  <View style={{ height: 6 }} />
-                  <View style={styles.regionPill}>
-                    <Text style={styles.regionPillText}>{siteLabel}</Text>
-                  </View>
-                </>
-              )}
-            </View>
+          {/* 사진은 왼쪽에, 세 지표는 그 옆 한 칸에 — 병명 줄이 위로 빠지면서 사진과 지표 표가
+              같은 줄에서 나란히 정렬된다. 지표 세 칸은 박스로 칠하지 않고 "|" 구분선만 세운다. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <LesionThumb photo={record.photo} mode="photo" size={64} style={undefined} />
             <View style={{ width: 12 }} />
-            <View style={{ flex: 1, justifyContent: 'center' }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={styles.detailDisease} numberOfLines={1}>
-                  {diseaseName}
-                </Text>
-                <Text style={styles.detailLink}>상세 결과</Text>
-                <MaterialIcons name="chevron-right" size={16} color={AppColors.sub} />
-              </View>
-              <View style={{ height: 8 }} />
-              {/*
-                첫 칸은 어느 질환이든 **질환명**을 적고, 등급은 매길 수 있을 때만 배지로 덧붙인다.
+            {/*
+              첫 칸은 어느 질환이든 **질환명**을 적고, 등급은 매길 수 있을 때만 배지로 덧붙인다.
 
-                아토피는 IGA 4단계가 있으니 "아토피피부염 + 그 단계"까지 보여주고, 등급 자체가
-                없는 질환은 이름만 남긴다 — "등급 없음"이라 적어 봤더니 세 칸 중 한 칸만 다른
-                말을 해서 오히려 눈이 그리로 끌렸다. 없는 것을 굳이 가리키는 셈이었다.
-                (band를 넘기지 않으면 배지 줄 자체가 빠진다.)
-              */}
-              <View style={styles.statCols}>
-                <StatCol label="피부 종합 상태" value={diseaseName} band={hasSeverity ? skin : undefined} />
-                <View style={styles.statColDivider} />
-                <StatCol label="가려움 안정도" value={itchValue} band={itch} />
-                <View style={styles.statColDivider} />
-                <StatCol label="수면 점수" value={sleep ? record.sleepScore : '-'} band={sleep} />
-              </View>
+              아토피는 IGA 4단계가 있으니 "아토피피부염 + 그 단계"까지 보여주고, 등급 자체가
+              없는 질환은 이름만 남긴다 — "등급 없음"이라 적어 봤더니 세 칸 중 한 칸만 다른
+              말을 해서 오히려 눈이 그리로 끌렸다. 없는 것을 굳이 가리키는 셈이었다.
+              (band를 넘기지 않으면 배지 줄 자체가 빠진다.)
+            */}
+            <View style={[styles.statCols, { flex: 1 }]}>
+              {/* 홈 화면과 같은 형태(점수 + 중증도)로 맞춘다. IGA 채점은 아토피피부염 기준이라
+                  다른 질환은 매길 점수가 없어 "준비중"으로 대신한다. */}
+              <StatCol
+                label="피부 종합 상태"
+                value={hasSeverity ? skinValue : '준비중'}
+                band={hasSeverity ? skin : undefined}
+              />
+              <View style={styles.statColDivider} />
+              <StatCol label="가려움 안정도" value={itchValue} band={itch} />
+              <View style={styles.statColDivider} />
+              <StatCol label="수면 점수" value={sleep ? record.sleepScore : '-'} band={sleep} />
             </View>
           </View>
         </Pressable>
@@ -658,10 +650,7 @@ const styles = StyleSheet.create({
 
   detailCard: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 18 },
   detailCardCollapsed: { paddingTop: 13, paddingBottom: 13 },
-  detailPeek: { flexShrink: 1, fontSize: 13, fontWeight: '700', color: AppColors.ink, marginLeft: 8 },
   detailLink: { fontSize: 12, fontWeight: '700', color: AppColors.sub },
-  regionPill: { backgroundColor: '#F1F3F6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
-  regionPillText: { fontSize: 10.5, fontWeight: '700', color: AppColors.sub },
   detailDisease: { flexShrink: 1, fontSize: 15, fontWeight: '800', color: AppColors.ink, marginRight: 8 },
 
   statCols: { flexDirection: 'row', alignItems: 'stretch' },
