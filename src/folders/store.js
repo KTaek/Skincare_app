@@ -14,7 +14,7 @@
 import { useSyncExternalStore } from 'react';
 import { SEVERITY_SUPPORTED_DISEASE } from '../ai/labels';
 import { ATOPIC_PHOTOS, ATOPIC_OVERLAYS, CHEEK_PHOTOS, CHEEK_OVERLAYS } from './dumpPhotos';
-import { DEMO_TARGETS, folderNameOf } from './targets';
+import { DEMO_TARGETS, VISIBLE_DEMO_TARGET_IDS, folderNameOf } from './targets';
 
 /** 이 폴더의 진단명이 4가지 증상·IGA 모델이 커버하는 질환(아토피피부염)인지 — "피부 종합 상태"·
  *  "4가지 증상" 카드를 보여줄지 모니터링 화면들이 이 값으로 정한다. */
@@ -257,12 +257,22 @@ function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, c
 /** 데모 폴더도 실제 등록으로 만들어진 폴더와 똑같이 "{부위} {질환}" 이름을 쓴다 */
 const demoName = (t) => folderNameOf(t.label, t.diagnosis?.disease);
 
-// ── 프리셋 폴더 5개 (dump) ───────────────────────────────────────────────
-// 네 폴더 모두 마지막 기록이 "오늘"이라(spanDaysAgoStart === spanDays로 맞춰 둠) 마지막 기록
-// 시각이 완전히 같다 — latestRecordAcrossFolders()는 동률이면 배열에서 먼저 나온 쪽을 최신으로
-// 본다. 홈 화면의 "최근 피부 상태"가 피부 종합 상태까지 온전히 보여주는 아토피 폴더를 기본으로
-// 보여주도록, 아토피 폴더(다리)를 맨 앞에 둔다.
-let folders = [
+/*
+  ── 프리셋 폴더 (dump) ───────────────────────────────────────────────
+  다섯을 다 만들어 두되 **화면에 올리는 것은 VISIBLE_DEMO_TARGET_IDS에 든 자리뿐이다**
+  (지금은 팔 건선·몸통 아토피 둘). 나머지를 여기서 지우지 않는 이유는 targets.ts의 그 상수
+  주석에 적어 뒀다 — 시계열 값들이 화면 확인용으로 골라 만든 것이라 되살리기 비싸다.
+
+  다 만든 뒤에 거르는 것은 만드는 비용이 사실상 없어서다(폴더당 기록 6~14줄). 정의를 그대로 둔 채
+  목록 하나로만 켜고 끌 수 있는 편이, 만들기 전에 거르려고 정의를 구조부터 바꾸는 것보다 낫다.
+
+  순서: 마지막 기록이 전부 "오늘"이라(spanDaysAgoStart === spanDays로 맞춰 둠) 최신 시각이
+  동률인데, latestRecordAcrossFolders()는 그때 먼저 나온 쪽을 최신으로 본다 — 홈 화면의 "최근
+  피부 상태"가 어느 폴더를 보여줄지가 여기서 정해진다. 그래서 아래 목록의 **선언 순서가 아니라
+  VISIBLE_DEMO_TARGET_IDS의 순서**를 따르게 했다: 보이는 것과 그 순서를 한 곳에서 정하지 않으면,
+  목록에서 하나를 껐을 때 홈 카드가 왜 딴 폴더로 바뀌었는지 알 수 없다.
+*/
+const DEMO_FOLDERS = [
   makeFolder({
     id: 'f3',
     targetId: DEMO_TARGETS[2].id, // 다리 아토피피부염
@@ -284,9 +294,6 @@ let folders = [
     overlays: ATOPIC_OVERLAYS,
     // 최신 회차(i=9)가 14번 사진이 되도록: (4 + 9) % 14 = 13 — 팔 폴더와 맞바꾼 자리다
     photoStart: 4,
-    // seg가 판정 단위를 여러 개로 나눈 촬영의 미리보기 — 이 폴더가 홈에서 가장 먼저 보이는
-    // 대표 폴더라 예시를 확인하기 가장 쉽다.
-    demoMultiRegionOnLast: true,
   }),
   makeFolder({
     id: 'f1',
@@ -356,8 +363,24 @@ let folders = [
     */
     photos: ATOPIC_PHOTOS,
     overlays: ATOPIC_OVERLAYS,
+    /*
+      seg가 판정 단위를 여러 개로 나눈 촬영의 미리보기(RegionSymptomsCard).
+
+      다리 폴더에 붙어 있던 것을 옮겨 왔다 — 그 폴더를 감추면서 예시가 데모에서 통째로 사라졌다.
+      붙일 자리의 기준은 그때와 같다: **보이는 폴더 중 홈에서 가장 먼저 뜨는 대표 폴더**라야
+      확인하기 쉽다(VISIBLE_DEMO_TARGET_IDS의 첫 자리가 이 폴더다).
+    */
+    demoMultiRegionOnLast: true,
   }),
 ];
+
+/** 화면에 실제로 오르는 데모 폴더 — 목록에 없는 자리는 만들어만 두고 쓰지 않는다 */
+let folders = VISIBLE_DEMO_TARGET_IDS.flatMap((id) => {
+  // 목록에 없는 id가 적혀 있어도 앱은 그 폴더만 빠진 채 그대로 돈다
+  const folder = DEMO_FOLDERS.find((f) => f.targetId === id);
+  return folder ? [folder] : [];
+});
+
 const listeners = new Set();
 function emit() { listeners.forEach((l) => l()); }
 function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }

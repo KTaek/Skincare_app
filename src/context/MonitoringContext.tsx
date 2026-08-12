@@ -3,7 +3,7 @@ import { BodySpot } from '../monitoring/bodyParts';
 import { BodyModelId } from '../three/humanModel';
 import { Baseline, MonitorDiagnosis, MonitorSession, MonitorTarget } from '../monitoring/types';
 import { newId } from '../monitoring/postProcess';
-import { DEMO_TARGETS } from '../folders/targets';
+import { VISIBLE_DEMO_TARGETS } from '../folders/targets';
 
 interface MonitoringContextValue {
   targets: MonitorTarget[];
@@ -41,9 +41,15 @@ const MonitoringContext = createContext<MonitoringContextValue | null>(null);
  * 재설치·재시작 후에도 기준 세션(baseline)이 유지된다.
  */
 export function MonitoringProvider({ children }: { children: React.ReactNode }) {
-  // 데모 모니터링 폴더 2개(folders/store.js의 프리셋)가 참조하는 대상을 미리 넣어 둔다 —
-  // 그래야 그 폴더에서도 "오늘의 피부 상태 기록"이 실제 가이드 촬영을 띄울 수 있다.
-  const [targets, setTargets] = useState<MonitorTarget[]>(DEMO_TARGETS);
+  /*
+    화면에 올린 데모 폴더(folders/store.js의 프리셋)가 참조하는 대상을 미리 넣어 둔다 — 그래야
+    그 폴더에서도 "오늘의 피부 상태 기록"이 실제 가이드 촬영을 띄울 수 있다.
+
+    **보이는 폴더의 것만 넣는다.** 폴더를 감춘 자리의 대상까지 넣어 두면, 폴더 목록에는 없는
+    자리가 "이어서 기록하기"의 대상 목록에는 그대로 떠서 고를 수 있게 된다 — 고르고 나면 기록이
+    보이지 않는 폴더로 들어간다.
+  */
+  const [targets, setTargets] = useState<MonitorTarget[]>(VISIBLE_DEMO_TARGETS);
   const [sessions, setSessions] = useState<MonitorSession[]>([]);
 
   /*

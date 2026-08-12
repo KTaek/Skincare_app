@@ -12,7 +12,8 @@ export function folderNameOf(siteLabel: string, disease?: string): string {
 }
 
 /**
- * 데모용 모니터링 폴더 4개가 참조하는 대상.
+ * 데모용 모니터링 폴더가 참조하는 대상 — 정의는 다섯이고, 그중 화면에 올리는 것은
+ * 아래 VISIBLE_DEMO_TARGET_IDS에 든 둘뿐이다.
  *
  * 폴더의 시계열은 dump 데이터지만, "오늘의 피부 상태 기록"은 실제 가이드 촬영
  * (MonitorCaptureScreen)을 띄운다 — 그 화면이 MonitorTarget을 요구하므로 데모 폴더에도
@@ -92,3 +93,28 @@ export const DEMO_TARGETS: MonitorTarget[] = [
     sessionCount: 0,
   },
 ];
+
+/**
+ * 지금 앱에 **실제로 띄우는** 데모 자리 — 팔 건선 · 몸통 아토피피부염 둘뿐이다.
+ *
+ * 나머지 셋(머리 주사 · 다리 아토피 · 얼굴 아토피)은 지우지 않고 위에 그대로 둔다. 각 폴더의
+ * 시계열은 화면을 확인하려고 값을 하나하나 골라 만든 것이라(개선/악화/유지, 넓이 자·색 단계
+ * 조합) 지웠다가 다시 만들려면 그 판단을 처음부터 다시 해야 한다. **이 목록에 id를 넣었다 뺐다
+ * 하는 것만으로** 켜고 끌 수 있게 두는 편이 싸다.
+ *
+ * 둘만 남겨도 화면들이 비어 보이지 않는지 확인한 것:
+ *   · 팔 건선   — 아토피가 아닌 질환(등급 없음·회색) 쪽 예시
+ *   · 몸통 아토피 — 등급이 매겨지는 쪽 예시이자, 넓이 자가 '몸통'인 유일한 폴더
+ * 즉 "등급 있음/없음" 두 갈래와 얼굴·몸통 두 자 중 몸통이 그대로 남는다.
+ *
+ * **순서도 뜻이 있다.** 데모 폴더는 마지막 기록이 전부 "오늘"이라 최신 시각이 동률이고, 그때는
+ * 먼저 나온 폴더가 홈 화면 "최근 피부 상태"에 뜬다(folders/store의 latestRecordAcrossFolders).
+ * 등급이 매겨지는 몸통을 앞에 둬야 그 카드가 점수까지 온전히 보여준다 — 건선이 앞에 오면 같은
+ * 자리에 점수 대신 질환명만 적힌다.
+ */
+export const VISIBLE_DEMO_TARGET_IDS: readonly string[] = ['tgt_demo_torso', 'tgt_demo_arm'];
+
+/** 화면에 올릴 데모 대상만 — 모니터링 목록·이어서 기록하기가 이 목록을 쓴다 */
+export const VISIBLE_DEMO_TARGETS: MonitorTarget[] = DEMO_TARGETS.filter((t) =>
+  VISIBLE_DEMO_TARGET_IDS.includes(t.id),
+);
