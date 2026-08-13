@@ -4,9 +4,9 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
 import { useFolders } from '../folders/store';
 import { DISPLAY_SCALE, ITCH_SEGMENTS, segmentFor } from '../folders/theme';
-import ItchVasSlider, { itchHintFor } from '../components/ItchVasSlider';
+import ItchVasSlider from '../components/ItchVasSlider';
 import { normalizeDateKey } from './memoStore';
-import { setDayItch, useDayItch } from './itchStore';
+import { MAX_VAS, setDayItch, useDayItch } from './itchStore';
 
 /**
  * 달력 바로 밑에 놓이는 "오늘의 가려움" 카드.
@@ -111,17 +111,22 @@ export default function DayItchCard({
 
       {open && (
         <View style={styles.editor}>
-          <Text style={styles.question}>
-            {isToday ? '오늘' : `${m}월 ${d}일`} 가려움은 어느 정도였나요?
-          </Text>
-          <View style={{ height: 10 }} />
-          <ItchVasSlider value={draft} onChange={setDraft} color={band.color} />
+          {/*
+            "가려움 정도" 카드 — 배지·글자 색은 전부 ITCH_SEGMENTS(folders/theme.js)가 정의한
+            4단계 색·이름(band.color/band.ko)을 그대로 쓴다. 앱 다른 화면(경과 관찰 요약칸 등)과
+            같은 기준이라, 여기만 다른 말("미약한/중간/극심한 가려움" 같은)을 새로 쓰면 화면마다
+            가려움 단계를 다른 말로 부르게 된다.
+          */}
+          <View style={styles.severityHead}>
+            <Text style={styles.severityTitle}>가려움 정도</Text>
+            <View style={[styles.severityPill, { backgroundColor: band.color }]}>
+              <Text style={styles.severityPillText}>{draft} / {MAX_VAS}</Text>
+            </View>
+          </View>
+          <Text style={[styles.severitySub, { color: band.color }]}>{band.ko}</Text>
 
           <View style={{ height: 14 }} />
-          <View style={[styles.bandBox, { borderColor: band.color }]}>
-            <Text style={[styles.bandText, { color: band.color }]}>{band.ko}</Text>
-            <Text style={styles.bandHint}>{itchHintFor(draft)}</Text>
-          </View>
+          <ItchVasSlider value={draft} onChange={setDraft} color={band.color} />
 
           <View style={{ height: 14 }} />
           <Pressable
@@ -162,11 +167,12 @@ const styles = StyleSheet.create({
   valuePillScore: { fontSize: 10, fontWeight: '700', color: '#FFFFFF', opacity: 0.9, marginTop: 1 },
 
   editor: { paddingTop: 14 },
-  question: { fontSize: 14.5, fontWeight: '800', color: AppColors.ink },
 
-  bandBox: { borderRadius: 14, borderWidth: 1.5, paddingVertical: 13, paddingHorizontal: 16, alignItems: 'center' },
-  bandText: { fontSize: 16, fontWeight: '800' },
-  bandHint: { fontSize: 12, color: AppColors.sub, marginTop: 4, textAlign: 'center' },
+  severityHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  severityTitle: { fontSize: 15.5, fontWeight: '800', color: AppColors.ink },
+  severityPill: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6 },
+  severityPillText: { fontSize: 14, fontWeight: '800', color: '#FFFFFF' },
+  severitySub: { fontSize: 13, fontWeight: '700', marginTop: 3 },
 
   saveBtn: { backgroundColor: AppColors.greenTop, borderRadius: 14, paddingVertical: 13, alignItems: 'center' },
   saveBtnText: { fontSize: 15, fontWeight: '800', color: '#16320A' },

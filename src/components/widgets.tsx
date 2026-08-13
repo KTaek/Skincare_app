@@ -28,24 +28,21 @@ export function RoutineRowContent({
   onToggle,
   onOpen,
   onDelete,
-  onShortcut,
 }: {
   item: CareItem;
   onToggle?: () => void;
   /**
-   * 이름을 누르면 갈 곳 — 지금은 가려움 문진 줄에만 붙는다.
+   * 이름을 누르면 갈 곳 — 홈 화면의 "가려움증 문진하기"·"피부 상태 기록하기" 두 줄이 쓴다
+   * (각각 문진 화면·카메라 탭으로 넘어간다). 예전엔 "피부 상태 기록하기"만 시각 옆에 별도의
+   * "바로 가기 >" 알약 버튼을 따로 뒀는데, 같은 "눌러서 간다"는 성격이 두 줄에서 다르게
+   * 보였고 시각도 그 버튼에 밀려 줄 끝에 오지 못했다 — 이제 onOpen 하나로 통일한다.
    *
-   * **체크박스와 갈라 둔다.** 체크는 "했다"는 표시고 이건 "하러 간다"라서, 한 곳에 묶으면
+   * **체크박스와는 갈라 둔다.** 체크는 "했다"는 표시고 이건 "하러 간다"라서, 한 곳에 묶으면
    * 문진을 열려고 눌렀는데 완료로 체크되거나 그 반대가 된다. 체크박스는 왼쪽 네모, 열기는
    * 이름 영역으로 자리도 나눠 둔다.
    */
   onOpen?: () => void;
   onDelete?: () => void;
-  /**
-   * 시각 옆의 "바로 가기 >" — 홈 화면의 "피부 상태 기록하기" 줄에서 카메라 탭으로 바로 넘어가는
-   * 용도로 하나만 쓴다. onOpen과 같은 이유로 체크박스·이름과는 분리된 자리다.
-   */
-  onShortcut?: () => void;
 }) {
   // 알림 아이콘은 앱 전체 설정을 따른다 (아래 주석 참고)
   const { pushEnabled } = useProfile();
@@ -91,33 +88,35 @@ export function RoutineRowContent({
         <MaterialIcons name="chevron-right" size={16} color={AppColors.sub} style={{ marginLeft: 2 }} />
       )}
       </Pressable>
-      {showCycle && (
-        <View style={styles.cyclePill}>
-          <Text style={styles.cyclePillText}>{cycleLabel(item.cycleDays ?? 1)}</Text>
-        </View>
-      )}
       {/*
-        알림 표시는 이제 **앱 전체 설정**(내 정보 → 알림)을 따른다. 예전에는 항목마다 켜고 끌 수
-        있어서 줄마다 아이콘이 있거나 없었는데, 사용자가 실제로 내리는 결정은 "알림을 받을까"
-        하나뿐이라 그 선택을 등록 흐름에서 매번 묻고 있었다. 꺼져 있으면 아이콘도 사라진다 —
-        어느 줄에도 알림이 안 온다는 사실이 목록에서 바로 보여야 한다.
+        marginLeft: 'auto' — 이름(위 Pressable)은 flexShrink만 있고 flexGrow가 없어서, 줄에
+        남는 공간이 있어도 스스로 늘어나 뒤엣것들을 밀어내지 않는다. 그래서 배지·알림·시각을
+        전부 이 안에 모아 auto 마진으로 통째로 오른쪽 끝에 붙인다 — "맨 뒤 요소"가 아니라
+        "칸의 오른쪽 끝"에 붙어야 한다는 요청이라, 순서만 맞추는 것으로는 부족했다.
       */}
-      {pushEnabled && (
-        <MaterialIcons name="notifications-active" size={14} color="#C0C4CB" style={{ marginRight: 6 }} />
-      )}
-      {/* 시각을 정해두지 않았으면 시각 대신 "1회/2회"로 하루 몇 번째 실행인지만 보여준다 —
-          하루 여러 번인 항목은 이게 없으면 같은 이름의 줄 두 개를 구분할 길이 없다 */}
-      {item.time ? (
-        <Text style={styles.routineTime}>{item.time}</Text>
-      ) : item.occurrenceCount > 1 ? (
-        <Text style={styles.routineTime}>{item.occurrenceIndex + 1}회</Text>
-      ) : null}
-      {onShortcut && (
-        <Pressable onPress={onShortcut} hitSlop={6} style={styles.shortcutBtn}>
-          <Text style={styles.shortcutText}>바로 가기</Text>
-          <MaterialIcons name="chevron-right" size={14} color={AppColors.greenMuted} />
-        </Pressable>
-      )}
+      <View style={styles.trailing}>
+        {showCycle && (
+          <View style={styles.cyclePill}>
+            <Text style={styles.cyclePillText}>{cycleLabel(item.cycleDays ?? 1)}</Text>
+          </View>
+        )}
+        {/*
+          알림 표시는 이제 **앱 전체 설정**(내 정보 → 알림)을 따른다. 예전에는 항목마다 켜고 끌 수
+          있어서 줄마다 아이콘이 있거나 없었는데, 사용자가 실제로 내리는 결정은 "알림을 받을까"
+          하나뿐이라 그 선택을 등록 흐름에서 매번 묻고 있었다. 꺼져 있으면 아이콘도 사라진다 —
+          어느 줄에도 알림이 안 온다는 사실이 목록에서 바로 보여야 한다.
+        */}
+        {pushEnabled && (
+          <MaterialIcons name="notifications-active" size={14} color="#C0C4CB" style={{ marginRight: 6 }} />
+        )}
+        {/* 시각을 정해두지 않았으면 시각 대신 "1회/2회"로 하루 몇 번째 실행인지만 보여준다 —
+            하루 여러 번인 항목은 이게 없으면 같은 이름의 줄 두 개를 구분할 길이 없다. */}
+        {item.time ? (
+          <Text style={styles.routineTime}>{item.time}</Text>
+        ) : item.occurrenceCount > 1 ? (
+          <Text style={styles.routineTime}>{item.occurrenceIndex + 1}회</Text>
+        ) : null}
+      </View>
       {onDelete && (
         <Pressable onPress={onDelete} style={{ paddingLeft: 8 }} hitSlop={6}>
           <MaterialIcons name="close" size={18} color="#C7CBD1" />
@@ -190,6 +189,8 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   row: { flexDirection: 'row', alignItems: 'center' },
+  // 배지·알림·시각을 한데 묶어 marginLeft: 'auto'로 줄 오른쪽 끝에 붙이는 자리 (위 JSX 주석 참고)
+  trailing: { flexDirection: 'row', alignItems: 'center', marginLeft: 'auto' },
   // 체크리스트(라디오처럼 하나만 고르는 게 아니라 항목마다 따로 켜고 끄는 목록)라는 걸
   // 모양으로도 드러내려고 원(라디오 버튼처럼 보임) 대신 둥근 사각(체크박스)으로 그린다.
   checkbox: {
@@ -202,8 +203,6 @@ const styles = StyleSheet.create({
   },
   routineName: { flex: 1, fontSize: 15, fontWeight: '600' },
   routineTime: { fontSize: 15, fontWeight: '700', color: AppColors.ink },
-  shortcutBtn: { flexDirection: 'row', alignItems: 'center', marginLeft: 8 },
-  shortcutText: { fontSize: 12.5, fontWeight: '700', color: AppColors.greenMuted },
   cyclePill: {
     backgroundColor: '#EFF5E4',
     borderRadius: 7,

@@ -129,17 +129,19 @@ function TrendMini({ label, delta, fromBand, toBand, first }) {
             그래도 컨테이너가 더 좁아지는 경우를 대비해 numberOfLines로 줄바꿈 자체를 막는다
             (전에는 "피부 종합 상태"처럼 길어서 띄어쓰기 자리에 강제 줄바꿈을 넣었었다). */}
         <Text style={styles.trendMiniLabel} numberOfLines={1}>{label}</Text>
-        {/* 등급 이동("나쁨 → 주의")을 "개선" 배지 바로 밑에 붙인다 — 오른쪽으로 정렬된 한 덩어리다 */}
-        <View style={styles.trendMiniRight}>
-          <View style={styles.trendMiniTagRow}>
-            {!!rounded && <Text style={styles.trendMiniArrow}>{rounded > 0 ? '▲' : '▼'}</Text>}
-            <Text style={styles.trendMiniTag} numberOfLines={1}>{tag}</Text>
-          </View>
-          {fromBand != null && toBand != null && (
-            <Text style={styles.trendMiniBands} numberOfLines={1}>{fromBand} → {toBand}</Text>
-          )}
+        <View style={styles.trendMiniTagRow}>
+          {!!rounded && <Text style={styles.trendMiniArrow}>{rounded > 0 ? '▲' : '▼'}</Text>}
+          <Text style={styles.trendMiniTag} numberOfLines={1}>{tag}</Text>
         </View>
       </View>
+      {/*
+        등급 이동("매우 나쁨 → 주의")은 라벨과 한 줄을 나눠 쓰지 않는다 — 라벨(고정폭 44)과
+        같은 줄에 있으면 남는 폭이 좁아 "매우 나쁨"처럼 긴 이름에서 오른쪽이 잘렸다. 줄을
+        통째로 내려 오른쪽 열 전체 폭을 이 텍스트만 쓰게 하면 한 줄에 다 들어간다.
+      */}
+      {fromBand != null && toBand != null && (
+        <Text style={styles.trendMiniBands} numberOfLines={1}>{fromBand} → {toBand}</Text>
+      )}
     </View>
   );
 }
@@ -692,17 +694,14 @@ const styles = StyleSheet.create({
   // 왼쪽 열과 세로 길이를 맞춘다(adherenceRow 참고).
   trendMiniItem: { marginTop: 16 },
   trendMiniItemFirst: { marginTop: 0 },
-  // 라벨은 위쪽에 맞추고, 배지+등급 이동 덩어리는 오른쪽 끝에서 아래로 쌓는다
-  trendMiniHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
-  // flex: 1을 쓰면 오른쪽 배지·등급 이동 문구가 필요한 만큼 먼저 차지하고 남는 공간만 라벨에
-  // 주는데, 그 공간이 좁을 때 flex가 라벨을 눌러 접어(줄바꿈 이전에) numberOfLines가 "가..."로
-  // 잘라버린다. 라벨은 이제 "피부"·"가려움"·"수면" 중 가장 긴 것도 고정폭이면 충분하므로,
-  // flex 대신 그 폭을 그대로 확보해 둔다 — 오른쪽 내용과 폭을 다투지 않는다.
+  // 라벨은 왼쪽, 배지(개선/악화)는 오른쪽 끝 — 등급 이동 문구는 더 이상 이 줄에 같이 두지
+  // 않는다(아래 trendMiniBands 참고).
+  trendMiniHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  // flex: 1을 쓰면 오른쪽 배지가 필요한 만큼 먼저 차지하고 남는 공간만 라벨에 주는데, 그 공간이
+  // 좁을 때 flex가 라벨을 눌러 접어(줄바꿈 이전에) numberOfLines가 "가..."로 잘라버린다. 라벨은
+  // "피부"·"가려움"·"수면" 중 가장 긴 것도 고정폭이면 충분하므로, flex 대신 그 폭을 그대로
+  // 확보해 둔다 — 오른쪽 내용과 폭을 다투지 않는다.
   trendMiniLabel: { width: 44, fontSize: 12.5, fontWeight: '800', color: mc.ink, marginRight: 6 },
-  // flex: 1 — 라벨(고정폭 44)이 먼저 확보하고 남는 폭을 이 열이 정확히 채운다. 전에는 이 열도
-  // 내용만큼(auto) 넓이를 차지해서, 라벨+배지 폭 합이 카드보다 넓어지면 배지가 카드 밖으로
-  // 튀어나갔다 — flex: 1로 "남는 만큼만" 쓰게 고정하면 카드 경계를 넘어갈 수 없다.
-  trendMiniRight: { flex: 1, alignItems: 'flex-end' },
   // 맨 아래 응원 문구 박스(adherenceEncourageBox)와 같은 연두색 — 두 요소가 한 카드 안에서
   // 같은 "잘하고 있다" 색으로 이어져 보이게 한다.
   trendMiniTagRow: {
@@ -711,5 +710,11 @@ const styles = StyleSheet.create({
   },
   trendMiniArrow: { fontSize: 11, fontWeight: '800', color: mc.greenDeep },
   trendMiniTag: { fontSize: 12.5, fontWeight: '800', color: mc.greenDeep },
-  trendMiniBands: { fontSize: 10.5, color: mc.sub, marginTop: 4 },
+  /*
+    등급 이동("매우 나쁨 → 주의")은 trendMiniHead와 같은 줄이 아니라 그 아래, trendMiniItem
+    전체 폭을 혼자 쓰는 줄이다. 라벨(고정폭 44)과 폭을 나눠 쓸 때는 남는 자리가 좁아 "매우
+    나쁨"처럼 긴 등급 이름에서 오른쪽이 잘렸다 — 줄을 통째로 내리면 오른쪽 열 전체 폭을 다
+    쓸 수 있어 한 줄에 들어간다. textAlign: 'right'로 배지 바로 아래, 오른쪽 끝에 붙인다.
+  */
+  trendMiniBands: { fontSize: 10.5, color: mc.sub, marginTop: 4, textAlign: 'right' },
 });

@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { PanResponder, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { PanResponder, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppColors, cardDecoration } from '../theme';
 import Body2DView, { PartMarkerStyle } from '../components/Body2DView';
@@ -169,7 +170,7 @@ interface SiteTrend {
   delta: number;
 }
 
-export default function WholeBodyResultScreen() {
+export default function WholeBodyResultScreen({ navigation }: { navigation: any }) {
   const folders = useFolders();
   const { findTarget } = useMonitoring();
 
@@ -342,68 +343,94 @@ export default function WholeBodyResultScreen() {
 
   if (!sites.length) {
     return (
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24, flexGrow: 1 }}
-      >
-        <Text style={styles.subtitle}>지켜보는 자리가 쌓이면 전신 지도에 표시돼요</Text>
-        <View style={styles.emptyWrap}>
-          <MaterialIcons name="accessibility-new" size={40} color={AppColors.sub} />
-          <View style={{ height: 10 }} />
-          <Text style={styles.emptyText}>아직 표시할 기록이 없어요</Text>
-        </View>
-      </ScrollView>
+      <SafeAreaView style={styles.container}>
+        <TopBar navigation={navigation} />
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24, flexGrow: 1 }}
+        >
+          <Text style={styles.subtitle}>지켜보는 자리가 쌓이면 전신 지도에 표시돼요</Text>
+          <View style={styles.emptyWrap}>
+            <MaterialIcons name="accessibility-new" size={40} color={AppColors.sub} />
+            <View style={{ height: 10 }} />
+            <Text style={styles.emptyText}>아직 표시할 기록이 없어요</Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
     );
   }
 
   const [y, m, d] = selectedKey.split('-').map(Number);
 
   return (
-    <ScrollView
-      style={{ flex: 1 }}
-      contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 32 }}
-    >
-      <View style={[cardDecoration(), styles.mapCard]}>
-        <View style={styles.bodyCanvas}>
-          <Body2DView partMarkers={groupMarkers} />
-          {/* 색이 무슨 뜻인지는 그림과 함께 한눈에 보여야 한다 — 스크롤해서 슬라이더 아래까지
-              내려가야 보이면 정작 그림을 보는 순간에는 무슨 색인지 알 수 없다 */}
-          <ColorLegend />
-        </View>
-
-        <View style={{ height: 6 }} />
-        <Text style={styles.dayLabel}>{daysAgo === 0 ? '오늘' : `${daysAgo}일 전`}</Text>
-        <Text style={styles.dateLabel}>
-          {y}.{m}.{d}
-        </Text>
-        <View style={{ height: 8 }} />
-
-        <DaySlider max={span} value={dayIndex} onChange={setTick} />
-        <View style={styles.sliderEnds}>
-          <Text style={styles.endText}>{span === 0 ? '오늘' : `${span}일 전`}</Text>
-          <Text style={styles.endText}>오늘</Text>
-        </View>
-
-        <View style={{ height: 16 }} />
-        <MarkerLegend />
-      </View>
-
-      <View style={{ height: 18 }} />
-      <Text style={styles.sectionTitle}>부위별 변화</Text>
-      <View style={{ height: 10 }} />
-
-      {trends.length === 0 ? (
-        <View style={[cardDecoration(), styles.noneCard]}>
-          <Text style={styles.emptyText}>이 시점에는 아직 기록이 없어요</Text>
-        </View>
-      ) : (
-        trends.map((t, i) => (
-          <View key={t.site.folderId} style={i !== trends.length - 1 ? { marginBottom: 10 } : undefined}>
-            <TrendRow trend={t} />
+    <SafeAreaView style={styles.container}>
+      <TopBar navigation={navigation} />
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 32 }}
+      >
+        <View style={[cardDecoration(), styles.mapCard]}>
+          <View style={styles.bodyCanvas}>
+            <Body2DView partMarkers={groupMarkers} />
+            {/* 색이 무슨 뜻인지는 그림과 함께 한눈에 보여야 한다 — 스크롤해서 슬라이더 아래까지
+                내려가야 보이면 정작 그림을 보는 순간에는 무슨 색인지 알 수 없다 */}
+            <ColorLegend />
           </View>
-        ))
-      )}
-    </ScrollView>
+
+          <View style={{ height: 6 }} />
+          <Text style={styles.dayLabel}>{daysAgo === 0 ? '오늘' : `${daysAgo}일 전`}</Text>
+          <Text style={styles.dateLabel}>
+            {y}.{m}.{d}
+          </Text>
+          <View style={{ height: 8 }} />
+
+          <DaySlider max={span} value={dayIndex} onChange={setTick} />
+          <View style={styles.sliderEnds}>
+            <Text style={styles.endText}>{span === 0 ? '오늘' : `${span}일 전`}</Text>
+            <Text style={styles.endText}>오늘</Text>
+          </View>
+
+          <View style={{ height: 16 }} />
+          <MarkerLegend />
+        </View>
+
+        <View style={{ height: 18 }} />
+        <Text style={styles.sectionTitle}>부위별 변화</Text>
+        <View style={{ height: 10 }} />
+
+        {trends.length === 0 ? (
+          <View style={[cardDecoration(), styles.noneCard]}>
+            <Text style={styles.emptyText}>이 시점에는 아직 기록이 없어요</Text>
+          </View>
+        ) : (
+          trends.map((t, i) => (
+            <View key={t.site.folderId} style={i !== trends.length - 1 ? { marginBottom: 10 } : undefined}>
+              <TrendRow trend={t} />
+            </View>
+          ))
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+/**
+ * 상단 바 — 경과 관찰 폴더 화면(MonitoringFolderScreen)의 topBar와 같은 생김새(뒤로가기 화살표
+ * + 제목, 카드색 배경 + 아래 실선)로 맞춘다. 이 화면은 원래 React Navigation 네이티브 헤더를
+ * 썼는데, 앱의 다른 화면은 전부 headerShown: false로 두고 이렇게 직접 그린 바를 쓰고 있어서
+ * (RootNavigator screenOptions 참고) 이 화면만 글꼴·높이·뒤로가기 화살표 모양이 달라 보였다.
+ */
+function TopBar({ navigation }: { navigation: any }) {
+  return (
+    <View style={styles.topBar}>
+      <TouchableOpacity
+        onPress={() => navigation.goBack()}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}
+      >
+        <Text style={{ fontSize: 20, color: AppColors.ink }}>‹</Text>
+        <Text style={styles.topBarTitle} numberOfLines={1}>전신 결과</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -547,12 +574,6 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
   const skin = skinConditionInfo(skinValue);
   // 등급이 없는 자리에는 변화도 없다 — 0에서 0으로 간 것을 "유지"라고 말하면 안 된다
   const tag = site.gradable && previous ? trendLabel(delta) : null;
-  /*
-    지도에 이 자리의 원이 몇 개 떴는지를 글자로도 적어 준다 — 원이 셋인데 목록이 아무 말도 없으면
-    사용자는 그것이 병변 개수인지 다른 무엇인지 알 방법이 없다. 하나뿐이면 굳이 세지 않는다.
-  */
-  const lesionCount: number = current.lesionAreaRegions?.length ?? 1;
-
   return (
     <View style={[cardDecoration(16), styles.trendRow]}>
       <View
@@ -563,13 +584,16 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
         {/*
           등급을 매길 수 없는 자리에는 점수를 적지 않는다. 기록에 들어 있는 0은 자리 채우기라,
           "피부 종합 상태 100 좋음"으로 적으면 앱이 없는 판정을 지어내는 것이 된다.
+
+          날짜 뒤 "기준 ·"와 병변 개수("병변 3곳 ·")는 뺀다 — 원 개수는 지도에서 이미 보이고,
+          "25 나쁨"처럼 점수 숫자까지 적으면 등급 단어와 겹쳐 한눈에 안 읽힌다. 날짜 + 판정
+          한 줄로 줄인다.
         */}
         <Text style={styles.trendMeta}>
-          {current.date.replace(/-/g, '.')} 기준 ·{' '}
-          {lesionCount > 1 ? `병변 ${lesionCount}곳 · ` : ''}
+          {current.date.replace(/-/g, '.')}{' '}
           {site.gradable ? (
             <>
-              피부 종합 상태 {Math.round(skinValue)}
+              피부 종합 상태
               <Text style={{ color: skin.color }}> {skin.ko}</Text>
             </>
           ) : (
@@ -592,6 +616,14 @@ function TrendRow({ trend }: { trend: SiteTrend }) {
 }
 
 const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: AppColors.bg },
+  // MonitoringFolderScreen의 topBar/topBarTitle과 같은 치수·색 — 두 화면이 같은 헤더로 보이게 한다
+  topBar: {
+    height: 56, flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', paddingHorizontal: 20, gap: 8,
+    backgroundColor: AppColors.card, borderBottomWidth: 1, borderBottomColor: AppColors.line,
+  },
+  topBarTitle: { fontSize: 15, fontWeight: '700', color: AppColors.ink, flexShrink: 1 },
   subtitle: { fontSize: 13.5, color: AppColors.sub },
   sectionTitle: { fontSize: 16, fontWeight: '800', color: AppColors.ink },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 80 },

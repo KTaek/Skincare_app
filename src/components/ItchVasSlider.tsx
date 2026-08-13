@@ -1,9 +1,7 @@
 import React, { useRef } from 'react';
-import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import { PanResponder, StyleSheet, Text, View } from 'react-native';
 import { AppColors } from '../theme';
 import { MAX_VAS } from '../records/itchStore';
-
-const TICKS = Array.from({ length: MAX_VAS + 1 }, (_, i) => i);
 
 /**
  * 숫자(VAS 0~10)마다 "이 정도면 어떤 느낌인지"를 한 줄로 — 숫자만 보고 고르기 어려워서 붙였다.
@@ -23,10 +21,10 @@ export function itchHintFor(vas: number): string {
  *
  * 드래그로 값을 바꾼다. 손가락 x좌표는 화면 절대좌표(pageX)로만 안정적으로 얻을 수 있어서,
  * 트랙이 화면의 어디에 놓였는지(pageX)를 onLayout 때 재 두고 그 차이로 위치를 계산한다.
- * 지금 값은 손잡이 위에 말풍선으로 띄워 손가락에 가려도 읽히게 한다.
  *
- * 촬영 앞 문진 화면에 있던 것을 그대로 꺼내 왔다 — 문진이 기록 탭의 "오늘의 가려움"으로
- * 옮겨 가면서(records/itchStore) 그 화면 자체는 사라졌지만, 값을 고르는 방법은 그대로 둔다.
+ * 트랙 밑에는 양 끝(0·MAX_VAS)과 가운데(MAX_VAS/2) 세 눈금만 남긴다 — 값 하나하나를 누르는
+ * 버튼 줄과 손잡이 위 말풍선은 뺐다. 지금 값은 카드 쪽(DayItchCard)이 상단 배지로 이미 보여
+ * 주므로 여기서 또 띄울 필요가 없다.
  */
 export default function ItchVasSlider({
   value,
@@ -35,7 +33,7 @@ export default function ItchVasSlider({
 }: {
   value: number;
   onChange: (v: number) => void;
-  /** 지금 단계(band)의 색 — 채움·손잡이·말풍선이 함께 이 색을 쓴다 */
+  /** 지금 단계(band)의 색 — 채움·손잡이가 함께 이 색을 쓴다 */
   color: string;
 }) {
   const trackRef = useRef<View>(null);
@@ -58,15 +56,10 @@ export default function ItchVasSlider({
   ).current;
 
   const frac = value / MAX_VAS;
+  const mid = MAX_VAS / 2;
 
   return (
     <View>
-      <View style={styles.bubbleStrip}>
-        <View style={[styles.bubble, { left: `${frac * 100}%`, backgroundColor: color }]}>
-          <Text style={styles.bubbleText}>{value}</Text>
-        </View>
-      </View>
-
       <View
         ref={trackRef}
         style={styles.sliderTrack}
@@ -78,31 +71,16 @@ export default function ItchVasSlider({
         <View style={[styles.sliderThumb, { left: `${frac * 100}%`, borderColor: color }]} />
       </View>
 
-      {/* 숫자를 직접 눌러도 값이 정해진다 — 드래그가 어려운 손에도 길을 하나 더 준다 */}
-      <View style={styles.numberRow}>
-        {TICKS.map((t) => (
-          <Pressable key={t} style={styles.numberBtn} onPress={() => onChange(t)} hitSlop={4}>
-            <Text style={[styles.number, t === value && { color, fontWeight: '800' }]}>{t}</Text>
-          </Pressable>
-        ))}
+      <View style={styles.tickRow}>
+        <Text style={styles.tick}>0 (없음)</Text>
+        <Text style={[styles.tick, styles.tickCenter]}>{mid} (중간)</Text>
+        <Text style={[styles.tick, styles.tickRight]}>{MAX_VAS} (극심함)</Text>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  bubbleStrip: { height: 34, position: 'relative' },
-  bubble: {
-    position: 'absolute',
-    minWidth: 40,
-    marginLeft: -20,
-    borderRadius: 9,
-    paddingVertical: 5,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-  },
-  bubbleText: { fontSize: 15, fontWeight: '800', color: '#FFFFFF' },
-
   // 손가락이 닿을 자리를 넉넉히 주려고 높이를 크게 잡고, 그 안에 레일/채움/손잡이를 그린다
   sliderTrack: { height: 44, justifyContent: 'center' },
   sliderRail: { height: 8, borderRadius: 4, backgroundColor: '#E7E9EC' },
@@ -117,7 +95,8 @@ const styles = StyleSheet.create({
     borderWidth: 5,
   },
 
-  numberRow: { flexDirection: 'row', marginTop: 2 },
-  numberBtn: { flex: 1, alignItems: 'center', paddingVertical: 4 },
-  number: { fontSize: 12, color: AppColors.sub },
+  tickRow: { flexDirection: 'row', marginTop: 8 },
+  tick: { flex: 1, fontSize: 11.5, color: AppColors.sub },
+  tickCenter: { textAlign: 'center' },
+  tickRight: { textAlign: 'right' },
 });

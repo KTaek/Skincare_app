@@ -71,12 +71,9 @@ export default function RootNavigator() {
       <Stack.Screen name="Monitoring" component={MonitoringScreen} />
       <Stack.Screen name="MonitoringFolder" component={MonitoringFolderScreen} />
       <Stack.Screen name="MonitoringDetail" component={MonitoringDetailScreen} />
-      {/* 탭에서 빠져나온 화면 — 자체 뒤로가기가 없어 네이티브 헤더를 켠다 */}
-      <Stack.Screen
-        name="WholeBody"
-        component={WholeBodyResultScreen}
-        options={{ headerShown: true, title: '전신 결과', headerTintColor: AppColors.ink }}
-      />
+      {/* WholeBody는 다른 화면들과 같은 자체 상단 바(TopBar)를 그리므로 네이티브 헤더는 끈다 —
+          MonitoringFolder 등과 같은 headerShown: false 규칙을 따른다. */}
+      <Stack.Screen name="WholeBody" component={WholeBodyResultScreen} />
       <Stack.Screen
         name="DataExport"
         component={DataExportScreen}

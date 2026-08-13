@@ -1,8 +1,9 @@
 /**
  * 모니터링 dump(데모) 기록에 붙일 실제 촬영 사진 풀과, 그 사진의 **병변 오버레이**.
  * Metro는 require() 경로를 정적으로 분석해야 하므로 동적 경로 대신 배열로 나열한다.
- * - ATOPIC_PHOTOS / ATOPIC_OVERLAYS: 프리셋 폴더 "팔 건선"·"몸통 아토피" 전용
+ * - ATOPIC_PHOTOS / ATOPIC_OVERLAYS: 프리셋 폴더 "팔 건선" 전용
  * - CHEEK_PHOTOS  / CHEEK_OVERLAYS : 프리셋 폴더 "머리 주사"·"얼굴 아토피" 전용
+ * - TORSO_PHOTOS  / TORSO_OVERLAYS : 프리셋 폴더 "몸통 아토피" 전용 (실사진 1장을 매 회차 재사용)
  *
  * 오버레이는 **tools/bake_dump_overlays.py로 미리 구운 것**이다. 앱 안에서 그때그때 세그를
  * 돌려 보려 했지만, 데모 기록이 40장을 넘어 시작할 때 다 돌릴 수 없고 화면에 보일 때만 돌리면
@@ -64,4 +65,19 @@ export const CHEEK_OVERLAYS = [
   require('../../assets/dump_overlays/cheek/05.jpg'),
   require('../../assets/dump_overlays/cheek/06.jpg'),
   require('../../assets/dump_overlays/cheek/07.jpg'),
+];
+
+/*
+  ⚠️ 실제 사진 1장뿐이라 배열 길이가 1이다. dumpPhotos를 쓰는 쪽(store.js의
+  photoAt = (photoStart + i) % photos.length)이 어떤 회차든 나머지 연산으로 항상 0번을
+  가리키므로, 모든 회차가 같은 사진 위에 그 회차의 오버레이 도형만 갈아 낀 것처럼 보인다.
+  실제로는 오버레이도 이 한 장에서 구운 것 하나뿐이라 그 문제도 없다 — 나중에 촬영분이
+  쌓이면 여기 배열에 이어 붙이고 tools/bake_dump_overlays.py를 다시 돌리면 된다.
+*/
+export const TORSO_PHOTOS = [
+  require('../../assets/dump_photos/torso/01.jpg'),
+];
+
+export const TORSO_OVERLAYS = [
+  require('../../assets/dump_overlays/torso/01.jpg'),
 ];

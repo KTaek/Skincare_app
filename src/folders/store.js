@@ -13,7 +13,7 @@
  */
 import { useSyncExternalStore } from 'react';
 import { SEVERITY_SUPPORTED_DISEASE } from '../ai/labels';
-import { ATOPIC_PHOTOS, ATOPIC_OVERLAYS, CHEEK_PHOTOS, CHEEK_OVERLAYS } from './dumpPhotos';
+import { ATOPIC_PHOTOS, ATOPIC_OVERLAYS, CHEEK_PHOTOS, CHEEK_OVERLAYS, TORSO_PHOTOS, TORSO_OVERLAYS } from './dumpPhotos';
 import { DEMO_TARGETS, VISIBLE_DEMO_TARGET_IDS, folderNameOf } from './targets';
 
 /** 이 폴더의 진단명이 4가지 증상·IGA 모델이 커버하는 질환(아토피피부염)인지 — "피부 종합 상태"·
@@ -109,7 +109,7 @@ function splitAreaIntoRegions(areaIndex, iga, jitter) {
   }));
 }
 
-function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to, photos, overlays, photoStart = 0, demoMultiRegionOnLast, areaKind }) {
+function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to, photos, overlays, photoStart = 0, demoMultiRegionOnLast, areaKind, dateOverrides }) {
   const rng = makeRng(seedBase);
 
   // 0일차, 마지막 날은 반드시 포함 + 중간은 불규칙 간격으로 샘플링
@@ -132,7 +132,7 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
   const wavePhase = rng() * Math.PI * 2;
   const waveFreq = 2.2 + rng() * 2.3; // 전체 구간 동안 오르내림이 대략 2~4.5회 정도 반복
 
-  return sorted.map((offset, i) => {
+  const records = sorted.map((offset, i) => {
     const t = sorted.length > 1 ? i / (sorted.length - 1) : 1;
     const noise = () => (rng() - 0.5);
     const envelope = Math.sin(t * Math.PI); // 0(양 끝) ~ 1(중간) — 첫/최근 기록은 from/to 값을 그대로 유지
@@ -231,6 +231,20 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
       ...(demoMultiRegionOnLast && offset === spanDays ? { regions: DEMO_REGIONS } : null),
     };
   });
+
+  /*
+    특정 날짜 하나만 손으로 고친다 (dateOverrides). 공식이 뽑은 값을 완전히 갈아 끼우는 대신
+    "전날 대비 이렇게 바뀐다"로 적을 수 있게, 이미 계산된 바로 전 기록을 두 번째 인자로 넘긴다 —
+    순서대로 처리하므로 그 전 기록에 override가 있었다면 그 결과까지 반영된 값이다.
+  */
+  if (dateOverrides) {
+    for (let i = 0; i < records.length; i++) {
+      const fix = dateOverrides[records[i].date];
+      if (fix) records[i] = { ...records[i], ...fix(records[i], records[i - 1] ?? null) };
+    }
+  }
+
+  return records;
 }
 
 /**
@@ -240,7 +254,7 @@ function generateRecords(startKey, seedBase, { spanDays, captureCount, from, to,
  *   여기서 곱한 상수를 화면이 그대로 나누므로 의도한 %가 왕복해서 그대로 돌아온다. 값이
  *   쓰이는 곳은 "얼굴의 12%" 같은 문구뿐이고, 그 카드는 지금 화면에서 내려가 있다.
  */
-function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, captureCount, from, to, photos, overlays, photoStart, demoMultiRegionOnLast, areaKind = 'face' }) {
+function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, captureCount, from, to, photos, overlays, photoStart, demoMultiRegionOnLast, areaKind = 'face', dateOverrides }) {
   const startDate = addDaysKey(todayKey(), -spanDaysAgoStart);
   const seedBase = hashStr(id + name);
   return {
@@ -250,7 +264,7 @@ function makeFolder({ id, targetId, name, disease, spanDaysAgoStart, spanDays, c
     disease,
     startDate,
     createdTs: Date.now(),
-    records: generateRecords(startDate, seedBase, { spanDays, captureCount, from, to, photos, overlays, photoStart, demoMultiRegionOnLast, areaKind }),
+    records: generateRecords(startDate, seedBase, { spanDays, captureCount, from, to, photos, overlays, photoStart, demoMultiRegionOnLast, areaKind, dateOverrides }),
   };
 }
 
@@ -354,15 +368,28 @@ const DEMO_FOLDERS = [
     spanDaysAgoStart: 24,
     spanDays: 24,
     captureCount: 8,
-    // 나빠져서 끝나는 사례. 최종 IGA 4 → "매우 나쁨"(빨강) — 지도에서 다른 둘과 색이 갈린다
-    from: { sleep: 70, itch: 4, iga: 2.4 },
-    to: { sleep: 58, itch: 7, iga: 3.8 },
     /*
-      ⚠️ 몸통 전용 dump 사진이 없어 팔 아토피 사진을 돌려 쓴다. 시계열·색·넓이 원을 확인하는 데는
-         지장이 없지만, 이 폴더의 사진은 부위와 맞지 않는다는 것을 알고 볼 것.
+      좋아지는 사례로 뒤집었다. 시작 IGA 3.9 → "매우 나쁨"(빨강), 최종 IGA 1.4 → "주의"(노랑).
+      f3(다리)와 같은 이유로 0까지 내리지 않는다 — 완전히 나은 것으로 끝내면 세부 증상도
+      전부 0이 되어 사진(뚜렷한 발진)과 화면이 모순된다.
     */
-    photos: ATOPIC_PHOTOS,
-    overlays: ATOPIC_OVERLAYS,
+    from: { sleep: 54, itch: 8, iga: 3.9 },
+    to: { sleep: 76, itch: 3, iga: 1.4 },
+    // 실제 몸통 아토피 사진 1장(첨부받은 것)을 모든 회차에 재사용한다 — dumpPhotos.js 참고.
+    photos: TORSO_PHOTOS,
+    overlays: TORSO_OVERLAYS,
+    /*
+      8/5 회차 손보정: 공식대로면 이날 피부 종합 상태(iga)가 전날보다 나빠지는데, 그러면 안
+      되고 전날과 같은 값으로 "유지"돼야 한다. 수면 점수·가려움(VAS)도 전날보다 좋아지는
+      쪽으로 튼다 — 가려움은 VAS가 낮을수록 표시 점수(가려움 안정도)가 올라간다.
+    */
+    dateOverrides: {
+      '2026-08-05': (r, prev) => (prev ? {
+        iga: prev.iga,
+        sleepScore: clamp(prev.sleepScore + 3, 0, 100),
+        itchVas: clamp(prev.itchVas - 1, 0, 10),
+      } : {}),
+    },
     /*
       seg가 판정 단위를 여러 개로 나눈 촬영의 미리보기(RegionSymptomsCard).
 

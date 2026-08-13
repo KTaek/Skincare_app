@@ -179,7 +179,13 @@ function TodayCareCard({
   items: CareItem[];
   onToggle: (key: string) => void;
   onOpenItch: () => void;
-  /** "피부 상태 기록하기" 줄의 "바로 가기" — 카메라 탭 "이어서 기록하기"로 바로 넘어간다 */
+  /*
+    "피부 상태 기록하기" 줄이 눌러서 가는 곳 — 카메라 탭 "이어서 기록하기"로 바로 넘어간다.
+    예전엔 이 줄에만 시각 옆에 별도의 "바로 가기 >" 알약 버튼을 달아서, 같은 "눌러서 간다"는
+    성격인데도 가려움 줄(이름 자체를 누르고, 화살표는 이름 옆에 작게 붙는다)과 생김새가
+    갈라졌다 — 시각도 그 알약 버튼에 밀려 맨 끝이 아니었다. 이제 onOpen 하나로 합쳐 가려움
+    줄과 같은 모양을 쓴다.
+  */
   onQuickRecord: () => void;
 }) {
   if (items.length === 0) {
@@ -201,10 +207,14 @@ function TodayCareCard({
         >
           <FadingCareRow
             item={item}
-            /* 문진 줄은 체크박스도 문진으로 보낸다 — 이유는 RoutineScreen 같은 자리에 적어 뒀다 */
+            /* 문진 줄은 체크박스도 문진으로 보낸다 — 이유는 RoutineScreen 같은 자리에 적어 뒀다.
+               체크박스는 그대로 두고, "눌러서 간다"는 이름 쪽(onOpen)만 가려움 줄과 통일한다. */
             onToggle={item.name === ITCH_SURVEY_ROUTINE ? onOpenItch : () => onToggle(item.key)}
-            onOpen={item.name === ITCH_SURVEY_ROUTINE ? onOpenItch : undefined}
-            onShortcut={item.name === SKIN_RECORD_ROUTINE ? onQuickRecord : undefined}
+            onOpen={
+              item.name === ITCH_SURVEY_ROUTINE ? onOpenItch
+                : item.name === SKIN_RECORD_ROUTINE ? onQuickRecord
+                : undefined
+            }
           />
         </View>
       ))}
@@ -217,12 +227,10 @@ function FadingCareRow({
   item,
   onToggle,
   onOpen,
-  onShortcut,
 }: {
   item: CareItem;
   onToggle?: () => void;
   onOpen?: () => void;
-  onShortcut?: () => void;
 }) {
   const opacity = useRef(new Animated.Value(item.done ? 0.45 : 1)).current;
   useEffect(() => {
@@ -234,7 +242,7 @@ function FadingCareRow({
   }, [item.done, opacity]);
   return (
     <Animated.View style={{ opacity }}>
-      <RoutineRowContent item={item} onToggle={onToggle} onOpen={onOpen} onShortcut={onShortcut} />
+      <RoutineRowContent item={item} onToggle={onToggle} onOpen={onOpen} />
     </Animated.View>
   );
 }
